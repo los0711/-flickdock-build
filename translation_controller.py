@@ -1,11 +1,10 @@
 """Local-copy invitation, explicit translation and stale-result fencing."""
 import hashlib
 import sys
-from PySide6.QtCore import QMimeData, QObject, QThreadPool, QTimer, Signal
+from PySide6.QtCore import QMimeData, QObject, QTimer, Signal
 from PySide6.QtWidgets import QApplication
-from sync_files import DiskWork
 from translation_api import TranslationApi
-from translation_languages import copied_text, detect_source, DETECTING_SOURCE, UNKNOWN_SOURCE
+from translation_languages import copied_text
 
 COPY_ACK_TIMEOUT_MS = 2000
 
@@ -13,7 +12,7 @@ COPY_ACK_TIMEOUT_MS = 2000
 class TranslationController(QObject):
     changed = Signal()
 
-    def __init__(self, manager, *, api=None, detector=detect_source):
+    def __init__(self, manager, *, api=None):
         super().__init__(manager.app)
         self.manager = manager
         self.settings = manager.settings
@@ -24,17 +23,13 @@ class TranslationController(QObject):
             # its requests independently while reusing the cloud HTTP client.
             self._transport = CloudApi(manager.account.api.origin, self)
         self.api = api or TranslationApi(self._transport, self)
-        self.detector = detector
-        self.pool = QThreadPool(self)
-        self.pool.setMaxThreadCount(1)
-        self.jobs = set()
         self.closed = False
         self.generation = 0
         self.text = self.result = self.error = ''
-        self.source = DETECTING_SOURCE
         self.phase = 'idle'
         self.notice = None
         self._copy_digest = None
+        self._silent_copy_digest = None
         self.copy_timer = QTimer(self)
         self.copy_timer.setSingleShot(True)
         self.copy_timer.timeout.connect(self._copy_failed)
@@ -48,6 +43,15 @@ class TranslationController(QObject):
     def busy(self):
         return self.api.busy
 
+    @property
+    def target(self):
+        return self.settings.translation_target
+
+    def open_translator(self):
+        if not self.text:return
+        self.manager.show_translator_dialog(text=self.text,target=self.target)
+        if self.notice:self.notice.dismiss()
+
     def _settings_changed(self):
         if self.closed:return
         preferences = (self.settings.translation_enabled, self.settings.translation_target)
@@ -57,7 +61,7 @@ class TranslationController(QObject):
         self.manager.clipboard_sync.set_local_observation(preferences[0])
         self.generation += 1
         self.api.cancel()
-        self.copy_timer.stop();self._copy_digest=None
+        self.copy_timer.stop();self._copy_digest=None;self._silent_copy_digest=None
         self.phase = 'idle'
         self.result = self.error = ''
         if not preferences[0]:
@@ -74,21 +78,24 @@ class TranslationController(QObject):
             digest = hashlib.sha256(text.encode('utf-8')).digest() if text else None
             if digest == self._copy_digest:
                 self._copy_digest = None
+                self._silent_copy_digest = None
                 self.copy_timer.stop()
                 self.phase = 'copied'
                 self.changed.emit()
                 return
             self._copy_digest = None
             self.copy_timer.stop()
+        if self._silent_copy_digest is not None:
+            digest=hashlib.sha256(text.encode('utf-8')).digest() if text else None
+            expected,self._silent_copy_digest=self._silent_copy_digest,None
+            if digest==expected:return
         if not self.settings.translation_enabled:
             return
         self.generation += 1
-        generation = self.generation
         self.api.cancel()
         self.text = text or ''
         self.result = self.error = ''
         self.phase = 'idle'
-        self.source = DETECTING_SOURCE
         if text is None:
             if self.notice:
                 self.notice.dismiss()
@@ -99,34 +106,13 @@ class TranslationController(QObject):
             self.notice = TranslationNotice(self.manager, self)
         self.notice.present()
         self.changed.emit()
-        job = DiskWork(lambda cancel: self.detector(text))
-        self.jobs.add(job)
-
-        def ready(result, error):
-            self.jobs.discard(job)
-            if self.closed or generation != self.generation:
-                return
-            if error is not None:
-                # Source detection is local decoration; translation itself can
-                # auto-detect. Keep the failure visible in diagnostics, not a guess.
-                import logging
-                logging.getLogger(__name__).warning('Source-language detection failed: %s', type(error).__name__)
-                self.source = UNKNOWN_SOURCE
-            else:
-                self.source = result
-            self.changed.emit()
-
-        job.signals.done.connect(ready)
-        for previous in self.jobs - {job}:
-            previous.cancel.set()
-        self.pool.start(job)
 
     def translate(self):
         if self.closed or not self.settings.translation_enabled or not self.text or self.busy:
             return
         self.phase = 'loading'
         self.error = ''
-        self.api.translate(self.generation, self.text, self.settings.translation_target)
+        self.api.translate(self.generation, self.text, self.target)
         self.changed.emit()
 
     def _completed(self, generation, result, error):
@@ -134,6 +120,20 @@ class TranslationController(QObject):
             return
         self.result, self.error = result, error
         self.phase = 'error' if error else 'ready'
+        self.changed.emit()
+
+    def silence_output_copy(self,text):
+        """Silence the next matching copy from either translator pane.
+
+        There is no expiry timer: native clipboard observation can be delayed
+        while another program owns it. Any different copy clears the marker.
+        """
+        if self.closed:return
+        normalized=copied_text(('text',{'text':text}))
+        self._silent_copy_digest=hashlib.sha256(normalized.encode('utf8')).digest() if normalized else None
+        self.generation+=1;self.api.cancel();self.copy_timer.stop();self._copy_digest=None
+        self.phase='idle';self.text=self.result=self.error=''
+        if self.notice:self.notice.dismiss()
         self.changed.emit()
 
     def copy_result(self):
@@ -145,6 +145,7 @@ class TranslationController(QObject):
             self.changed.emit()
             return
         self._copy_digest = hashlib.sha256(self.result.strip().encode('utf-8')).digest()
+        self._silent_copy_digest = self._copy_digest
         self.copy_timer.start(COPY_ACK_TIMEOUT_MS)
         mime = QMimeData()
         mime.setText(self.result)
@@ -178,8 +179,5 @@ class TranslationController(QObject):
         self.api.cancel()
         if self._transport is not None:self._transport.close()
         self.copy_timer.stop()
-        for job in self.jobs:
-            job.cancel.set()
-        self.pool.clear()
         if self.notice:
             self.notice.supersede()

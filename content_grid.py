@@ -25,7 +25,7 @@ except ImportError:
 
 
 GRID_CARD_HEIGHT_PX=136
-GRID_COLUMN_WIDTH_PX=144
+GRID_COLUMN_WIDTH_PX=174
 GRID_CARD_MIN_WIDTH_PX=GRID_COLUMN_WIDTH_PX
 
 
@@ -67,7 +67,23 @@ class IconItem(QWidget):
         self.remove_button.setAccessibleName("从搁架移除 " + self.title)
         self.remove_button.clicked.connect(lambda: self.popup.remove_path(self.ref))
         self.remove_button.hide()
+        self.pin_button=ToolbarButton('star',self,motion=popup.shelf.manager.motion);self.pin_button.setFixedSize(24,24);self.pin_button.setProperty('glyphSize',14)
+        self.pin_button.clicked.connect(lambda:self.popup.toggle_pin(self.ref));self.pin_button.hide()
+        self.refresh_pin()
         self.refresh_upload_time()
+
+    def refresh_pin(self):
+        pinned=getattr(self.popup,'is_pinned',lambda ref:False)(self.ref)
+        self.pin_button.set_glyph('star-filled' if pinned else 'star');self.pin_button.set_glyph_tint('#E9AF20' if pinned else None)
+        self.pin_button.setToolTip('取消星标置顶' if pinned else '星标置顶');self.pin_button.setAccessibleName(self.pin_button.toolTip()+' '+self.title)
+        self._refresh_actions();self.update()
+
+    def _refresh_actions(self):
+        hovered=self.underMouse();focused=self.hasFocus() and self._keyboard_focus
+        self.remove_button.setVisible(self._selected or hovered or focused or self.remove_button.hasFocus())
+        if hasattr(self,'pin_button'):
+            self.pin_button.setVisible(getattr(self.popup,'is_pinned',lambda ref:False)(self.ref) or hovered or focused or self.pin_button.hasFocus())
+            self.pin_button.move((self.width()-52)//2+40,4)
 
     def refresh_upload_time(self):
         from reference_widgets import item_detail
@@ -85,7 +101,7 @@ class IconItem(QWidget):
         self.title=self.popup.shelf.content.title(self.ref)
         self.setAccessibleName(self.title)
         self.remove_button.setAccessibleName('从搁架移除 '+self.title)
-        self.refresh_cloud_status();self.refresh_upload_time();self.update()
+        self.refresh_cloud_status();self.refresh_upload_time();self.refresh_pin();self.update()
 
     def refresh_cloud_status(self):
         lookup = getattr(self.popup, 'cloud_status', None)
@@ -102,6 +118,7 @@ class IconItem(QWidget):
         if self._selected!=value:
             self._selected=value;self.remove_button.set_glyph_tint(None)
             self.remove_button.setProperty('inverseOnSelection',False);self.update()
+        self._refresh_actions()
 
     def _refresh_selection(self):
         for item in self.popup.rows_body.findChildren(QWidget, options=Qt.FindChildOption.FindDirectChildrenOnly):
@@ -121,13 +138,13 @@ class IconItem(QWidget):
             from ui_transitions import DwellHint
             self._dwell_hint=DwellHint(self)
         if self.popup.shelf.manager.motion:self._dwell_hint.enter()
-        self.remove_button.show()
+        self.remove_button.show();self.pin_button.show()
         self.popup.shelf.touch()
         self.motion.animate({"hover": 1}, response=.14, damping=1)
         super().enterEvent(event)
 
     def leaveEvent(self, event):
-        self.remove_button.setVisible(self.hasFocus() and self._keyboard_focus)
+        self._refresh_actions()
         self.motion.animate({"hover": 0}, response=.14, damping=1)
         super().leaveEvent(event)
 
@@ -202,14 +219,15 @@ class IconItem(QWidget):
 
     def resizeEvent(self,event):
         if hasattr(self,'remove_button'):self.remove_button.move(self.width()-36,4)
+        if hasattr(self,'pin_button'):self.pin_button.move((self.width()-52)//2+40,4)
         super().resizeEvent(event)
 
     def focusInEvent(self,event):
         self._keyboard_focus=event.reason() in (Qt.TabFocusReason,Qt.BacktabFocusReason,Qt.ShortcutFocusReason)
-        self.remove_button.setVisible(self._keyboard_focus);self.update();super().focusInEvent(event)
+        self._refresh_actions();self.update();super().focusInEvent(event)
 
     def focusOutEvent(self,event):
-        self._keyboard_focus=False;self.remove_button.setVisible(self.underMouse());self.update();super().focusOutEvent(event)
+        self._keyboard_focus=False;self._refresh_actions();self.update();super().focusOutEvent(event)
 
     def contextMenuEvent(self, event):
         if hasattr(self.popup,'show_item_menu'):
@@ -266,12 +284,12 @@ class IconItem(QWidget):
                               None if actual else ink(checkbox_border))
         if actual:
             painter.setPen(QPen(QColor(c['on_action']),1.8,Qt.SolidLine,Qt.RoundCap,Qt.RoundJoin));painter.drawLine(QPointF(16,19),QPointF(18,22));painter.drawLine(QPointF(18,22),QPointF(23,16))
-        art=thumbnail(self.popup.shelf,self.ref,44,self.devicePixelRatioF());x=(self.width()-44)//2
+        art=thumbnail(self.popup.shelf,self.ref,52,self.devicePixelRatioF());x=(self.width()-52)//2
         lift=2*getattr(getattr(self,'_dwell_hint',None),'value',0.)
         state=getattr(self.popup.shelf.content,'transfers',{}).get(self.ref)
-        painter.drawPixmap(QPointF(x,13-lift),art);draw_status(painter,QRectF(x+26,39-lift,18,18),self.cloud_status,state)
+        painter.drawPixmap(QPointF(x,11-lift),art);draw_status(painter,QRectF(x+34,45-lift,18,18),self.cloud_status,state)
         if thumbnail_transfer_progress_visible(state):
-            draw_progress_badge(painter,QRectF(x+47,40,16,16),state)
+            draw_progress_badge(painter,QRectF(x+55,46,16,16),state)
         font=QFont(painter.font());font.setPixelSize(12);set_ui_weight(font,600);painter.setFont(font);painter.setPen(QColor(c['grid_selected_text'] if actual else c['text']))
         painter.drawText(QRectF(12,68,self.width()-24,18),Qt.AlignCenter,painter.fontMetrics().elidedText(self.title.replace('\n',' '),Qt.ElideRight,self.width()-24))
         font.setPixelSize(10);set_ui_weight(font,400);painter.setFont(font);painter.setPen(QColor(c['file_description']))

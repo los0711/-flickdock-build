@@ -13,7 +13,7 @@ import math
 
 from PySide6.QtCore import QObject, QEvent, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, QVariantAnimation, Signal
 from PySide6.QtGui import QColor, QFont, QFontMetricsF, QIcon, QPalette, QImage, QPainter, QPainterPath, QPen, QPixmap, QTextDocument, QTextOption, QTransform
-from PySide6.QtWidgets import (QAbstractButton, QLabel, QPushButton, QWidget, QFrame, QHBoxLayout,
+from PySide6.QtWidgets import (QLabel, QPushButton, QWidget, QFrame, QHBoxLayout,
     QVBoxLayout, QScrollArea, QLineEdit, QProgressBar, QButtonGroup, QSizePolicy, QGridLayout,
     QStackedWidget, QPlainTextEdit, QTextEdit, QCheckBox, QApplication, QDialog, QRubberBand)
 
@@ -43,6 +43,7 @@ ICON_TEXT_LEFT_RESERVE_PX = 56
 ICON_TEXT_MEASURE_SAFETY_PX = 2
 PROFILE_TEXT_RISE_PX = 1
 EMPTY_DROP_RADIUS_PX = RADIUS_PANEL_PX
+COMPACT_EMPTY_LABEL = '拖入文件'
 PREVIEW_INFO_HORIZONTAL_PADDING_PX = 12
 PREVIEW_INFO_VERTICAL_PADDING_PX = 8
 PREVIEW_INFO_BOTTOM_PADDING_PX = 5
@@ -126,7 +127,7 @@ def css(widget, dark, light=None):
     # Resolve the source's real 400/500/600/700 weights in the selected OS face.
     if QApplication.instance():
         from native_ui_common import font_css_stack
-        family=font_css_stack(for_button=isinstance(widget,QAbstractButton),technical=bool(widget.property('flickdockTechnicalFont')))
+        family=font_css_stack(technical=bool(widget.property('flickdockTechnicalFont')))
         dark=dark.replace("'FlickDock UI'",family)
         if light is not None:light=light.replace("'FlickDock UI'",family)
     widget._reference_style=(readable_qss(dark), readable_qss(light if light is not None else dark))
@@ -263,8 +264,8 @@ class IconTextButton(QPushButton):
             fill=(c['control_pressed'] if down else c['control_hover'] if hover else 'transparent') if enabled and not self.isChecked() else 'transparent'
         elif not enabled:
             fill='transparent' if self.property('iconOnly') else c['control']
-        elif self.isChecked():fill=c['selected']
         elif variant=='primary':fill=c['action_pressed'] if down else c['action_hover'] if hover else c['action']
+        elif self.isChecked():fill=c['selected']
         elif variant=='danger':fill='rgba(255,69,58,78)' if down else 'rgba(255,69,58,58)' if hover else 'rgba(255,69,58,30)'
         elif variant in ('secondary','secondary_blue'):
             fill=c['control_pressed'] if down else c['control_hover'] if hover else c['control']
@@ -374,8 +375,8 @@ class IconTextButton(QPushButton):
             painter.translate(-icon_x-size.width()/2,-icon_y-size.height()/2)
         art.paint(painter,QRect(round(icon_x),icon_y,size.width(),size.height()),Qt.AlignCenter,mode)
         painter.restore()
-        tint=(c['on_action'] if active else navigation_ink if navigation else c['text'] if self.isChecked() else
-              c['on_action'] if variant=='primary' else c['red'] if variant=='danger' else c['text'] if variant=='secondary' else c['secondary'])
+        tint=(c['on_action'] if active or variant=='primary' else navigation_ink if navigation else
+              c['text'] if self.isChecked() or variant=='secondary' else c['red'] if variant=='danger' else c['secondary'])
         painter.setPen(QColor(tint if self.isEnabled() else c['muted']))
         text_x=x if trailing else x+size.width()+gap
         painter.drawText(QRectF(text_x,0,painter.fontMetrics().horizontalAdvance(text)+2,self.height()),Qt.AlignLeft|Qt.AlignVCenter,text)
@@ -578,7 +579,8 @@ def button(value='',glyph='',variant='quiet',parent=None,*,control_type=IconText
         c=colors(theme)
         if variant=='primary':c.update({key:'@fd_'+key+'@' for key in ('action','on_action','action_hover','action_pressed')})
         ink=c['on_action'] if variant=='primary' else c['red'] if variant=='danger' else c['link'] if variant in ('link','secondary_blue') else c['secondary'] if variant=='quiet' else c['text']
-        sources.append(f"QPushButton{{background:transparent;color:{ink};border:0;padding:5px 12px;font:500 12px 'FlickDock UI';}} QPushButton:checked{{color:{c['text']};}} QPushButton:disabled{{color:{c['muted']};}}")
+        checked=ink if variant=='primary' else c['text']
+        sources.append(f"QPushButton{{background:transparent;color:{ink};border:0;padding:5px 12px;font:500 12px 'FlickDock UI';}} QPushButton:checked{{color:{checked};}} QPushButton:disabled{{color:{c['muted']};}}")
     css(widget,*sources)
     if glyph:
         widget._reference_icon=(glyph,'secondary')
@@ -634,7 +636,14 @@ class ToolbarButton(FeedbackButton):
         c=palette();v=self.spring.values
         center=QRectF(self.rect()).center()
         p.translate(center);p.scale(v['scale']*self._presentation_scale[0],v['scale']*self._presentation_scale[1]);p.translate(-center)
-        if self.isEnabled() and (self.isChecked() or v['hover']>.01 or v['down']>.01 or self.isDown()):
+        if self.property('controlFrame'):
+            fill=c['control']
+            if self.isEnabled():
+                if self.isDown() or v['down']>.1:fill=c['control_pressed']
+                elif self.isChecked():fill=c['selected']
+                elif self.underMouse() or v['hover']>.01:fill=c['control_hover']
+            paint_rounded_surface(p,self.rect(),RADIUS_CONTROL_PX,ink(fill),ink(c['border']))
+        elif self.isEnabled() and (self.isChecked() or v['hover']>.01 or v['down']>.01 or self.isDown()):
             fill=QColor(255,255,255,38) if self.property('inverseOnSelection') else ink(c['control_pressed'] if self.isDown() or v['down']>.1 else c['selected'] if self.isChecked() else c['control_hover'])
             if not self.isChecked():fill.setAlphaF(fill.alphaF()*min(1,max(v['hover']+v['down'],1. if self.isDown() else 0.)))
             paint_rounded_surface(p,QRectF(self.rect()).adjusted(1,1,-1,-1),RADIUS_CONTROL_PX,fill)
@@ -1229,6 +1238,8 @@ class ThumbnailLabel(TransferIconLabel):
         size=min(self.width(),self.height());art=thumbnail(self.shelf,self.ref,size,self.devicePixelRatioF())
         p.drawPixmap(0,0,art)
         draw_status(p,QRectF(size-18,size-18,18,18),self.cloud_status,self.repository.transfers.get(self.ref))
+        pins=getattr(self.shelf,'file_pins',None)
+        if not self.property('suppressPinBadge') and pins and pins.contains(self.ref):icon('star-filled','#E9AF20').paint(p,QRect(size-14,0,14,14))
         p.end()
 
 
@@ -1237,6 +1248,8 @@ class MiniStack(StackTile):
         super().__init__(parent,motion)
         self.shelf=shelf
         self._card_art={};self._card_dpr=0;self._card_theme=None
+        self._card_rim=QPainterPath()
+        self._card_rim.addRoundedRect(QRectF(.5,.5,191,127),RADIUS_PANEL_PX,RADIUS_PANEL_PX)
         from native_ui_common import DropBorderMotion
         self.border_motion=DropBorderMotion(self)
 
@@ -1317,11 +1330,18 @@ class MiniStack(StackTile):
             self.border_motion.paint(p,path,dark=ui_theme.current_theme()=='dark',radius=EMPTY_DROP_RADIUS_PX,idle_fill=ink(palette()['card']))
             icon('upload',palette()['secondary']).paint(p,QRect(round(r.center().x()-12),round(r.center().y()-31),24,24))
             f=p.font()
-            f.setPixelSize(13);p.setFont(f);p.setPen(QColor(palette()['text']));p.drawText(r.adjusted(0,34,0,0),Qt.AlignCenter,'点击选择文件');p.end();return
+            f.setPixelSize(13);p.setFont(f);p.setPen(QColor(palette()['text']));p.drawText(r.adjusted(0,34,0,0),Qt.AlignCenter,COMPACT_EMPTY_LABEL);p.end();return
         if self._card_dpr!=self.devicePixelRatioF() or self._card_theme!=ui_theme.current_theme():self._cache_cards()
+        reveal=getattr(QApplication.instance(),'_flickdock_border_reveal',None)
         for ref,transform,opacity,front in self.presentation_cards():
             p.save();p.setOpacity(opacity);p.setTransform(transform,True)
             self.paint_card(p,ref,front);p.restore()
+            if reveal is not None:
+                # Cached card art is painted onto a pixmap, so the app's
+                # pointer light needs the live, transformed card outline.
+                p.save();p.setOpacity(opacity)
+                reveal.paint_stroke(p,transform.map(self._card_rim),1/self.devicePixelRatioF())
+                p.restore()
         p.end()
 
 
@@ -1329,7 +1349,7 @@ def build_overview(view,preview_type):
     """Build the HTML's 52px toolbar and 210 / flexible / 340 split view."""
     view.setObjectName('referenceOverview')
     css(view,*[f"QFrame#referenceOverview{{background:{colors(t)['background']};border:0;}}" for t in ('dark','light')])
-    root=QVBoxLayout(view);root.setContentsMargins(0,0,0,0);root.setSpacing(0)
+    root=QVBoxLayout(view);root.setContentsMargins(1,1,1,1);root.setSpacing(0)
     view.header=QFrame(view);view.header.setFixedHeight(SHELF_OVERVIEW_HEADER_HEIGHT_PX)
     css(view.header,*[f"QFrame{{background:{colors(t)['surface']};border:0;border-bottom:1px solid {colors(t)['divider']};}}" for t in ('dark','light')])
     head=QHBoxLayout(view.header);head.setContentsMargins(0,0,0,0);head.setSpacing(0)
@@ -1377,24 +1397,25 @@ def build_overview(view,preview_type):
     view.sidebar.setObjectName('referenceSidebar');view.sidebar.setFixedWidth(210)
     css(view.sidebar,*[f"QFrame#referenceSidebar{{background:{colors(t)['sidebar']};border:0;border-right:1px solid {colors(t)['divider']};}}" for t in ('dark','light')])
     side=QVBoxLayout(view.sidebar);side.setContentsMargins(10,10,10,10);side.setSpacing(2)
-    view.category_group=QButtonGroup(view);view.category_group.setExclusive(True);view.category_buttons={};view.sidebar_buttons={};view.nav_counts={}
-    glyphs={'all':'all','images':'image','video':'video','audio':'audio','text':'text','files':'file','links':'web','uploading':'transferring'}
-    for key,title in view.CATEGORIES:
-        control=button(title,glyphs[key],parent=view.sidebar);control.setCheckable(True);control.setFixedHeight(34)
+    view.scope_group=QButtonGroup(view);view.scope_group.setExclusive(True);view.category_buttons={};view.sidebar_buttons={};view.nav_counts={}
+    glyphs={'all':'all','pinned':'star','uploading':'transferring'}
+    for key,title in view.SCOPES:
+        control=button(title,glyphs[key],parent=view.sidebar);control.setCheckable(True);control.setFixedHeight(40)
         control.setProperty('leftAligned',True)
         css(control,*[f"QPushButton{{background:transparent;color:{colors(t)['secondary']};border:0;text-align:left;padding:7px 13px;font:400 12px 'FlickDock UI';}} QPushButton:checked,QPushButton:checked:hover{{color:@fd_on_action@;font-weight:400;}}" for t in ('dark','light')])
-        control.clicked.connect(lambda checked=False,key=key:view.set_category(key));view.category_group.addButton(control);side.addWidget(control);view.sidebar.add_selection_button(control)
-        count=label('',11,400,'muted',control,control_type=RoundedBadge);count.setAlignment(Qt.AlignCenter);count.setGeometry(145,7,28,20);count.setAttribute(Qt.WA_TransparentForMouseEvents)
+        control.clicked.connect(lambda checked=False,key=key:view.set_scope(key));view.scope_group.addButton(control);side.addWidget(control);view.sidebar.add_selection_button(control)
+        count=label('',11,400,'muted',control,control_type=RoundedBadge);count.setAlignment(Qt.AlignCenter);count.setGeometry(145,10,28,20);count.setAttribute(Qt.WA_TransparentForMouseEvents)
         view.nav_counts[key]=count;view.category_buttons[key]=control;view.sidebar_buttons[key]=control
     view.transfer_badge=view.nav_counts['uploading']
     view.sidebar.installEventFilter(_SidebarHitBridge(view))
     side.addStretch(1)
     view.wan_nav=button('远程传输','web','secondary',view.sidebar);view.wan_nav.hide()
+    view.translator_nav=button('翻译器','translate',variant='text',parent=view.sidebar);view.translator_nav.setFixedHeight(34);view.translator_nav.clicked.connect(lambda:view.shelf.manager.show_translator_dialog());side.addWidget(view.translator_nav)
     view.video_nav=button('视频解析','video',variant='text',parent=view.sidebar);view.video_nav.setFixedHeight(34);view.video_nav.clicked.connect(lambda:view.shelf.manager.show_video_dialog());side.addWidget(view.video_nav)
     view.lan_nav=button('文件互传','nearby',variant='text',parent=view.sidebar);view.lan_nav.setFixedHeight(34);view.lan_nav.clicked.connect(lambda:view.shelf.manager.show_transfer_dialog());side.addWidget(view.lan_nav)
     view.settings_nav=button('设置','settings',variant='text',parent=view.sidebar);view.settings_nav.setFixedHeight(34);view.settings_nav.clicked.connect(lambda:view.shelf.manager.show_settings());side.addWidget(view.settings_nav)
-    for control in (view.video_nav,view.lan_nav,view.settings_nav):control.setProperty('sidebarUtility',True)
-    for control in (view.wan_nav,view.video_nav,view.lan_nav,view.settings_nav):
+    for control in (view.translator_nav,view.video_nav,view.lan_nav,view.settings_nav):control.setProperty('sidebarUtility',True);control.setFixedHeight(40)
+    for control in (view.wan_nav,view.translator_nav,view.video_nav,view.lan_nav,view.settings_nav):
         control.setProperty('leftAligned',True)
         old=control._reference_style
         css(control,*[s.replace('padding:4px 11px;','padding:4px 12px;text-align:left;') for s in old])
@@ -1432,15 +1453,32 @@ def build_overview(view,preview_type):
     view.select_all_button.setFixedWidth(44)
     view.paste_button=button('粘贴',parent=view.selection_bar);view.paste_button.hide()
     mid.addWidget(view.selection_bar)
+    view.type_bar=QScrollArea(view.middle);view.type_bar.setWidgetResizable(True);view.type_bar.setFrameShape(QFrame.NoFrame);view.type_bar.setFixedHeight(38)
+    view.type_bar.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff);view.type_bar.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+    css(view.type_bar,'QScrollArea{background:transparent;border:0;} QScrollBar:horizontal{height:4px;background:transparent;} QScrollBar::handle:horizontal{background:rgba(128,128,128,70);border-radius:2px;min-width:24px;} QScrollBar::add-line:horizontal,QScrollBar::sub-line:horizontal{width:0;} QScrollBar::add-page:horizontal,QScrollBar::sub-page:horizontal{background:transparent;}')
+    view.type_body=SelectionSurface(view.type_bar,color_role='selected',border_role=None,radius=8,motion=lambda:view.shelf.manager.motion)
+    type_line=QHBoxLayout(view.type_body);type_line.setContentsMargins(12,4,12,8);type_line.setSpacing(4)
+    view.category_group=QButtonGroup(view);view.category_group.setExclusive(True);view.type_buttons={}
+    for key,title in view.TYPES:
+        control=button(title+' 0',parent=view.type_body);control.setCheckable(True);control.setFixedHeight(26)
+        css(control,*[f"QPushButton{{background:transparent;color:{colors(t)['secondary']};border:0;padding:3px 8px;font:11px 'FlickDock UI';}} QPushButton:checked{{color:{colors(t)['text']};}}" for t in ('dark','light')])
+        control.clicked.connect(lambda checked=False,key=key:view.set_type(key));view.category_group.addButton(control);type_line.addWidget(control);view.type_body.add_selection_button(control)
+        view.type_buttons[key]=control
+    type_line.addStretch(1);view.type_bar.setWidget(view.type_body);view.type_body.setAutoFillBackground(False);view.type_bar.viewport().setAutoFillBackground(False)
+    view.scope_buttons=dict(view.sidebar_buttons)
+    view.category_buttons.update(view.type_buttons);view.category_buttons['all']=view.scope_buttons['all']
+    view.sidebar_buttons.update({key:control for key,control in view.type_buttons.items() if key!='all'})
+    mid.addWidget(view.type_bar)
+    view.pin_error=label('',10,400,'red',view.middle);view.pin_error.setWordWrap(True);view.pin_error.hide();mid.addWidget(view.pin_error)
     view.transfer_summary=QWidget(view.middle);summary=QHBoxLayout(view.transfer_summary);summary.setContentsMargins(16,10,16,10)
     view.transfer_count=label('',12,600,parent=view.transfer_summary);view.transfer_eta=label('',11,400,'link',view.transfer_summary)
     view.transfer_bar=RoundedProgressBar(view.transfer_summary);view.transfer_bar.setFixedHeight(6)
     css(view.transfer_bar,'QProgressBar{border:0;background:transparent;}')
     summary.addWidget(view.transfer_count);summary.addWidget(view.transfer_bar,1);summary.addWidget(view.transfer_eta);mid.addWidget(view.transfer_summary);view.transfer_summary.hide()
-    view.scroll=QScrollArea(view.middle);view.scroll.setWidgetResizable(True);view.scroll.setFrameShape(QFrame.NoFrame);view.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+    view.scroll=QScrollArea(view.middle);view.scroll.setWidgetResizable(True);view.scroll.setFrameShape(QFrame.NoFrame);view.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff);view.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
     view.scroll.setVerticalScrollBar(RoundedScrollBar(Qt.Vertical,view.scroll,thumb_color=lambda:'#49494E' if ui_theme.current_theme()=='dark' else '#C8C8C8'))
     css(view.scroll,'QScrollArea{background:transparent;border:0;} QScrollBar:vertical{width:6px;background:transparent;} QScrollBar::handle:vertical{background:transparent;min-height:24px;} QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;}')
-    view.rows_body=QWidget();view.rows_layout=QVBoxLayout(view.rows_body);view.rows_layout.setContentsMargins(12,12,12,12);view.rows_layout.setSpacing(6);view.scroll.setWidget(view.rows_body)
+    view.rows_body=QWidget();view.rows_layout=QVBoxLayout(view.rows_body);view.rows_layout.setContentsMargins(12,8,12,12);view.rows_layout.setSpacing(6);view.scroll.setWidget(view.rows_body)
     # QScrollArea enables autoFillBackground on setWidget; its inherited
     # transparent palette otherwise clears a hole in transition snapshots.
     view.rows_body.setAutoFillBackground(False);mid.addWidget(view.scroll,1)

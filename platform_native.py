@@ -210,6 +210,36 @@ def raise_shelf_for_reveal(widget, *, platform=None):
     return True
 
 
+def set_window_topmost(widget, enabled, *, platform=None):
+    """Toggle the native topmost level without recreating the window."""
+    platform = sys.platform if platform is None else platform
+    if platform == 'win32':
+        try:
+            from ctypes import wintypes
+            user32 = ctypes.WinDLL('user32', use_last_error=True)
+            set_window_pos = user32.SetWindowPos
+            set_window_pos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int,
+                                       ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.UINT]
+            set_window_pos.restype = wintypes.BOOL
+            insert_after = -1 if enabled else -2
+            return bool(set_window_pos(int(widget.winId()), insert_after, 0, 0, 0, 0, 0x0213))
+        except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
+            return False
+    if platform == 'darwin':
+        try:
+            import AppKit
+            import objc
+            view = objc.objc_object(c_void_p=ctypes.c_void_p(int(widget.winId())))
+            window = view.window()
+            if window is None:
+                return False
+            window.setLevel_(AppKit.NSFloatingWindowLevel if enabled else AppKit.NSNormalWindowLevel)
+            return True
+        except (AttributeError, ImportError, OSError, RuntimeError, TypeError, ValueError):
+            return False
+    return False
+
+
 def lower_shelf_after_reveal(widget, *, platform=None):
     """Restore ordinary window ordering as soon as the reveal ends."""
     platform = sys.platform if platform is None else platform

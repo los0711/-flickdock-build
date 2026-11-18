@@ -9,9 +9,10 @@ from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QLabel
 
 from flickdock_icons import document_pixmap
+from native_ui_common import RADIUS_WINDOW_PX
 
 FILE_ART_SIZE_PX = 32
-TRANSFER_CORNER_RADIUS_PX = 10
+TRANSFER_CORNER_RADIUS_PX = RADIUS_WINDOW_PX
 
 
 class FileArtwork(QLabel):
@@ -46,10 +47,10 @@ class FileArtwork(QLabel):
         self.setPixmap(artwork)
 
 
-def reveal_file(path):
+def reveal_file(path,*,check_exists=True):
     """Select the actual transferred file in Explorer/Finder, without a shell."""
     source = Path(path)
-    if not source.is_absolute() or not source.exists():
+    if not source.is_absolute() or check_exists and not source.exists():
         raise FileNotFoundError('文件已移动或删除，无法在文件夹中显示。')
     if sys.platform == 'win32':
         subprocess.Popen(['explorer.exe', '/select,', str(source)], creationflags=subprocess.CREATE_NO_WINDOW)

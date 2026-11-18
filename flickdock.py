@@ -3,6 +3,19 @@ from __future__ import annotations
 
 import sys
 
+if __name__=='__main__' and '--edge-icon' in sys.argv:
+    from edge_native_icons import helper_main
+    icon_argument=sys.argv.index('--edge-icon')+1
+    raise SystemExit(helper_main(sys.argv[icon_argument]) if icon_argument<len(sys.argv) else 2)
+
+if __name__=='__main__' and '--verify-magnetic' in sys.argv:
+    from verify_magnetic import run as verify_magnetic
+    raise SystemExit(verify_magnetic(sys.argv))
+
+if __name__=='__main__' and '--verify-edge-native' in sys.argv:
+    from verify_edge_native import main as verify_edge_native
+    raise SystemExit(verify_edge_native())
+
 if __name__=='__main__' and '--video-worker' in sys.argv:
     from video_worker import run
     raise SystemExit(run())
@@ -119,6 +132,7 @@ class ShelfManager:
         self.settings_edge_hint=SettingsEdgeHint(self)
         self.lan_dialog = None
         self.video_dialog = None
+        self.translator_dialog = None
         self.wan_dialog = None
         self.updates = UpdateController(APP_VERSION, BASE, settings=self.settings,
                                         quit_callback=self.quit, is_busy=self._update_busy)
@@ -162,6 +176,13 @@ class ShelfManager:
         app.primaryScreenChanged.connect(self._refresh_displays)
         from drop_bridge import DropBridge
         self.drop_bridge=DropBridge(self)
+        from edge_absorb import EdgeAbsorb
+        from edge_magnetic_model import DESKTOP_MAGNETIC_CONFIG
+        self.edge_absorb=EdgeAbsorb(self,config=DESKTOP_MAGNETIC_CONFIG)
+        from edge_file_drag import EdgeFileDrag
+        self.edge_file_drag=EdgeFileDrag(self.edge_absorb,self._magnetic_drop,
+            allowed=self._magnetic_allowed,note=self._note_ui,on_file_move=self._magnetic_hover,
+            preview_regions=self._magnetic_preview_regions,on_preview_drop=self._magnetic_preview_drop)
         self.drag_gate = ContentDragGate(self._content_type_ready,self._probe_drop,lambda:self.outgoing_drag)
         self.tray = QSystemTrayIcon(menu_bar_icon() if sys.platform=='darwin' else app_icon(), app)
         self.tray.setToolTip(f"FlickDock {APP_VERSION} · 文件搁架")
@@ -288,6 +309,7 @@ class ShelfManager:
                         (self.clipboard_sync._native_reader.process is not None or self.clipboard_sync._native_reader.loading))
                 or bool(self.video_controller.jobs)
                 or self.translation.busy
+                or bool(self.translator_dialog and (self.translator_dialog.session.busy or self.translator_dialog.speech.active))
                 or self.settings_open()
                 or bool(getattr(self,'_capacity_jobs',()) or getattr(self,'_large_intake_jobs',()))
                 or bool(QApplication.mouseButtons())
@@ -560,6 +582,8 @@ class ShelfManager:
         self.active_shelf.show_transient()
 
     def show_docked(self):
+        from display_triggers import trigger_active
+        if not trigger_active(self.edge.values()):return
         if self.settings_open():self.settings_edge_hint.show_hint();return
         if self._dock_preview_values is not None or confirmation_active(self.shelf): return
         if self.active_shelf is None or not self.active_shelf.has_files():
@@ -735,6 +759,20 @@ class ShelfManager:
         self.shelf._release_reveal_level()
         self.video_dialog.refresh();self._center_dialog(self.video_dialog);self.video_dialog.show();self.video_dialog.raise_();self.video_dialog.activateWindow()
 
+    def show_translator_dialog(self,*,text=None,target=None):
+        self._note_ui('translator.open')
+        from translator_panel import TranslatorDialog
+        if self.translator_dialog is None:self.translator_dialog=TranslatorDialog(self)
+        self.shelf._release_reveal_level()
+        dialog=self.translator_dialog
+        if not dialog.isVisible():self._center_dialog(dialog)
+        if dialog.isMinimized():dialog.showNormal()
+        elif not dialog.isVisible():dialog.show()
+        if text is not None or target is not None:
+            dialog.session.open_input(text,target)
+            if text is not None:dialog.source_editor.setFocus()
+        dialog.raise_();dialog.activateWindow()
+
     def queue_transfer_paths(self,mode,paths):
         self._show_transfer_dialog(self.wan if mode=='wan' else self.lan)
         self.lan_dialog.panel.queue_paths(paths)
@@ -904,6 +942,9 @@ class ShelfManager:
         self._applied_settings=current
         changed={key for key in current if previous is None or previous.get(key)!=current[key]}
         if not changed:return
+        if 'magnetic_edges' in changed:
+            self.edge_file_drag.cancel()
+            self.edge_absorb.configure_regions(self.settings.magnetic_edges)
         if changed & {'clipboard_sync_enabled','clipboard_notice_seen'}:
             self.clipboard_sync.set_enabled(self._clipboard_runtime_enabled())
             if not self._clipboard_runtime_enabled() and hasattr(self,'clipboard_notice'):self.clipboard_notice.supersede()
@@ -1158,8 +1199,45 @@ class ShelfManager:
             self._content_drag_validated(position)
 
     def _probe_drop(self, mime, position):
+        # Preserve the shake probe's rare immediate drop, but never let its
+        # broader text/image MIME validation authorize the file-only field.
+        from edge_file_drag import file_urls
+        if file_urls(mime) and any(rect.contains(position) for rect in self._magnetic_preview_regions()):
+            return self._magnetic_preview_drop(mime,position)
+        if file_urls(mime) and self.edge_absorb.band(position) is not None:
+            if self._magnetic_drop(mime,position):
+                self.edge_absorb.release(position,urls=file_urls(mime))
+                return True
         if self.auto_shown is None:return False
         return bool(self.auto_shown and self.auto_shown.receive_mime("permanent", mime))
+
+    def _magnetic_allowed(self):
+        return not self._quitting and not self.outgoing_drag and not self.settings_open()
+
+    def _magnetic_preview_regions(self):
+        return tuple(shelf.visual_geometry() for shelf in self.shelves if shelf.isVisible() and not shelf.expanded)
+
+    def _magnetic_hover(self,position):
+        from display_triggers import trigger_active
+        if self.edge_suppressed:return
+        for edge in self.edges.values():
+            if trigger_active(edge.values()) and edge.activation_region().contains(position):
+                self.edge=edge
+                if not self.shelf.isVisible() or self.shelf.visible_state=='hiding':self.show_docked()
+                break
+
+    def _magnetic_preview_drop(self,mime,position):
+        if not self._magnetic_allowed():return False
+        for shelf in self.shelves:
+            if shelf.isVisible() and not shelf.expanded and shelf.visual_geometry().contains(position):
+                return bool(shelf.receive_mime('permanent',mime,source='drop'))
+        return False
+
+    def _magnetic_drop(self,mime,position):
+        from edge_file_drag import file_urls
+        if not self._magnetic_allowed() or not file_urls(mime) or not self.edge_absorb.armed(position):
+            return False
+        return bool(self.shelf.receive_mime('permanent',mime,source='drop',reveal=False))
 
     def _refresh_fullscreen_edges(self,now):
         if now<getattr(self,'_next_fullscreen_edge_check',0.) or not native_input_available():return
@@ -1186,10 +1264,12 @@ class ShelfManager:
             if edge.values()['enabled'] and edge.display.geometry().contains(pos):self.edge=edge;break
         self.drop_bridge.sync(self.shelf,dragging=bool(mouse_buttons_mask()&1))
         if self.settings_open():
+            self.edge_file_drag.update_pointer(pos,bool(mouse_buttons_mask()&1),eligible=False)
             if self._settings_prompt_active():
                 self.dock_preview.hide();self.settings_edge_hint.hide()
                 self.reset_drag_gesture();self.was_down=bool(mouse_buttons_mask()&1);return
-            if self.edge.values()['enabled'] and (self.edge.activation_region().contains(pos) or self.settings_edge_hint.contains_pointer(pos)):
+            from display_triggers import trigger_active
+            if trigger_active(self.edge.values()) and (self.edge.activation_region().contains(pos) or self.settings_edge_hint.contains_pointer(pos)):
                 if not self.settings_edge_hint.isVisible():self.settings_edge_hint.show_hint()
             else:self.settings_edge_hint.hide()
             self.reset_drag_gesture();self.was_down=bool(mouse_buttons_mask()&1);return
@@ -1200,6 +1280,13 @@ class ShelfManager:
         native=native_input_available()
         mask=mouse_buttons_mask()
         down=bool(mask&1); new_press=bool(mask&~self._button_mask); self._button_mask=mask
+        # Pointer motion can expose the native edge destination; only its
+        # real OLE/Cocoa file events may start the independent visual field.
+        over_shelf=any(s.isVisible() and s.visual_geometry().contains(pos) for s in self.shelves)
+        over_preview=any(rect.contains(pos) for rect in self._magnetic_preview_regions())
+        self.edge_file_drag.update_pointer(pos,down,eligible=native and not self.outgoing_drag
+            and (not down or not native_window_move_active()) and (not over_shelf or over_preview))
+
         if self.edge_suppressed and not self.edge.activation_region().contains(pos): self.edge_suppressed=False
         retired_shelves=set()
         if app_deactivated:
@@ -1213,7 +1300,8 @@ class ShelfManager:
                                  and self.clipboard_preview_dialog.frameGeometry().contains(pos))):
                     shelf.hide_animated(explicit=True);retired=True;retired_shelves.add(shelf)
             if retired:self.update_handles()
-        if self.edge.isVisible() and self.edge.activation_region().contains(pos) and not self.edge_suppressed and not self.shelf.isVisible(): self.show_docked()
+        if (self.edge.isVisible() and self.edge.activation_region().contains(pos)
+                and not self.edge_suppressed and not self.shelf.isVisible()): self.show_docked()
         for shelf in self.shelves:
             if not shelf.isVisible():
                 # A tool window can disappear independently while another
@@ -1233,6 +1321,7 @@ class ShelfManager:
             in_settings=in_settings or bool(app_active and self.lan_dialog and self.lan_dialog.isVisible() and self.lan_dialog.frameGeometry().contains(pos))
             in_settings=in_settings or bool(app_active and self.wan_dialog and self.wan_dialog.isVisible() and self.wan_dialog.frameGeometry().contains(pos))
             in_settings=in_settings or bool(app_active and self.video_dialog and self.video_dialog.isVisible() and self.video_dialog.frameGeometry().contains(pos))
+            in_settings=in_settings or bool(app_active and self.translator_dialog and self.translator_dialog.isVisible() and self.translator_dialog.frameGeometry().contains(pos))
             capacity_notice=getattr(self,'cloud_capacity_notice',None)
             in_settings=in_settings or bool(capacity_notice and capacity_notice.isVisible() and capacity_notice.frameGeometry().contains(pos))
             inside=shelf.hover_region_contains(pos)
@@ -1308,6 +1397,8 @@ class ShelfManager:
         if hasattr(self,'video_watcher'):self.video_watcher.close()
         if hasattr(self,'video_controller'):self.video_controller.close()
         if self.video_dialog:self.video_dialog.close()
+        if self.translator_dialog:self.translator_dialog.shutdown()
+        if hasattr(self.shelf,'file_pins'):self.shelf.file_pins.close()
         self.pointer_paste.close()
         # No close animation is needed while the whole application is exiting.
         # Detach the hint's fade filter before closing its native window; on
@@ -1322,6 +1413,8 @@ class ShelfManager:
         self.cloud.close()
         self._note_ui('shutdown.cloud.closed')
         self.drop_bridge.hide();self.drop_bridge.deleteLater()
+        self.edge_file_drag.close()
+        self.edge_absorb.close()
         self.hotkeys.close()
         self._note_ui('shutdown.hotkeys.closed')
         if self.settings_dialog:
@@ -1361,6 +1454,9 @@ class ShelfManager:
 
 
 def main():
+    if '--verify-translator' in sys.argv:
+        from verify_translator import run
+        return run(sys.argv,load_font)
     if '--verify-notices' in sys.argv:
         from offscreen_verify import run_notices
         return run_notices(sys.argv,load_font)

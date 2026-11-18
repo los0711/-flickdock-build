@@ -37,7 +37,7 @@ FONT_FAMILY = "sans-serif"
 CARD_W, CARD_H = 332, 318
 
 
-EXPANDED_W, EXPANDED_H = 1040, 600
+EXPANDED_W, EXPANDED_H = 1124, 624
 
 
 MODES = ("permanent",)

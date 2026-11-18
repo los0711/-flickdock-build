@@ -185,7 +185,8 @@ class UpdateNotice(QWidget):
     def paintEvent(self,event):
         painter=QPainter(self);painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setPen(Qt.PenStyle.NoPen);painter.setBrush(QColor(0,0,0,150))
-        painter.drawRoundedRect(QRectF(self.rect()),16 if sys.platform=='darwin' else 10,16 if sys.platform=='darwin' else 10)
+        from native_ui_common import RADIUS_WINDOW_PX
+        painter.drawRoundedRect(QRectF(self.rect()),RADIUS_WINDOW_PX,RADIUS_WINDOW_PX)
         painter.end()
 
     def hideEvent(self,event):

@@ -23,7 +23,6 @@ from PySide6.QtWidgets import QApplication, QAbstractButton, QFrame, QHBoxLayout
 
 FONT_WEIGHT_AXIS=QFont.Tag('wght')
 FONT_TABULAR_NUMBERS=QFont.Tag('tnum')
-UI_FONT_FAMILY='JetBrains Mono'
 TECHNICAL_FONT_FAMILY='JetBrains Mono'
 BUNDLED_FONT_FILES=('JetBrainsMono-Regular.ttf','JetBrainsMono-Medium.ttf')
 RADIUS_SMALL_PX = 4
@@ -31,6 +30,7 @@ RADIUS_SUBCONTROL_PX = 6
 RADIUS_CONTROL_PX = 8
 RADIUS_CARD_PX = 12
 RADIUS_PANEL_PX = 16
+RADIUS_WINDOW_PX = 22
 SHELF_HEADER_BUTTON_SIZE_PX = 32
 SHELF_HEADER_BUTTON_GAP_PX = 6
 SHELF_HEADER_RIGHT_MARGIN_PX = 16
@@ -88,6 +88,8 @@ class DropBorderMotion(QObject):
         pen.setDashPattern([cycle*.52/width,cycle*.48/width])
         pen.setCapStyle(Qt.FlatCap);pen.setJoinStyle(Qt.RoundJoin)
         painter.setPen(pen);painter.setBrush(Qt.NoBrush);painter.drawPath(path)
+        reveal=getattr(QApplication.instance(),'_flickdock_border_reveal',None)
+        if reveal is not None:reveal.paint_stroke(painter,path,width,pen=pen)
 
 
 class PopupChevronMotion(QObject):
@@ -104,7 +106,9 @@ class PopupChevronMotion(QObject):
         if self.popup is not None:
             try:self.popup.removeEventFilter(self)
             except RuntimeError:pass
-        self.popup=popup;popup.installEventFilter(self)
+        self.popup=popup
+        if popup is not None:popup.installEventFilter(self)
+        else:self._transition(False)
 
     def _changed(self,value):self.angle=float(value);self.widget.update()
 
@@ -264,7 +268,7 @@ def pixel_aligned_border(painter, rect, width=1.0):
     return QRectF(left,top,right-left,bottom-top),logical
 
 
-def paint_rounded_surface(painter, rect, radius_logical, fill, stroke=None, stroke_px=1):
+def paint_rounded_surface(painter, rect, radius_logical, fill, stroke=None, stroke_px=1, *, border_widget=None):
     """Paint one shared AA path with its outline aligned to device pixels.
 
     The public stroke width is in physical pixels; layout and radius remain in
@@ -283,10 +287,12 @@ def paint_rounded_surface(painter, rect, radius_logical, fill, stroke=None, stro
     painter.save()
     try:
         painter.setRenderHint(QPainter.Antialiasing,True)
-        painter.fillPath(path,QBrush(fill))
+        if fill is not None:painter.fillPath(path,QBrush(fill))
         if stroke is not None:
             painter.setPen(QPen(QBrush(stroke),width));painter.setBrush(Qt.NoBrush)
             painter.drawPath(path)
+            reveal=getattr(QApplication.instance(),'_flickdock_border_reveal',None)
+            if reveal is not None and QColor(stroke).alpha():reveal.paint_stroke(painter,path,width,widget=border_widget)
     finally:painter.restore()
 
 
@@ -430,7 +436,7 @@ class _KeyboardFocusVisibility(QObject):
 
 
 def reference_font():
-    """Use the application font chosen from the HTML's platform font stack."""
+    """Return the application font chosen for this platform."""
     return QFont(QApplication.font()) if QApplication.instance() else QFont()
 
 
@@ -440,7 +446,7 @@ def _ui_weight(weight):
 
 
 def set_ui_weight(font,weight):
-    """Choose one of the bundled regular, medium and semibold faces."""
+    """Request a regular, medium or semibold UI weight."""
     value=_ui_weight(weight)
     font.setWeight(QFont.Weight(value));font.setVariableAxis(FONT_WEIGHT_AXIS,float(value))
     return font
@@ -449,25 +455,17 @@ def set_ui_weight(font,weight):
 class _FontWeightNormalizer(QObject):
     def __init__(self,parent):
         super().__init__(parent);self._updating=False
-        # YaHei UI uses the same glyph widths with vertical metrics intended
-        # for controls; limit it to Windows buttons and keep other text alone.
-        self._button_family=('Microsoft YaHei UI' if sys.platform=='win32'
-                             and 'Microsoft YaHei UI' in QFontDatabase.families() else None)
 
     def eventFilter(self,watched,event):
         if self._updating or event.type() not in (QEvent.FontChange,QEvent.Polish,QEvent.StyleChange) or not isinstance(watched,QWidget):
             return False
         font=watched.font();special=watched.property('flickdockFontWeight')
         value=int(special) if special is not None else _ui_weight(font.weight())
-        families=font.families()
-        button_font=(self._button_family is not None and isinstance(watched,QAbstractButton)
-                     and 'Microsoft YaHei' in families)
-        if int(font.weight())!=value or font.variableAxisValue(FONT_WEIGHT_AXIS)!=value or button_font:
+        if int(font.weight())!=value or font.variableAxisValue(FONT_WEIGHT_AXIS)!=value:
             self._updating=True
             try:
                 if special is None:set_ui_weight(font,value)
                 else:font.setWeight(QFont.Weight(value));font.setVariableAxis(FONT_WEIGHT_AXIS,float(value))
-                if button_font:font.setFamilies([self._button_family if name=='Microsoft YaHei' else name for name in families])
                 watched.setFont(font)
             finally:self._updating=False
         return False
@@ -494,15 +492,12 @@ def apply_widget_theme_style(widget,style):
         for child in [widget,*widget.findChildren(QWidget)]:normalizer.eventFilter(child,event)
 
 
-def font_css_stack(*,for_button=False,technical=False):
+def font_css_stack(*,technical=False):
     """Keep the script fallback when a stylesheet specifies a font."""
     app=QApplication.instance()
     families=QApplication.font().families() if app else []
-    normalizer=getattr(app,'_flickdock_font_weights',None) if app else None
-    if for_button and sys.platform=='win32' and normalizer and normalizer._button_family:
-        families=[normalizer._button_family if name=='Microsoft YaHei' else name for name in families]
     if technical:
-        families=[TECHNICAL_FONT_FAMILY]+[name for name in families if name not in (UI_FONT_FAMILY,TECHNICAL_FONT_FAMILY)]
+        families=[TECHNICAL_FONT_FAMILY]+families
     families=list(dict.fromkeys(families))
     return ', '.join("'"+name.replace("'",'')+"'" for name in families) or "'sans-serif'"
 
@@ -511,19 +506,21 @@ def technical_font(base=None):
     """Use monospaced Latin metadata and the platform's Chinese fallback."""
     font=QFont(base) if base is not None else reference_font()
     families=QApplication.font().families() if QApplication.instance() else []
-    font.setFamilies([TECHNICAL_FONT_FAMILY]+[name for name in families if name not in (UI_FONT_FAMILY,TECHNICAL_FONT_FAMILY)])
+    font.setFamilies(list(dict.fromkeys([TECHNICAL_FONT_FAMILY]+families)))
     font.setFeature(FONT_TABULAR_NUMBERS,1)
     return font
 
 
 def configure_reference_font(app):
-    """Use bundled Latin faces with the operating system's Chinese font."""
+    """Use platform UI fonts while retaining the bundled technical face."""
     # Our fully styled controls use the same layout metrics on both backends.
     # Native file dialogs still come from the platform dialog helper.
     # Replacing the application style while existing proxy styles and windows
     # still reference it can invalidate native Qt objects. Install it once.
     if not getattr(app,'_flickdock_fusion_installed',False):
         app.setStyle('Fusion');app._flickdock_fusion_installed=True
+    from border_reveal import install_border_reveal
+    install_border_reveal(app)
     root=Path(getattr(sys,'_MEIPASS',Path(__file__).parent))
     if not getattr(app,'_flickdock_fonts_loaded',False):
         for name in BUNDLED_FONT_FILES:
@@ -543,10 +540,13 @@ def configure_reference_font(app):
         for name in ('msyh.ttc','msyhbd.ttc'):
             path=font_dir/name
             if path.is_file():QFontDatabase.addApplicationFont(str(path))
-    system=QFontDatabase.systemFont(QFontDatabase.SystemFont.GeneralFont).family()
-    preferred=[UI_FONT_FAMILY,'Microsoft YaHei UI','Microsoft YaHei'] if sys.platform=='win32' else [UI_FONT_FAMILY,'PingFang SC',system] if sys.platform=='darwin' else [UI_FONT_FAMILY,system]
-    families=list(dict.fromkeys(name for name in preferred if name))
-    font=QFont();font.setFamilies(families);set_ui_weight(font,400)
+    font=QFontDatabase.systemFont(QFontDatabase.SystemFont.GeneralFont)
+    families=font.families()
+    if sys.platform=='win32':
+        families=['Microsoft YaHei','Microsoft YaHei UI',*families]
+    elif sys.platform=='darwin':
+        families=[*families,'PingFang SC']
+    font.setFamilies(list(dict.fromkeys(families)));set_ui_weight(font,400)
     font.setStyleHint(QFont.StyleHint.SansSerif)
     font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias|QFont.StyleStrategy.PreferQuality)
     font.setHintingPreference(QFont.HintingPreference.PreferVerticalHinting)
@@ -632,7 +632,7 @@ def colors(theme='dark', platform=None):
     if str(theme).lower() == 'light':
         result.update(green='#167D3D', red='#BD2C25', orange='#9D5800')
     is_mac = str(platform or ('mac' if sys.platform == 'darwin' else 'win')).lower() in ('mac', 'macos', 'darwin')
-    result.update(radius=16 if is_mac else 10, card_radius=RADIUS_CARD_PX,
+    result.update(radius=RADIUS_WINDOW_PX, card_radius=RADIUS_CARD_PX,
                   radius_small=RADIUS_SMALL_PX, radius_subcontrol=RADIUS_SUBCONTROL_PX, radius_control=RADIUS_CONTROL_PX,
                   radius_card=RADIUS_CARD_PX, radius_panel=RADIUS_PANEL_PX)
     from theme_accent import action_tokens
@@ -644,6 +644,15 @@ def colors(theme='dark', platform=None):
 
 # Paths copied verbatim from the source document's toolbar and category SVGs.
 _SVG_BODY = {
+    'translate': '<path d="M2 5h12M8 2v3M5 5c1 6 4 9 8 11M12 5c-1 6-4 9-8 11M14 21l4-10 4 10M16 17h4"/>',
+    'shield': '<path d="m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6l8-3Z"/>',
+    'tag': '<path d="M3 3h8l10 10-8 8L3 11V3Z"/><circle cx="7" cy="7" r="1"/>',
+    'speaker': '<path d="M3 9h4l5-4v14l-5-4H3V9ZM16 8a6 6 0 0 1 0 8M19 5a10 10 0 0 1 0 14"/>',
+    'star': '<path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-3-5.6 3 1.1-6.2L3 9.6l6.2-.9L12 3Z"/>',
+    'star-filled': '<path fill="currentColor" stroke="none" d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-3-5.6 3 1.1-6.2L3 9.6l6.2-.9L12 3Z"/>',
+    'swap': '<path d="M3 7h18m-4-4 4 4-4 4M21 17H3m4-4-4 4 4 4"/>',
+    'undo': '<path d="m8 5-5 5 5 5M3 10h11a6 6 0 0 1 0 12"/>',
+    'compare': '<path d="M12 3v18M8 6H3v12h5M16 6h5v12h-5"/>',
     'windows': '<path fill="currentColor" stroke="none" d="M2 2h9.2v9.2H2zM12.8 2H22v9.2h-9.2zM2 12.8h9.2V22H2zM12.8 12.8H22V22h-9.2z"/>',
     # Simple Icons CC0 apple.svg, identifying a discovered Mac.
     'apple': '<path fill="currentColor" stroke="none" d="M12.152 6.896c-.948 0-2.415-1.078-3.96-1.04-2.04.027-3.91 1.183-4.961 3.014-2.117 3.675-.546 9.103 1.519 12.09 1.013 1.454 2.208 3.09 3.792 3.039 1.52-.065 2.09-.987 3.935-.987 1.831 0 2.35.987 3.96.948 1.637-.026 2.676-1.48 3.676-2.948 1.156-1.688 1.636-3.325 1.662-3.415-.039-.013-3.182-1.221-3.22-4.857-.026-3.04 2.48-4.494 2.597-4.559-1.429-2.09-3.623-2.324-4.39-2.376-2-.156-3.675 1.09-4.61 1.09zM15.53 3.83c.843-1.012 1.4-2.427 1.245-3.83-1.207.052-2.662.805-3.532 1.818-.78.896-1.454 2.338-1.273 3.714 1.338.104 2.715-.688 3.559-1.701"/>',
@@ -674,7 +683,7 @@ _SVG_BODY = {
     'file': '<path d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/>',
     'web': '<circle cx="12" cy="12" r="9"/><path d="M3.6 9h16.8M3.6 15h16.8M12 3a15 15 0 010 18M12 3a15 15 0 000 18"/>',
     'transferring': '<path d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4"/>',
-    'refresh': '<circle opacity="0.25" cx="12" cy="12" r="9" stroke="currentColor" stroke-width="3"/><path opacity="0.90" fill="currentColor" stroke="none" d="M4 12a8 8 0 018-8V1C5.925 1 1 5.925 1 12h3z"/>',
+    'refresh': '<path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/>',
     'play': '<path d="M4 3l9 5-9 5V3z"/>',
     'check': '<path d="m5 12 4 4L19 6"/>',
     'circle-check': '<circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/>',
@@ -858,12 +867,13 @@ class UiButton(QPushButton):
         border = 'rgba(255,69,58,77)' if danger else 'transparent' if plain or primary else c['glass_border']
         hover = c['action_hover'] if primary else 'rgba(255,69,58,64)' if danger else c['hover'] if plain else c['control_hover']
         padding = '0px' if self.variant == 'toolbar' else '0px 12px'
+        checked = '' if primary else f"QPushButton:checked {{ background:{c['selected']}; color:{c['link']}; }}"
         self.setStyleSheet(readable_qss(f'''QPushButton {{ background:{background}; color:{foreground};
             border:1px solid {border}; border-radius:8px; padding:{padding};
             font-size:12px; font-weight:500; }}
             QPushButton:hover {{ background:{hover}; }}
             QPushButton:pressed {{ background:{c['selected'] if plain else c['action_pressed'] if primary else c['control_pressed']}; }}
-            QPushButton:checked {{ background:{c['selected']}; color:{c['link']}; }}
+            {checked}
             QPushButton:disabled {{ color:{c['muted']}; background:{c['control']}; border-color:transparent; }}
             QPushButton[keyboardFocus="true"] {{border:1px solid {c['link']};}}'''))
         if self._ui_icon_name:

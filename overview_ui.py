@@ -8,13 +8,11 @@ from collections import Counter
 from PySide6.QtCore import QEvent
 from PySide6.QtCore import QPoint
 from PySide6.QtCore import QPointF
-from PySide6.QtCore import QRectF
 from PySide6.QtCore import QTimer
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QPixmap, QColor
 from PySide6.QtGui import QPainter
-from PySide6.QtGui import QPen
-from PySide6.QtGui import QRegion
+from native_ui_common import font_css_stack
 from PySide6.QtWidgets import QApplication
 from PySide6.QtWidgets import QFrame
 from PySide6.QtWidgets import QGraphicsEffect
@@ -22,6 +20,7 @@ from PySide6.QtWidgets import QGridLayout
 from PySide6.QtWidgets import QHBoxLayout
 from PySide6.QtWidgets import QSizePolicy
 from PySide6.QtWidgets import QSpacerItem
+from PySide6.QtWidgets import QStyle
 from PySide6.QtWidgets import QVBoxLayout
 from PySide6.QtWidgets import QWidget
 from content_grid import GRID_CARD_HEIGHT_PX
@@ -76,31 +75,6 @@ class _RowPressEffect(QGraphicsEffect):
         painter.drawPixmap(QPointF(offset),source);painter.restore()
 
 
-class OverviewOutline(QWidget):
-    """Paint the window edge above its opaque overview child surfaces."""
-    def __init__(self,parent):
-        super().__init__(parent)
-        self.setAttribute(Qt.WA_TransparentForMouseEvents)
-        self.setAttribute(Qt.WA_NoSystemBackground)
-
-    def resizeEvent(self,event):
-        super().resizeEvent(event)
-        if sys.platform=='win32':
-            # QVideoWidget can promote this otherwise alien overlay to a
-            # native HWND. Windows does not honor Qt's mouse-transparent flag
-            # for that HWND, so exclude the whole interior from its region.
-            rect=self.rect()
-            inner=rect.adjusted(4,4,-4,-4)
-            self.setMask(QRegion(rect).subtracted(QRegion(inner)) if not inner.isEmpty() else QRegion(rect))
-
-    def paintEvent(self,event):
-        from native_ui_common import paint_rounded_surface
-        painter=QPainter(self);painter.setRenderHint(QPainter.Antialiasing)
-        tint=QColor(255,255,255,20) if ui_theme.current_theme()=='dark' else QColor(0,0,0,23)
-        radius=16 if sys.platform=='darwin' else 10
-        paint_rounded_surface(painter,self.rect(),radius,QColor(Qt.transparent),tint);painter.end()
-
-
 _SCROLL_PROFILE = os.environ.get('FLICKDOCK_PROFILE_SCROLL') == '1'
 _SCROLL_SAMPLES = []
 
@@ -133,20 +107,29 @@ class FileRow(QFrame):
         self.selection_check.clicked.connect(lambda _:popup.select_item(self.path,toggle=True))
         from reference_widgets import css
         row.addWidget(self.selection_check)
-        self.icon_label=ThumbnailLabel(popup.shelf,path,self);self.icon_label.setAttribute(Qt.WA_TransparentForMouseEvents);row.addWidget(self.icon_label)
+        self.icon_label=ThumbnailLabel(popup.shelf,path,self);self.icon_label.setProperty('suppressPinBadge',True);self.icon_label.setAttribute(Qt.WA_TransparentForMouseEvents);row.addWidget(self.icon_label)
         names=QVBoxLayout();names.setSpacing(0)
         self.name_label=ElidedLabel(self);self.name_label.setText(popup.shelf.content.title(path));self.name_label.setAttribute(Qt.WA_TransparentForMouseEvents)
         css(self.name_label,"color:#F5F5F7;background:transparent;border:0;font:600 12px 'FlickDock UI';","color:#1D1D1F;background:transparent;border:0;font:600 12px 'FlickDock UI';")
         self.detail_label=MetadataLabel(self);self.detail_label.setFixedHeight(17)
         from native_ui_common import colors
-        css(self.detail_label,*[f"color:{colors(t)['file_description']};background:transparent;border:0;font:9px 'FlickDock UI';" for t in ('dark','light')])
+        css(self.detail_label,*[f"color:{colors(t)['file_description']};background:transparent;border:0;font:9px {font_css_stack()};" for t in ('dark','light')])
         self.detail_label.setAttribute(Qt.WA_TransparentForMouseEvents)
-        names.addWidget(self.name_label);names.addWidget(self.detail_label);row.addLayout(names,1)
+        title=QHBoxLayout();title.setContentsMargins(0,0,0,0);title.setSpacing(4)
+        self.pin_button=ToolbarButton('star',self,motion=popup.shelf.manager.motion);self.pin_button.setFixedSize(20,20);self.pin_button.setProperty('glyphSize',14)
+        self.pin_button.clicked.connect(lambda:self.popup.toggle_pin(self.path));title.addWidget(self.pin_button);title.addWidget(self.name_label,1)
+        names.addLayout(title);names.addWidget(self.detail_label);row.addLayout(names,1)
         self.remove_button=ToolbarButton('close',self,motion=popup.shelf.manager.motion);self.remove_button.setFixedSize(32,32);self.remove_button.setToolTip('从搁架移除');self.remove_button.setAccessibleName('从搁架移除 '+popup.shelf.content.title(path));self.remove_button.clicked.connect(lambda:popup.remove_path(self.path))
         self.remove_button.set_glyph_tint('#FF453A')
         policy=self.remove_button.sizePolicy();policy.setRetainSizeWhenHidden(True);self.remove_button.setSizePolicy(policy)
         row.addWidget(self.remove_button);self.remove_button.hide()
-        self.refresh_cloud_status();self.refresh_upload_time()
+        self.refresh_cloud_status();self.refresh_upload_time();self.refresh_pin()
+
+    def refresh_pin(self):
+        pinned=getattr(self.popup,'is_pinned',lambda ref:False)(self.path)
+        self.pin_button.set_glyph('star-filled' if pinned else 'star');self.pin_button.set_glyph_tint('#E9AF20' if pinned else None)
+        self.pin_button.setToolTip('取消星标置顶' if pinned else '星标置顶');self.pin_button.setAccessibleName(self.pin_button.toolTip()+' '+self.popup.shelf.content.title(self.path))
+        self.icon_label.update()
 
     def _hover_frame(self,values):
         highlighted=values['highlight']>.3
@@ -167,7 +150,7 @@ class FileRow(QFrame):
         self.refresh_upload_time()
         self.selection_check.setAccessibleName('选择 '+title)
         self.remove_button.setAccessibleName('从搁架移除 '+title)
-        self.icon_label.update();self.refresh_cloud_status();self.update()
+        self.icon_label.update();self.refresh_cloud_status();self.refresh_pin();self.update()
 
     def refresh_cloud_status(self):
         lookup=getattr(self.popup,'cloud_status',None)
@@ -207,7 +190,7 @@ class FileRow(QFrame):
         super().enterEvent(event)
 
     def leaveEvent(self, event):
-        visible=(self.hasFocus() and self._keyboard_focus) or self.remove_button.hasFocus()
+        visible=(self.hasFocus() and self._keyboard_focus) or self.remove_button.hasFocus() or self.pin_button.hasFocus()
         self.remove_button.setVisible(visible)
         self.motion.animate({"highlight": 0.0}, response=.14, damping=1)
         super().leaveEvent(event)
@@ -280,17 +263,23 @@ class FileRow(QFrame):
     def focusOutEvent(self,event):
         self._keyboard_focus=False
         def update_actions():
-            visible=self.underMouse() or self.remove_button.hasFocus()
+            visible=self.underMouse() or self.remove_button.hasFocus() or self.pin_button.hasFocus()
             self.remove_button.setVisible(visible)
         QTimer.singleShot(0,self,update_actions);self.update();super().focusOutEvent(event)
 
 
 class ContentsPopup(QFrame):
     CATEGORIES=(("all","全部"),("images","图片"),("video","视频"),("audio","音频"),("text","文字"),("files","文件"),("links","网页"),("uploading","传输中"))
+    SCOPES=(("all","全部搁架"),("pinned","星标置顶"),("uploading","传输中"))
+    TYPES=(("all","全部"),("files","文件"),("links","网页"),("text","文字"),("images","图片"),("video","视频"),("audio","音频"))
     def __init__(self,shelf,mode="permanent"):
         super().__init__(shelf.card)
         self.shelf,self.mode=shelf,"permanent"
-        self.selected=set();self.primary_selection=None;self.category='all'
+        self.selected=set();self.primary_selection=None;self.category='all';self.scope='all';self.type_filter='all'
+        if not hasattr(shelf,'file_pins'):
+            from file_pins import FilePins
+            shelf.file_pins=FilePins(shelf.manager.settings.base,shelf)
+        self.pins=shelf.file_pins
         self._cloud_statuses={}
         self._upload_metadata={}
         self.sort_key=None;self.sort_direction=0
@@ -302,10 +291,13 @@ class ContentsPopup(QFrame):
         self._build_timer.timeout.connect(self._append_batch)
         from reference_widgets import build_overview
         build_overview(self,PreviewPane)
-        self.scroll.verticalScrollBar().valueChanged.connect(self._queue_visible_rows)
+        self.pins.changed.connect(self._pins_changed)
+        self.pins.error.connect(self._pin_error)
+        scrollbar=self.scroll.verticalScrollBar()
+        scrollbar.valueChanged.connect(self._queue_visible_rows)
+        scrollbar.rangeChanged.connect(self._update_scroll_gutter)
+        self._update_scroll_gutter(scrollbar.minimum(),scrollbar.maximum())
         self.sidebar._selection_animation.setDuration(110)
-        self.window_outline=OverviewOutline(self);self.window_outline.setGeometry(self.rect())
-        self.window_outline.show();self.window_outline.raise_()
         from ui_transitions import PreviewWidthTransition
         self.preview_width_motion=PreviewWidthTransition(self.preview,lambda:getattr(self.shelf.manager,'motion',True))
         sync=getattr(self.shelf.manager,'sync',None)
@@ -317,6 +309,7 @@ class ContentsPopup(QFrame):
         self.preview_width_motion.animation.finished.connect(self._resume_deferred_work)
         self.empty_entrance.settled.connect(self._resume_deferred_work)
         self.sidebar._selection_animation.finished.connect(self._resume_deferred_work)
+        self.type_body._selection_animation.settled.connect(self._resume_deferred_work)
         self._responsive_timer=QTimer(self);self._responsive_timer.setSingleShot(True)
         self._responsive_timer.timeout.connect(self._apply_responsive_layout)
         self.scroll.viewport().installEventFilter(self)
@@ -348,23 +341,24 @@ class ContentsPopup(QFrame):
 
     def resizeEvent(self,event):
         super().resizeEvent(event)
-        if hasattr(self,'window_outline'):
-            self.window_outline.setGeometry(self.rect());self.window_outline.raise_()
         if not hasattr(self,'empty_state') or not hasattr(self,'scroll'):
             return
         self._apply_responsive_layout()
 
+    def _scrollbar_gutter(self):
+        bar=self.scroll.verticalScrollBar()
+        return 0 if bar.style().styleHint(QStyle.SH_ScrollBar_Transient,None,bar) else bar.sizeHint().width()
+
+    def _update_scroll_gutter(self, minimum, maximum):
+        # Keep the viewport the same width when a non-overlay scrollbar
+        # appears. The hidden bar is replaced by a blank gutter of equal size.
+        gutter=self._scrollbar_gutter() if minimum==maximum else 0
+        if self.scroll.viewportMargins().right()!=gutter:
+            self.scroll.setViewportMargins(0,0,gutter,0)
+
     def _grid_available_width(self):
-        # Reserve the scrollbar gutter even while it is hidden. Adding enough
-        # cards to make it appear must not change column count or card width.
-        gutter=max(12,self.scroll.verticalScrollBar().sizeHint().width())
-        maximum=min(self.scroll.maximumViewportSize().width(),self.scroll.contentsRect().width())-gutter
-        viewport=self.scroll.viewport().width()
-        # Native macOS scrollbars and a pending resize can make Qt's maximum
-        # larger than the actual viewport during incremental cloud arrivals.
-        width=min(maximum,viewport) if viewport>0 else maximum
         margins=self.rows_layout.contentsMargins()
-        width-=margins.left()+margins.right()
+        width=self.scroll.contentsRect().width()-self._scrollbar_gutter()-margins.left()-margins.right()
         transition=getattr(self,'preview_width_motion',None)
         if transition is not None and transition.active and transition.target_visible:
             # Use the final viewport width throughout the resize; otherwise
@@ -436,16 +430,15 @@ class ContentsPopup(QFrame):
         self.narrow_view_button.setText('返回内容' if self._narrow_preview else '预览')
         self.narrow_view_button.setAccessibleName('返回内容列表' if self._narrow_preview else '查看选中内容的预览')
         self.scroll.setVisible(has_refs and (not self._narrow_layout or not self._narrow_preview))
-        show_preview=has_refs and (not self._narrow_layout or self._narrow_preview)
+        show_preview=not self._narrow_layout or (has_refs and self._narrow_preview)
         transition=getattr(self,'preview_width_motion',None)
         if transition is not None and not self._narrow_layout:
-            transition.request(show_preview,280 if self.width()<980 else 340,
-                animate=previous is not None and previous!=has_refs and not self.shelf.content_transition_active())
+            transition.request(show_preview,280 if self.width()<980 else 340,animate=False)
         else:self.preview.setVisible(show_preview)
 
     def _position_nav_counts(self):
         for key,badge in self.nav_counts.items():
-            control=self.category_buttons[key]
+            control=self.scope_buttons[key]
             width=max(20,min(60,badge.fontMetrics().horizontalAdvance(badge.text())+12))
             badge.setFixedSize(width,20);badge.setAlignment(Qt.AlignCenter)
             badge.move(max(0,control.width()-width-12),(control.height()-20)//2)
@@ -461,15 +454,17 @@ class ContentsPopup(QFrame):
 
     def reset_for_open(self):
         """Reset navigation and selection without rebuilding unchanged items."""
+        self._finish_file_motion()
         previous_selected=set(self.selected)
-        self.category='all';self.selected.clear();self.primary_selection=None
+        self.category='all';self.scope='all';self.type_filter='all';self.selected.clear();self.primary_selection=None
         self.preview.clear_preview()
         self._narrow_preview=False
         self.search_edit.blockSignals(True);self.search_edit.clear();self.search_edit.blockSignals(False)
         self.category_picker.setText('全部')
         self.scroll.verticalScrollBar().setValue(0);self._build_position=0
-        self.rebuild()
-        for key,control in self.category_buttons.items():control.setChecked(key=='all')
+        self.rebuild(animate_items=False)
+        for key,control in self.scope_buttons.items():control.setChecked(key=='all')
+        for key,control in self.type_buttons.items():control.setChecked(key=='all')
         for ref in previous_selected:
             item=self._item_widgets.get(ref)
             if isinstance(item,IconItem):item.set_selected(False)
@@ -479,9 +474,14 @@ class ContentsPopup(QFrame):
 
     def open_category_menu(self):
         menu=AnimatedMenu(self);style_menu(menu)
-        for key,label in self.CATEGORIES:
-            action=menu.addAction(label,lambda key=key:self.set_category(key))
-            action.setCheckable(True);action.setChecked(key==self.category)
+        for key,label in self.SCOPES:
+            action=menu.addAction(label,lambda key=key:self.set_scope(key))
+            action.setCheckable(True);action.setChecked(key==self.scope)
+        menu.addSeparator()
+        for key,label in self.TYPES:
+            if key=='all':continue
+            action=menu.addAction(label,lambda key=key:self.set_type(key))
+            action.setCheckable(True);action.setChecked(key==self.type_filter)
         self.shelf._menu_open=True
         try:menu.exec(self.category_picker.mapToGlobal(QPoint(0,self.category_picker.height()+4)))
         finally:self.shelf._menu_open=False;menu.deleteLater();self.shelf.touch()
@@ -525,15 +525,30 @@ class ContentsPopup(QFrame):
         snapshot=getattr(self,'_category_snapshot',None)
         all_refs,categories=snapshot if snapshot is not None else (self.shelf.display_refs(),None)
         refs=[ref for ref in reversed(all_refs) if
-            (ref in transfers if self.category=='uploading' else
-             (self.category=='all' or (categories[ref] if categories is not None else self.shelf.content.category(ref))==self.category))
+            (self.scope!='uploading' or ref in transfers) and (self.scope!='pinned' or self.is_pinned(ref)) and
+            (self.type_filter=='all' or (categories[ref] if categories is not None else self.shelf.content.category(ref))==self.type_filter)
              and (not query or query in self.shelf.content.title(ref).casefold())]
         if self.sort_direction:
             if self.sort_key=='time':
                 if self.sort_direction==1:refs.reverse()
             elif self.sort_key=='size':
                 refs.sort(key=self._sort_size,reverse=self.sort_direction==2)
+        refs.sort(key=lambda ref:not self.is_pinned(ref))
         return refs
+
+    def is_pinned(self,ref):return self.pins.contains(ref)
+
+    def toggle_pin(self,ref):self.pins.set(ref,not self.is_pinned(ref));self.shelf.touch()
+
+    def _pins_changed(self):
+        if not hasattr(self,'rows_body'):return
+        self.rebuild()
+        for item in self._item_widgets.values():
+            if hasattr(item,'refresh_pin'):item.refresh_pin()
+            item.update()
+
+    def _pin_error(self,message):
+        self.pin_error.setText(message);self.pin_error.setVisible(bool(message))
 
     def _sort_size(self,ref):
         content=self.shelf.content
@@ -569,9 +584,9 @@ class ContentsPopup(QFrame):
         self.shelf.transfer_rates.observe(self.shelf.content.transfers)
         states=list(self.shelf.content.transfers.values())
         count=len(states)
-        self.transfer_badge.setText('99+' if count>99 else str(count) if count else '')
+        self.transfer_badge.setText('99+' if count>99 else str(count))
         self._position_nav_counts()
-        self.transfer_badge.setVisible(bool(count))
+        self.transfer_badge.show()
         self.category_buttons['uploading'].setAccessibleName(f'传输中的项目，共 {count} 项')
         self.transfer_summary.setVisible(bool(count) and self.category=='uploading')
         self._refresh_transfer_strip()
@@ -656,8 +671,20 @@ class ContentsPopup(QFrame):
     def set_mode(self,mode="permanent"): self.rebuild()
 
     def set_category(self,key):
-        if key not in self.category_buttons: return
-        if key!=self.category and self.isVisible() and self.shelf.manager.motion:
+        # Existing callers (transfer strip, tests and shortcuts) retain their
+        # category API. The visible UI has independent scope/type controls.
+        if key not in dict(self.CATEGORIES):return
+        self._set_filters('uploading' if key=='uploading' else 'all','all' if key=='uploading' else key)
+
+    def set_scope(self,key):
+        if key in dict(self.SCOPES):self._set_filters(key,'all')
+
+    def set_type(self,key):
+        if key in dict(self.TYPES):self._set_filters(self.scope,key)
+
+    def _set_filters(self,scope,kind):
+        changed=(scope,kind)!=(self.scope,self.type_filter)
+        if changed and self.isVisible() and self.shelf.manager.motion:
             self.retirement.pause()
         # All filtering and sidebar counts in this synchronous update share one
         # classification pass, including potentially expensive .ts probing.
@@ -665,11 +692,12 @@ class ContentsPopup(QFrame):
         refs=tuple(self.shelf.display_refs());categories={ref:self.shelf.content.category(ref) for ref in refs}
         self._category_snapshot=(refs,categories)
         try:
-            if key!=self.category:self._file_entry_requested=True
-            self.category=key;self._narrow_preview=False
-            for name,button in self.sidebar_buttons.items():button.setChecked(name==key)
-            self.category_picker.setText(next(label for item,label in self.CATEGORIES if item==key))
-            self.transfer_summary.setVisible(bool(self.shelf.content.transfers) and key=='uploading')
+            if changed:self._file_entry_requested=True
+            self.scope=scope;self.type_filter=kind;self.category='uploading' if scope=='uploading' else kind;self._narrow_preview=False
+            for name,button in self.scope_buttons.items():button.setChecked(name==scope)
+            for name,button in self.type_buttons.items():button.setChecked(name==kind)
+            self.category_picker.setText(dict(self.TYPES)[kind] if kind!='all' else dict(self.SCOPES)[scope])
+            self.transfer_summary.setVisible(bool(self.shelf.content.transfers) and scope=='uploading')
             self.transfer_strip.setVisible(bool(self.shelf.content.transfers))
             self.selected.intersection_update(self.visible_refs())
             if self.primary_selection not in self.selected: self.primary_selection=None
@@ -687,6 +715,7 @@ class ContentsPopup(QFrame):
         """Give panel and navigation motion an uninterrupted frame budget."""
         from PySide6.QtCore import QAbstractAnimation
         return (self.preview_width_motion.active or self.empty_entrance.active
+                or self.type_body._selection_animation._timer.isActive()
                 or self.sidebar._selection_animation.state()==QAbstractAnimation.Running)
 
     def _blocking_file_load_motion(self):
@@ -717,14 +746,15 @@ class ContentsPopup(QFrame):
             if item.widget(): self.retirement.retire(item.widget())
             elif item.layout(): self._clear_layout(item.layout()); item.layout().deleteLater()
 
-    def rebuild(self):
+    def rebuild(self, *, animate_items=True):
+        animate_items=animate_items and not self.shelf.content_transition_active()
         refs=self.visible_refs()
         previous_signature=getattr(self,'_render_signature',None)
         content=self.shelf.content
-        signature=(tuple(refs),self.category,self.shelf.manager.settings.view_mode,
+        signature=(tuple(refs),(self.scope,self.type_filter),self.shelf.manager.settings.view_mode,
                    self.shelf.manager.settings.theme,
                    tuple((ref,repr(content.metadata.get(ref,{})),
-                          repr(content.pending.get(ref,{})),content.texts.get(ref),content.title(ref)) for ref in refs))
+                          repr(content.pending.get(ref,{})),content.texts.get(ref),content.title(ref),self.is_pinned(ref)) for ref in refs))
         if getattr(self,'_render_signature',None)==signature:
             return
         self._read_cloud_statuses(refs)
@@ -736,7 +766,8 @@ class ContentsPopup(QFrame):
         all_refs,categories=(snapshot if snapshot is not None else
             (self.shelf.display_refs(),None))
         if categories is None:categories={ref:content.category(ref) for ref in all_refs}
-        category_counts=Counter(categories.values())
+        scope_refs=[ref for ref in all_refs if (self.scope!='pinned' or self.is_pinned(ref)) and (self.scope!='uploading' or ref in content.transfers)]
+        category_counts=Counter(categories[ref] for ref in scope_refs)
         position=self.scroll.verticalScrollBar().value()
         old_widgets=self._item_widgets
         row_type=IconItem if self.shelf.manager.settings.view_mode=='icons' else FileRow
@@ -758,7 +789,7 @@ class ContentsPopup(QFrame):
                 self.item_transitions.settled.connect(self._resume_deferred_work)
             positions=self.item_transitions.capture(old_widgets)
             removed={ref:w for ref,w in old_widgets.items() if ref not in refs}
-            animate=bool(previous_signature and self.isVisible() and self.shelf.manager.motion
+            animate=bool(animate_items and previous_signature and self.isVisible() and self.shelf.manager.motion
                          and previous_signature[1:4]==signature[1:4])
             present=set(all_refs)
             self.item_transitions.remove(removed.values(),enabled=animate and all(ref in present for ref in removed))
@@ -767,36 +798,39 @@ class ContentsPopup(QFrame):
             for ref,w in old_widgets.items():
                 if self._item_widgets.get(ref) is not w:self.retirement.retire(w)
             self._layout_animation=(positions,animate)
-            self._file_entry_pending=bool(refs and getattr(self,'_file_entry_requested',False) and self.isVisible()
-                                          and not self.shelf.content_transition_active() and self.shelf.manager.motion)
+            self._file_entry_pending=bool(animate_items and refs and getattr(self,'_file_entry_requested',False)
+                                          and self.isVisible() and self.shelf.manager.motion)
             self._file_entry_requested=False
         self.selected.intersection_update(refs)
         if self.primary_selection not in self.selected: self.primary_selection=next((r for r in refs if r in self.selected),None)
         self.title.setText("FlickDock");self.count_label.setText(f"{len(all_refs)} 项")
         from reference_widgets import css,icon,palette
-        for key,button in self.sidebar_buttons.items():
-            label=next(name for name_key,name in self.CATEGORIES if name_key==key)
+        for key,button in self.scope_buttons.items():
+            label=dict(self.SCOPES)[key]
             if key=='uploading':count=len(self.shelf.content.transfers)
             elif key=='all':count=len(all_refs)
-            else:count=category_counts[key]
+            else:count=sum(self.is_pinned(ref) for ref in all_refs)
             button.setText(label)
-            self.nav_counts[key].setText(str(count) if count else '')
-            self.nav_counts[key].setVisible(bool(count))
-            selected=key==self.category
+            self.nav_counts[key].setText(str(count))
+            self.nav_counts[key].show()
+            selected=key==self.scope
             background='transparent' if selected else palette()['control'] if key=='uploading' and count else 'transparent'
             self.nav_counts[key].set_background(background)
             css(self.nav_counts[key],"background:transparent;border:0;font:10px 'FlickDock UI';color:"+(palette()['on_action'] if selected else palette()['link'] if key=='uploading' else palette()['muted'])+';')
             glyph=button._reference_icon[0]
             button._reference_icon=(glyph,'on_action' if selected else 'secondary');button.setIcon(icon(glyph,palette()['on_action'] if selected else palette()['secondary']))
-            button.setChecked(key==self.category)
+            button.setChecked(key==self.scope)
+        for key,title in self.TYPES:
+            control=self.type_buttons[key];count=len(scope_refs) if key=='all' else category_counts[key]
+            control.setText(f'{title} {count}');control.setFixedWidth(control.fontMetrics().horizontalAdvance(control.text())+16)
+            control.setChecked(key==self.type_filter);control.setAccessibleName(f'{title}，{count} 项')
         self.clear_button.setEnabled(self.shelf.has_files())
         self._position_nav_counts()
-        self.category_buttons[self.category].setChecked(True)
         if same_layout:
             for ref in changed:
                 if ref in self._item_widgets:self._item_widgets[ref].refresh_content()
         elif self.shelf.manager.settings.view_mode=='icons':
-            grid=QGridLayout(); grid.setAlignment(Qt.AlignTop|Qt.AlignHCenter); grid.setContentsMargins(0,0,0,0); grid.setHorizontalSpacing(0); grid.setVerticalSpacing(8)
+            grid=QGridLayout(); grid.setAlignment(Qt.AlignTop|Qt.AlignLeft); grid.setContentsMargins(0,0,0,0); grid.setHorizontalSpacing(0); grid.setVerticalSpacing(8)
             self.rows_layout.addLayout(grid)
             columns=self._grid_column_count()
             self._grid_columns=columns
@@ -859,7 +893,8 @@ class ContentsPopup(QFrame):
             # height now; otherwise Qt overlaps hundreds of rows inside the
             # viewport and the compositor paints every thumbnail per slice.
             rows=(len(refs)+columns-1)//columns if row_type is IconItem else len(refs)
-            height=24+rows*(GRID_CARD_HEIGHT_PX if row_type is IconItem else FILE_ROW_HEIGHT_PX)+max(0,rows-1)*(8 if row_type is IconItem else 6)
+            margins=self.rows_layout.contentsMargins()
+            height=margins.top()+margins.bottom()+rows*(GRID_CARD_HEIGHT_PX if row_type is IconItem else FILE_ROW_HEIGHT_PX)+max(0,rows-1)*(8 if row_type is IconItem else 6)
             self.rows_body.setMinimumHeight(max(getattr(self,'_rows_minimum',0),height))
             self.rows_layout.activate()
             positions,animate=self._layout_animation;self._layout_animation=None
@@ -900,6 +935,7 @@ class ContentsPopup(QFrame):
                 self._detach_rows_layout(item.layout());item.layout().deleteLater()
 
     def remap_items(self,mapping):
+        self.pins.remap(mapping,notify=False)
         # A remote reservation becomes a verified local path without becoming
         # a new UI item. Retarget the live widget before capturing transitions;
         # otherwise the same file briefly fades out over its replacement.
@@ -1025,6 +1061,7 @@ class ContentsPopup(QFrame):
 
     def prepare_transition(self):
         """Capture one complete viewport; defer only rows outside that viewport."""
+        self._finish_file_motion()
         self.empty_entrance.finish()
         for section in (self,self.middle,self.scroll):
             layout=section.layout()
@@ -1041,11 +1078,15 @@ class ContentsPopup(QFrame):
             while self._build_cursor<len(self._build_refs) and self._build_refs[self._build_cursor] in self._build_installed:self._build_cursor+=1
         self.rows_layout.activate()
 
+    def _finish_file_motion(self):
+        self._file_entry_requested=self._file_entry_pending=False
+        transitions=getattr(self,'item_transitions',None)
+        if transitions is not None:transitions.finish()
+
     def hideEvent(self,event):
         self._build_timer.stop()
         self.empty_entrance.finish()
-        transitions=getattr(self,'item_transitions',None)
-        if transitions is not None:transitions.finish()
+        self._finish_file_motion()
         self.retirement.resume()
         super().hideEvent(event)
 
@@ -1202,4 +1243,6 @@ class ContentsPopup(QFrame):
                     item.refresh_cloud_status();item.refresh_upload_time()
         self.preview.refresh_cloud_status()
 
-    def remove_path(self,ref): self.shelf.remove_path('permanent',ref)
+    def remove_path(self,ref):
+        self.shelf.remove_path('permanent',ref)
+        if ref not in self.shelf.files['permanent'] and self.is_pinned(ref):self.pins.set(ref,False)

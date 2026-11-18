@@ -31,8 +31,11 @@ class ReleaseError(ValueError):
 VERSION_RE=re.compile(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\Z')
 HASH_RE=re.compile(r'[0-9a-f]{64}\Z')
 RUNTIME_SOURCES=(
+    'translation_document.py','translation_alignment.py','speech_export.py',
     'notice_cluster.py','crash_diagnostics.py','text_preview.py','qt_lifetime.py','theme_accent.py','settings_live.py',
+    'magnetic_settings.py','magnetic_editor.py','edge_native_icons.py','monitor_diagram.py','accent_presets.py','verify_magnetic.py',
     'translation_languages.py', 'translation_api.py', 'translation_controller.py', 'translation_notice.py', 'settings_navigation.py',
+    'translator_store.py','translator_session.py','translator_widgets.py','translator_speech.py','translator_panel.py','translator_history.py','translator_manager.py','breeze_speech_api.py','file_pins.py','border_reveal.py','verify_translator.py',
     'shelf_ui_common.py','shelf_file_tools.py','shelf_drop_zone.py','file_preview.py',
     'overview_ui.py','shelf_window.py','dock_handle.py','sync_runtime.py','transfer_runtime.py','sync_contracts.py',
     
@@ -41,7 +44,7 @@ RUNTIME_SOURCES=(
     'flickdock.py','app_settings.py','async_images.py','capture_files.py',
     'download_writer.py','file_metadata.py','transfer_entry.py','receive_notice.py','gui_watchdog.py',
     'confirm_clear.py','content_grid.py','content_resolver.py','content_stack.py',
-    'dock_geometry.py','dock_preview.py','display_frames.py','frame_diagnostics.py','drag_artwork.py','drag_probe.py',
+    'dock_geometry.py','dock_preview.py','display_frames.py','frame_diagnostics.py','drag_artwork.py','drag_probe.py','edge_absorb.py','edge_file_drag.py','edge_magnetic_model.py','edge_drop_animation.py','verify_edge_native.py',
     'drop_routing.py','drop_bridge.py','flickdock_icons.py','flickdock_motion.py','global_hotkeys.py',
     'image_preview.py','instance_guard.py','media_preview.py','offscreen_verify.py','mac_install.py',
     'runtime_media.py','selection_archive.py','shake_detector.py','shelf_content.py',
@@ -57,6 +60,7 @@ RUNTIME_SOURCES=(
     
 )
 MAINTAINED_TESTS=(
+    'test_edge_magnetic_v1842.py','test_edge_magnetic_v1841.py','test_edge_magnetic_v1840.py','test_edge_magnetic_v1839.py','test_edge_absorb_v1840.py',
     'test_release_signing_ci.py','test_release_archives.py','test_release_pipeline.py','test_release_source_sync.py',
     'test_bulk_cloud_v1837.py','test_virtual_files_v1837.py','test_slider_click_v1837.py','test_neutral_shadows_v1837.py',
     'test_shelf_actions_v1837.py',
@@ -64,7 +68,7 @@ MAINTAINED_TESTS=(
     'test_platform_ui_v1837.py',
     'test_shadcn_qt_theme.py',
     'test_transfer_diagnostics.py','test_transfer_compatibility.py',
-    'test_translation.py',
+    'test_translation.py','test_translator_v1843.py','test_breeze_speech_v1843.py','test_workspace_v1843.py','test_translation_copy_v1843.py',
     'test_architecture.py','test_video_tls.py','test_video_compatibility.py','test_startup_resources.py','test_crash_diagnostics_v1838.py','test_text_preview_v1838.py','test_accent_theme_v1838.py','test_live_settings_v1838.py','soak_ui_v1838.py',
     
     'test_cloud_delete_v1825.py','test_cloud_events_v1825.py','test_cloud_stream_v1825.py',
@@ -126,6 +130,9 @@ MAINTAINED_TESTS=(
     'test_remote_transfer_actions_v1812.py',
 )
 SOURCE_FILES=RUNTIME_SOURCES+MAINTAINED_TESTS+(
+    'test_translator_v1844.py','test_workspace_translator_v1845.py','test_translator_controls_v1846.py','test_translator_workflow_v1847.py','test_translator_controls_v1848.py','test_polish_outline_v1849.py','test_overview_translator_followup.py','soak_translator_v1844.py','cloud/src/translation_units.ts','cloud/test/translation-units.mjs','cloud/test/speech-preview.mjs',
+    'TRANSLATOR.md','cloud/src/speech.ts','cloud/test/speech.mjs','cloud/test/speech-route.mjs','cloud/test/translator-workbench.mjs',
+    'EDGE_MAGNETIC.md','bench_edge_magnetic.py','bench_edge_drop.py',
     'build_windows_release.py','release_archives.py','release_pipeline.py','release_source_sync.py','CENTRAL_RELEASE.md',
     '.github/workflows/release-windows.yml','.github/workflows/central-release.yml',
     'assets/fonts/JetBrainsMono-Regular.ttf','assets/fonts/JetBrainsMono-Medium.ttf',

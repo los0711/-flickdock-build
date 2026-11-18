@@ -28,7 +28,7 @@ class DockPreview(QWidget):
         edge = values['dock_edge']
         self.target_rect = trigger_rect(area, edge, values['dock_position'],
                                         values['dock_length'], values['dock_thickness'])
-        self.caption = ('触发区域预览' if values['trigger_visible'] else '触发区域 · 已隐藏标记')
+        self.caption = ('触发区域预览' if values['trigger_visible'] else '触发区域 · 已关闭')
         self.caption += f"  {values['dock_length']} × {values['dock_thickness']} px"
         width = QFontMetrics(self.font()).horizontalAdvance(self.caption) + 28
         width = min(width, area.width() - 12)
