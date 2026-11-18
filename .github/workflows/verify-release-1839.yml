@@ -1,0 +1,11 @@
+name: Verify FlickDock 1.8.39 Apple Silicon
+on:
+  push:
+    branches: [release-1.8.39]
+permissions:
+  contents: read
+jobs:
+  macos:
+    uses: ./.github/workflows/macos-build.yml
+    with:
+      test_build: true
