@@ -145,7 +145,25 @@ def credentials(*, signing_only=False, gitee_only=False):
     bucket = requests.get('https://api.cloudflare.com/client/v4/accounts/' + ACCOUNT + '/r2/buckets/flickdock-releases',
                           headers={'Authorization':'Bearer ' + cloud},timeout=30)
     if bucket.status_code != 200:
-        raise ValueError('The Cloudflare release token cannot read the installer bucket.')
+        def api_status(response):
+            try:
+                payload = response.json()
+            except ValueError:
+                return f'HTTP {response.status_code} (non-JSON)'
+            codes = [entry.get('code') for entry in payload.get('errors', [])
+                     if isinstance(entry.get('code'), int)]
+            return f'HTTP {response.status_code}, Cloudflare codes: {codes}'
+
+        listing = requests.get(
+            'https://api.cloudflare.com/client/v4/accounts/' + ACCOUNT + '/r2/buckets',
+            params={'name_contains': 'flickdock-releases'},
+            headers={'Authorization': 'Bearer ' + cloud}, timeout=30)
+        visible = listing.ok and any(
+            item.get('name') == 'flickdock-releases'
+            for item in listing.json().get('result', {}).get('buckets', []))
+        raise ValueError(
+            f'Cloudflare R2 bucket check failed: get {api_status(bucket)}; '
+            f'list {api_status(listing)}; exact bucket listed: {visible}.')
     print('Verified publisher key, Gitee account and Cloudflare release bucket.',flush=True)
 
 
