@@ -46,7 +46,7 @@ class SessionTests(unittest.TestCase):
         self.session.edit_source('A synthetic source.');self.session.translate();self.api.finish('基准译文。')
     def test_late_response_cannot_replace_new_input(self):
         self.translated();epoch=self.api.calls[-1]['epoch'];self.session.edit_source('New source')
-        self.api.completed.emit(epoch,'过期内容','');self.assertEqual(self.session.result,'')
+        self.api.completed.emit(epoch,'过期内容','');self.assertEqual(self.session.result,'基准译文。')
         self.assertEqual(self.session.source_text,'New source')
     def test_chained_polish_uses_current_text_and_undo_preserves_original(self):
         self.translated();self.session.polish('更亲切');self.assertEqual(self.api.calls[-1]['text'],'基准译文。');self.api.finish('第一版。')
@@ -74,6 +74,23 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(self.api.calls[-1]['text'],'待润色原文。');self.assertEqual(self.api.calls[-1]['scope'],'source')
         replaced=[];self.session.source_replaced.connect(replaced.append);self.api.finish('精简的原文。')
         self.assertEqual(self.session.source_text,'精简的原文。');self.assertEqual(self.session.result,'');self.assertEqual(replaced,['精简的原文。'])
+    def test_polish_instruction_locks_the_input_language(self):
+        self.translated();self.session.polish('更亲切')
+        self.assertIn('保持输入文本的语言',self.api.calls[-1]['instruction'])
+    def test_polish_rejects_a_result_in_a_different_script(self):
+        self.translated();self.session.polish('更亲切');self.api.finish('A completely different language.')
+        self.assertEqual(self.session.result,'基准译文。')
+        self.assertEqual(self.session.phase,'error')
+        self.assertIn('语言',self.session.error)
+    def test_polish_accepts_a_result_in_the_same_script(self):
+        self.translated();self.session.polish('更亲切');self.api.finish('更亲切的译文。')
+        self.assertEqual(self.session.result,'更亲切的译文。')
+        self.assertFalse(self.session.error)
+    def test_source_polish_rejects_a_different_language(self):
+        self.session.edit_source('待润色原文。');self.session.set_polish_scope('source');self.session.polish('精简')
+        self.api.finish('Rewritten source.')
+        self.assertEqual(self.session.source_text,'待润色原文。')
+        self.assertEqual(self.session.phase,'error')
     def test_switching_polish_scope_cancels_old_source_completion(self):
         self.session.edit_source('待润色原文。');self.session.set_polish_scope('source');self.session.polish('精简');epoch=self.api.calls[-1]['epoch']
         self.session.set_polish_scope('target');self.api.completed.emit(epoch,'过期的原文。','')

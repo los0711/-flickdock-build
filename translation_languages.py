@@ -100,3 +100,37 @@ def detect_source(text):
     # Short phrases often have a low score even when the best result is right.
     # Translation itself independently auto-detects the input language.
     return SOURCE_NAMES.get(code, UNKNOWN_SOURCE)
+
+
+# An AI polish must keep the language of the text it rewrites. The fastText
+# detector runs on a worker; this cheap writing-system check runs synchronously
+# and rejects the common case where a preset rewrites text into another language.
+_SCRIPT_TESTS=(
+    ('cjk',lambda char:'\u3040'<=char<='\u30ff' or '\u3400'<=char<='\u9fff' or '\uf900'<=char<='\ufaff'),
+    ('hangul',lambda char:'\u1100'<=char<='\u11ff' or '\uac00'<=char<='\ud7af'),
+    ('cyrillic',lambda char:'\u0400'<=char<='\u04ff'),
+    ('arabic',lambda char:'\u0600'<=char<='\u06ff' or '\u0750'<=char<='\u077f'),
+    ('hebrew',lambda char:'\u0590'<=char<='\u05ff'),
+    ('devanagari',lambda char:'\u0900'<=char<='\u097f'),
+    ('thai',lambda char:'\u0e00'<=char<='\u0e7f'),
+    ('greek',lambda char:'\u0370'<=char<='\u03ff'),
+    ('latin',lambda char:'a'<=char.lower()<='z' or '\u00c0'<=char<='\u024f'),
+)
+
+
+def script_family(text):
+    """Dominant writing system, or None for short, empty or mixed text."""
+    counts={}
+    for char in str(text):
+        for name,belongs in _SCRIPT_TESTS:
+            if belongs(char):counts[name]=counts.get(name,0)+1;break
+    total=sum(counts.values())
+    if total<4:return None
+    name,count=max(counts.items(),key=lambda item:item[1])
+    return name if count>=total*.6 else None
+
+
+def script_changed(before,after):
+    """True only when both texts have a clear, different dominant script."""
+    first,second=script_family(before),script_family(after)
+    return bool(first and second and first!=second)

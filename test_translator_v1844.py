@@ -56,7 +56,7 @@ class IncrementalTests(unittest.TestCase):
         self.session.source='zh';self.session.target='zh';self.session.edit_source('你好，世界。');self.session.translate()
         self.assertFalse(self.api.calls);self.assertEqual(self.session.result,'你好，世界。')
         self.session.source='en';self.session.target='zh';self.session.set_polish_scope('source');self.session.polish('精简')
-        self.api.finish('Edited source.');self.session.translate();self.api.finish_units()
+        self.api.finish('编辑后的原文。')
         self.assertEqual(len(self.session.source_revisions),1);self.session.undo('source');self.assertEqual(self.session.source_text,'你好，世界。')
     def test_large_document_submits_only_one_sentence_on_edit(self):
         text=' '.join(f'This is sentence number {i} with a delivery plan.' for i in range(100))

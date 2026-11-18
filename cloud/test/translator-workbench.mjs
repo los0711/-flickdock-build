@@ -12,7 +12,8 @@ assert.equal(response.status,200);let result=await response.json();assert.equal(
 assert.match(seen.messages[0].content,/selected source language is 英语/);assert.match(seen.messages[0].content,/FlickDock/);
 const polish=body({operation:'polish',instruction:'使用亲切的语气',original:'A source text',glossary:['FlickDock']});
 response=await translate(request(polish),env,provider);assert.equal(response.status,200);result=await response.json();assert.equal(result.operation,'polish');
-assert.deepEqual(seen.messages,[{role:'user',content:JSON.stringify({instruction:polish.instruction,text:polish.text})}]);
+assert.equal(seen.messages.length,2);assert.equal(seen.messages[0].role,'system');assert.match(seen.messages[0].content,/same language/);
+assert.deepEqual(seen.messages[1],{role:'user',content:JSON.stringify({instruction:polish.instruction,text:polish.text})});
 const before=calls;assert.equal((await translate(request(polish),env,provider)).status,409);assert.equal(calls,before);
 for(const options of [{operation:'unknown'},{source:'invalid'},{glossary:[{}]},{glossary:['a'.repeat(81)]},{glossary:['x\0y']},
   {instruction:'must require polish'},{operation:'polish',instruction:'',original:''},{operation:'polish',instruction:'x'.repeat(1001),original:''},
@@ -36,7 +37,8 @@ for(const [scope,text,instruction,rewritten] of [
   const input=body({operation:'polish',polish_scope:scope,original:'Unselected context',text,instruction,glossary:['FlickDock']});
   response=await translate(request(input),env,async(url,options)=>{
     const {messages}=JSON.parse(options.body);
-    assert.deepEqual(messages,[{role:'user',content:JSON.stringify({instruction,text})}]);
+    assert.equal(messages.length,2);assert.equal(messages[0].role,'system');assert.match(messages[0].content,/same language/);
+    assert.deepEqual(messages[1],{role:'user',content:JSON.stringify({instruction,text})});
     return Response.json({choices:[{finish_reason:'stop',message:{content:rewritten}}]});
   });
   assert.equal(response.status,200);

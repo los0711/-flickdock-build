@@ -11,8 +11,12 @@ import time
 from PySide6.QtCore import QObject, QThreadPool, QTimer, Signal, Qt
 
 from sync_files import DiskWork
-from translation_languages import MAX_TEXT_CHARS, SOURCE_NAMES, TARGETS, UNKNOWN_SOURCE, detect_source
+from translation_languages import MAX_TEXT_CHARS, SOURCE_NAMES, TARGETS, UNKNOWN_SOURCE, detect_source, script_changed
 from translation_document import TranslationDocument
+
+# A preset describes tone or length, never a different language. Keep this
+# prefix inside the provider's 1000-character instruction limit.
+POLISH_LANGUAGE_GUARD = '保持输入文本的语言不变，不要翻译或切换语言。'
 
 
 class TranslatorSession(QObject):
@@ -278,7 +282,10 @@ class TranslatorSession(QObject):
         self._pending=dict(kind='polish',scope=scope,before=base,instruction=instruction,regenerate=regenerate)
         options=dict(original=self.source_text,glossary=self.store.data['glossary'])
         if scope=='source':options['scope']='source'
-        self.api.polish(self.epoch,base,self.target,instruction,**options)
+        # Prefix instead of appending so a long custom instruction cannot drop
+        # the language lock at the end of the provider's bounded field.
+        guarded=(POLISH_LANGUAGE_GUARD+instruction)[:1000]
+        self.api.polish(self.epoch,base,self.target,guarded,**options)
         self.changed.emit();return True
 
     def _completed(self,epoch,result,error):
@@ -287,6 +294,8 @@ class TranslatorSession(QObject):
         self.elapsed_ms=round((time.perf_counter()-self._started)*1000)
         if error:
             self.phase='error';self.error=error;self.changed.emit();return
+        if pending.get('kind')=='polish' and script_changed(pending.get('before',''),result):
+            self.phase='error';self.error='润色结果的语言与输入不一致，已保留原内容。';self.changed.emit();return
         if pending.get('scope')=='source':
             if len(result)>MAX_TEXT_CHARS:
                 self.phase='error';self.error='润色后的原文超过 16,000 个字符，原文已保留。';self.changed.emit();return

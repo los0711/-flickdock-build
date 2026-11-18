@@ -159,7 +159,7 @@ class TranslatorUITests(TestCase):
     def test_hover_reveals_the_following_lines_and_keeps_the_native_preview_geometry(self):
         view=self.view;document='\n'.join(f'Line {index:02d} with text to see after scrolling.' for index in range(40))
         view.source_editor.setPlainText(document);view._set_polish_scope('source')
-        self.assertTrue(view.session.polish('更自然一些'));self.fixture.api.finish('改写后原文。');settle(timeout=.03)
+        self.assertTrue(view.session.polish('更自然一些'));self.fixture.api.finish('Rewritten source text.');settle(timeout=.03)
         editor=view.source_baseline_view;bar=editor.verticalScrollBar()
         before=(editor.geometry(),editor.viewport().geometry(),bar.geometry(),bar.maximum())
         focus=QRect(editor.viewport().mapTo(view,QPoint()),editor.viewport().size())
