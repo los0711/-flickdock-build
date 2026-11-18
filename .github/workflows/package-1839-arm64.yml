@@ -36,21 +36,7 @@ jobs:
           build_macos.run = package_checks
           raise SystemExit(build_macos.main(['--target-arch', 'arm64', '--skip-public-update-check']))
           PY
-      - name: Verify the translator comparison and frozen display on Apple Silicon
-        run: |
-          build/macos-venv/bin/python -m unittest test_overview_translator_followup test_polish_outline_v1849 test_mac_updates test_mac_install test_architecture -q
-          sandbox="$(mktemp -d)"
-          for case in overview translator; do
-            HOME="$sandbox" APPDATA="$sandbox" XDG_CONFIG_HOME="$sandbox" dist/FlickDock.app/Contents/MacOS/FlickDock --verify-$case --verify-output "../outputs/macos-$case-1.8.39.json"
-          done
-          build/macos-venv/bin/python - <<'PY'
-          import json
-          from pathlib import Path
-          for case in ('overview', 'translator'):
-              report=json.loads(Path(f'../outputs/macos-{case}-1.8.39.json').read_bytes())
-              assert report['ok'] and report['frozen'] and report['version']=='1.8.39', case
-          PY
-      - name: Retain the standalone candidate and native checks
+      - name: Retain the verified native package
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: FlickDock-1.8.39-Apple-Silicon-candidate
@@ -59,7 +45,25 @@ jobs:
             ../outputs/FlickDock-1.8.39-macOS-arm64.dmg
             ../outputs/FlickDock-1.8.39-macOS-arm64.pkg
             ../outputs/mac-build-1.8.39-arm64.json
-            ../outputs/macos-overview-1.8.39.json
-            ../outputs/macos-translator-1.8.39.json
           if-no-files-found: error
           retention-days: 3
+      - name: Verify the frozen overview and translator in isolated Cocoa sessions
+        run: |
+          for case in overview translator; do
+            sandbox="$(mktemp -d)"
+            HOME="$sandbox" APPDATA="$sandbox" XDG_CONFIG_HOME="$sandbox" QT_QPA_PLATFORM=cocoa FLICKDOCK_VERIFY_NATIVE_UI=1 dist/FlickDock.app/Contents/MacOS/FlickDock --verify-$case --verify-output "../outputs/macos-$case-1.8.39.json"
+          done
+          build/macos-venv/bin/python - <<'PY'
+          import json
+          from pathlib import Path
+          for case in ('overview', 'translator'):
+              report=json.loads(Path(f'../outputs/macos-{case}-1.8.39.json').read_bytes())
+              assert report['ok'] and report['frozen'] and report['version']=='1.8.39', case
+          PY
+      - name: Isolate the Mac regression suites and capture crash stacks
+        run: |
+          failures=0
+          for case in test_overview_translator_followup.FontPolicyTests test_overview_translator_followup.AlignmentTests test_overview_translator_followup.TranslatorUITests test_overview_translator_followup.OverviewMotionTests test_polish_outline_v1849 test_mac_updates test_mac_install test_architecture; do
+            build/macos-venv/bin/python -X faulthandler -m unittest -v "$case" || failures=1
+          done
+          exit "$failures"
