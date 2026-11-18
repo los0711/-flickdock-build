@@ -80,7 +80,7 @@ def main():
         profile = Path(directory)
         reports = {}
         for option, name in (('--verify-overview','overview'),('--verify-notices','notices'),
-                             ('--verify-transfers','transfers')):
+                             ('--verify-transfers','transfers'),('--verify-translator','translator')):
             path = profile / (name + '.json')
             run([binary, option, '--verify-output', path], env=dict(env, APPDATA=str(profile),
                 LOCALAPPDATA=str(profile), XDG_CONFIG_HOME=str(profile)), timeout=180)

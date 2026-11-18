@@ -10,6 +10,11 @@ PROFILE_FIELDS={'edge':'dock_edge','position':'dock_position','length':'dock_len
 RANGES={'position':(0,100),'length':(32,600),'thickness':(2,40),'opacity':(0,100)}
 
 
+def trigger_active(values):
+    """The enable switch gates hit-testing as well as the painted strip."""
+    return bool(values.get('enabled',True) and values.get('trigger_visible',True))
+
+
 def display_id(screen):
     values=[str(getattr(screen,name,lambda:'')() or '') for name in ('name','manufacturer','model','serialNumber')]
     identity=values[1:] if values[3] and values[3].strip('0 -') else values
@@ -27,6 +32,12 @@ def validate_profiles(value):
             if field in row:
                 if type(row[field]) is not int or not low<=row[field]<=high:raise ValueError('显示器触发条参数无效。')
                 clean[field]=row[field]
+        if 'length_percent' in row:
+            if type(row['length_percent']) is not int or not 1<=row['length_percent']<=100:raise ValueError('触发区域长度比例无效。')
+            clean['length_percent']=row['length_percent']
+        if 'length_pixels' in row:
+            if type(row['length_pixels']) is not int or not 1<=row['length_pixels']<=32768:raise ValueError('触发区域像素长度无效。')
+            clean['length_pixels']=row['length_pixels']
         if 'color' in row:
             if not isinstance(row['color'],str) or not re.fullmatch(r'#[0-9a-fA-F]{6}',row['color']):raise ValueError('显示器标记颜色无效。')
             clean['color']=row['color'].lower()
@@ -41,6 +52,13 @@ def display_values(store,screen,defaults=None):
     if row:
         values.update({target:row[key] for key,target in PROFILE_FIELDS.items() if key in row})
         values['enabled']=row['enabled']
+        if 'length_percent' in row:
+            area=screen.geometry();along=area.height() if values['dock_edge'] in ('left','right') else area.width()
+            values['dock_length']=max(1,round(along*row['length_percent']/100))
+            values['_length_percent']=row['length_percent']
+            values['_full_screen_edge']=True
+        elif 'length_pixels' in row:
+            values['dock_length']=row['length_pixels'];values['_length_pixels']=row['length_pixels'];values['_full_screen_edge']=True
     else:values['enabled']=display_id(screen)==display_id(QGuiApplication.primaryScreen())
     return values
 
@@ -56,9 +74,10 @@ class _Header(QWidget):
 class DisplayGroup(QFrame):
     changed=Signal()
     geometry_changed=Signal()
-    def __init__(self,name,values,expanded,parent):
+    def __init__(self,name,values,expanded,parent,screen=None):
         from app_settings import SettingsToggleSwitch,SettingsComboBox,SettingsSpinBox,SettingsSlider
         super().__init__(parent);self.setObjectName('settingsInset');self.expanded=expanded;self.controls={};self.sliders={};self.color=values['dock_color']
+        self.display=screen or QGuiApplication.primaryScreen();self._percent_mode=False;self._pixels_mode=False;self._loading=False
         box=QVBoxLayout(self);box.setContentsMargins(12,10,12,12);box.setSpacing(12)
         self.header=_Header(self);line=QHBoxLayout(self.header);line.setContentsMargins(0,0,0,0);line.setSpacing(10)
         self.name=QLabel(name,self.header);self.name.setWordWrap(True);self.name.setAttribute(Qt.WA_TransparentForMouseEvents);line.addWidget(self.name,1)
@@ -68,6 +87,9 @@ class DisplayGroup(QFrame):
         self.header.activated.connect(lambda:self.set_expanded(not self.expanded));self.arrow.clicked.connect(lambda:self.set_expanded(not self.expanded))
         box.addWidget(self.header)
         self.details=QWidget(self);details=QVBoxLayout(self.details);details.setContentsMargins(0,0,0,0);details.setSpacing(14)
+        from monitor_diagram import MonitorDiagram
+        self.diagram=MonitorDiagram(self.details);details.addWidget(self.diagram)
+        self.diagram.edge_clicked.connect(self.choose_edge)
         top=QHBoxLayout();top.setSpacing(12);top.addWidget(QLabel('停靠在',self.details))
         self.edge=SettingsComboBox(self.details)
         for label,key in (('左侧','left'),('右侧','right'),('顶部','top'),('底部','bottom')):self.edge.addItem(label,key)
@@ -76,10 +98,23 @@ class DisplayGroup(QFrame):
         self.grid=QGridLayout();self.grid.setSpacing(12);self.panels=[]
         for key,label,unit in (('position','边缘位置',' %'),('length','触发条长度',' px'),('thickness','触发条厚度',' px'),('opacity','不透明度',' %')):
             panel=QWidget(self.details);col=QVBoxLayout(panel);col.setContentsMargins(0,0,0,0);col.setSpacing(8);row=QHBoxLayout();row.addWidget(QLabel(label,panel),1)
-            spin=SettingsSpinBox(panel);spin.setRange(*RANGES[key]);spin.setSuffix(unit);spin.setButtonSymbols(QAbstractSpinBox.NoButtons);spin.setFixedSize(88,28);spin.lineEdit().setMinimumSize(60,18);spin.setAccessibleName(name+label);row.addWidget(spin);col.addLayout(row)
-            slider=SettingsSlider(Qt.Horizontal,panel);slider.setRange(*RANGES[key]);slider.setAccessibleName(name+label);col.addWidget(slider)
+            limits=(1,max(self.display.geometry().width(),self.display.geometry().height())) if key=='length' else RANGES[key]
+            spin=SettingsSpinBox(panel);spin.setRange(*limits);spin.setSuffix(unit);spin.setButtonSymbols(QAbstractSpinBox.NoButtons);spin.setFixedSize(88,28);spin.lineEdit().setMinimumSize(60,18);spin.setAccessibleName(name+label);row.addWidget(spin);col.addLayout(row)
+            slider=SettingsSlider(Qt.Horizontal,panel);slider.setRange(*limits);slider.setAccessibleName(name+label);col.addWidget(slider)
             spin.valueChanged.connect(slider.setValue);slider.valueChanged.connect(spin.setValue);spin.valueChanged.connect(self.changed)
             self.controls[key]=spin;self.sliders[key]=slider;self.panels.append(panel)
+        self._legacy_length_panel=self.panels[1];self._legacy_length_panel.hide()
+        percent_panel=QWidget(self.details);pct_layout=QVBoxLayout(percent_panel);pct_layout.setContentsMargins(0,0,0,0);pct_layout.setSpacing(8)
+        pct_row=QHBoxLayout();pct_row.addWidget(QLabel('触发区域长度',percent_panel),1)
+        self.length_percent=SettingsSpinBox(percent_panel);self.length_percent.setRange(1,100);self.length_percent.setSuffix(' %');self.length_percent.setFixedSize(88,28)
+        self.length_percent.setButtonSymbols(QAbstractSpinBox.NoButtons);self.length_percent.setAccessibleName(name+'触发区域长度百分比');pct_row.addWidget(self.length_percent);pct_layout.addLayout(pct_row)
+        self.percent_slider=SettingsSlider(Qt.Horizontal,percent_panel);self.percent_slider.setRange(1,100);pct_layout.addWidget(self.percent_slider)
+        self.length_percent.valueChanged.connect(self.percent_slider.setValue);self.percent_slider.valueChanged.connect(self.length_percent.setValue)
+        self.length_percent.valueChanged.connect(self.percent_changed);self.controls['length'].valueChanged.connect(self.legacy_length_changed)
+        self._legacy_length_panel.layout().itemAt(0).layout().removeWidget(self.controls['length'])
+        self.controls['length'].setParent(percent_panel);self.controls['length'].show()
+        pixels=QHBoxLayout();pixels.addWidget(QLabel('像素长度',percent_panel),1);pixels.addWidget(self.controls['length']);pct_layout.addLayout(pixels)
+        self.panels[1]=percent_panel
         details.addLayout(self.grid);box.addWidget(self.details)
         self._height_timer=QTimer(self);self._height_timer.setSingleShot(True)
         self._height_timer.timeout.connect(self._refresh_height)
@@ -88,17 +123,69 @@ class DisplayGroup(QFrame):
         self.animation.valueChanged.connect(self._expand_frame)
         self.animation.finished.connect(self._expanded_end)
         self.toggle.toggled.connect(self.changed);self.edge.currentIndexChanged.connect(self.changed)
+        self.changed.connect(self.refresh_diagram)
         self.load(values);self.set_expanded(expanded,animate=False);self._columns=None
         self._adapt()
 
     def load(self,values):
+        self._loading=True
         controls=[self.toggle,self.edge,*self.controls.values()]
         for control in controls:control.blockSignals(True)
+        along=max(self.display.geometry().width(),self.display.geometry().height())
+        self.controls['length'].setRange(1,along);self.sliders['length'].setRange(1,along)
         self.toggle.setChecked(values['enabled']);self.edge.setCurrentIndex(self.edge.findData(values['dock_edge']));self.color=values['dock_color'];self._update_color()
         for key,control in self.controls.items():control.setValue(values[PROFILE_FIELDS[key]]);self.sliders[key].setValue(control.value())
         for control in controls:control.blockSignals(False)
+        self._percent_mode='_length_percent' in values
+        self._pixels_mode='_length_pixels' in values
+        self.length_percent.blockSignals(True)
+        area=self.display.geometry();along=area.height() if values['dock_edge'] in ('left','right') else area.width()
+        self.length_percent.setValue(values.get('_length_percent',max(1,min(100,round(values['dock_length']/max(1,along)*100)))))
+        self.percent_slider.setValue(self.length_percent.value());self.length_percent.blockSignals(False)
+        self._loading=False;self.refresh_diagram()
 
-    def profile(self):return dict(enabled=self.toggle.isChecked(),edge=self.edge.currentData(),color=self.color,**{key:control.value() for key,control in self.controls.items()})
+    def profile(self):
+        row=dict(enabled=self.toggle.isChecked(),edge=self.edge.currentData(),color=self.color,**{key:control.value() for key,control in self.controls.items()})
+        if self._percent_mode:row['length_percent']=self.length_percent.value()
+        elif self._pixels_mode:row['length_pixels']=self.controls['length'].value()
+        row['length']=max(32,min(600,row['length']))
+        return row
+
+    def choose_edge(self,edge):
+        same=self.edge.currentData()==edge
+        self.edge.setCurrentIndex(self.edge.findData(edge))
+        self.toggle.setChecked(not self.toggle.isChecked() if same else True)
+        self.refresh_diagram()
+
+    def percent_changed(self,*_):
+        if self._loading:return
+        self._percent_mode=True;self._pixels_mode=False
+        area=self.display.geometry();along=area.height() if self.edge.currentData() in ('left','right') else area.width()
+        spin,slider=self.controls['length'],self.sliders['length'];spin.blockSignals(True);slider.blockSignals(True)
+        spin.setValue(max(1,round(along*self.length_percent.value()/100)));slider.setValue(spin.value())
+        spin.blockSignals(False);slider.blockSignals(False);self.changed.emit()
+
+    def legacy_length_changed(self,*_):
+        if self._loading:return
+        self._pixels_mode=self._percent_mode or self._pixels_mode or not 32<=self.controls['length'].value()<=600
+        self._percent_mode=False;self.refresh_diagram();self.changed.emit()
+
+    def refresh_diagram(self):
+        from magnetic_settings import default_edges
+        rows=default_edges();edge=self.edge.currentData() or 'right';area=self.display.geometry()
+        along=area.height() if edge in ('left','right') else area.width()
+        length=self.length_percent.value() if self._percent_mode else max(1,min(100,round(self.controls['length'].value()/max(1,along)*100)))
+        if self._percent_mode:
+            spin,slider=self.controls['length'],self.sliders['length'];spin.blockSignals(True);slider.blockSignals(True)
+            spin.setValue(max(1,round(along*length/100)));slider.setValue(spin.value())
+            spin.blockSignals(False);slider.blockSignals(False)
+        if not self._percent_mode:
+            self.length_percent.blockSignals(True);self.percent_slider.blockSignals(True)
+            self.length_percent.setValue(length);self.percent_slider.setValue(length)
+            self.length_percent.blockSignals(False);self.percent_slider.blockSignals(False)
+        for key,row in rows.items():row['enabled']=key==edge
+        rows[edge].update(length=length,position=round(length/2+(100-length)*self.controls['position'].value()/100),width=self.controls['thickness'].value())
+        self.diagram.set_values(rows,self.toggle.isChecked(),edge)
 
     def _update_color(self):
         ratio=self.devicePixelRatioF();swatch=QPixmap(round(16*ratio),round(16*ratio));swatch.setDevicePixelRatio(ratio);swatch.fill(Qt.transparent)
@@ -152,6 +239,8 @@ class DisplayGroup(QFrame):
 
     def apply_theme(self,theme):
         self.dark=theme=='dark'
+        self.diagram.dark=self.dark;self.diagram.update()
+        for control in (self.length_percent,self.percent_slider):control.dark=self.dark;control.update()
         for control in (self.toggle,self.edge,*self.controls.values()):control.dark=self.dark;control.update()
         from native_ui_common import icon
         self.arrow.setIcon(icon('chevron-down' if self.expanded else 'chevron-right','#A1A1AA' if self.dark else '#68686D'))
@@ -186,7 +275,7 @@ class DisplayTriggerEditor(QWidget):
             if key in self.rows:
                 row=self.rows[key];row.load(values);row.name.setText(name)
             else:
-                row=DisplayGroup(name,values,i==0,self.body);self.rows[key]=row
+                row=DisplayGroup(name,values,i==0,self.body,screen=screen);self.rows[key]=row
                 row.changed.connect(lambda key=key:self.save(key))
                 row.geometry_changed.connect(self._refresh_height)
             self.body_layout.removeWidget(row);self.body_layout.insertWidget(i,row);row.apply_theme(self._theme)

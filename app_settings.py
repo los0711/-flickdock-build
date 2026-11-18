@@ -34,7 +34,7 @@ from platform_startup import (StartupManager, CallbackBackend,
 from platform_native import remove_host_window_shadow
 from surface_morph import paint_surface_shadow
 from native_ui_common import (reference_font, font_css_stack, rounded_popup, screen_for_widget, colors as ui_colors,
-                              paint_rounded_surface, qss_color, RADIUS_CARD_PX, RADIUS_SUBCONTROL_PX,
+                              paint_rounded_surface, qss_color, RADIUS_CARD_PX, RADIUS_SUBCONTROL_PX, RADIUS_WINDOW_PX,
                               RoundedSurfaceFrame, RoundedPopupBackdrop, RoundedScrollBar)
 
 
@@ -636,6 +636,7 @@ class SettingsStore(QObject):
         self._preference_writer=None
         self.base = Path(base).resolve()
         self.path = self.base / "settings.json"
+        from magnetic_settings import defaults as magnetic_defaults
         self._data = {"theme": "light", "accent_color":"#000000", "capture_dir": str(self.base / "saved"), "autostart": True,
                       "capture_mode": "reference", "keep_empty_handle": True,
                       "sync_upload_enabled": True, "sync_receive_enabled": True,
@@ -648,10 +649,14 @@ class SettingsStore(QObject):
                       "dock_position": 8, "dock_length": 76, "dock_thickness": 8,
                       "trigger_visible": True, "dock_color": "#567daf", "dock_opacity": 100,
                       "startup_initialized": False, "display_triggers": {}, "automatic_updates": True,
-                      "lan_receive_dir": str(Path.home() / "Downloads")}
+                      "lan_receive_dir": str(Path.home() / "Downloads"),
+                      "magnetic_edges": magnetic_defaults()}
         try:
             data = json.loads(self.path.read_text(encoding="utf-8"))
             if isinstance(data, dict):
+                from magnetic_settings import validate as validate_magnetic
+                try:self._data['magnetic_edges']=validate_magnetic(data.get('magnetic_edges',{}))
+                except ValueError:pass
                 from display_triggers import validate_profiles
                 try:self._data['display_triggers']=validate_profiles(data.get('display_triggers',{}))
                 except ValueError:pass
@@ -722,6 +727,11 @@ class SettingsStore(QObject):
 
     @property
     def accent_color(self):return self._data['accent_color']
+
+    @property
+    def magnetic_edges(self):
+        from copy import deepcopy
+        return deepcopy(self._data['magnetic_edges'])
 
     @property
     def capture_dir(self) -> Path:
@@ -878,8 +888,11 @@ class SettingsStore(QObject):
                trigger_visible=None, dock_color=None, dock_opacity=None,
                capture_mode=None, keep_empty_handle=None, trigger_view=None,
                shake_sensitivity=None, sync_upload_enabled=None, translation_enabled=None, translation_target=None,
-               sync_receive_enabled=None, clipboard_sync_enabled=None, clipboard_notice_seen=None, clipboard_success_notice=None, display_triggers=None, automatic_updates=None, video_link_prompt=None, video_download_dir=None) -> bool:
+               sync_receive_enabled=None, clipboard_sync_enabled=None, clipboard_notice_seen=None, clipboard_success_notice=None, display_triggers=None, automatic_updates=None, video_link_prompt=None, video_download_dir=None, magnetic_edges=None) -> bool:
         candidate = dict(self._data)
+        if magnetic_edges is not None:
+            from magnetic_settings import validate as validate_magnetic
+            candidate['magnetic_edges']=validate_magnetic(magnetic_edges)
         if accent_color is not None:
             from theme_accent import normalize
             candidate['accent_color']=normalize(accent_color)
@@ -1191,7 +1204,7 @@ class ReferenceModalDialog(QDialog):
         color=QColor(0,0,0,107) if self._surface_dark else QColor(18,31,53,41)
         paint_surface_shadow(painter,rect,self._shadow_cache,20,QPoint(0,4),color)
         fill=QColor(ui_colors('dark' if self._surface_dark else 'light')['dialog_surface'])
-        radius=16 if sys.platform=='darwin' else 10
+        radius=RADIUS_WINDOW_PX
         paint_rounded_surface(painter,rect,radius,fill,
                               QColor(255,255,255,20) if self._surface_dark else QColor(0,0,0,23))
 
@@ -1298,7 +1311,7 @@ class SettingsSurface(QFrame):
     def paintEvent(self, event):
         painter = QPainter(self)
         background = QColor(ui_colors('dark' if self.dark else 'light')['dialog_surface'])
-        radius=16 if sys.platform=='darwin' else 10
+        radius=RADIUS_WINDOW_PX
         paint_rounded_surface(painter,self.rect(),radius,background,
                               QColor(255,255,255,20) if self.dark else QColor(0,0,0,23))
         painter.end()
@@ -1759,7 +1772,7 @@ class SettingsDialog(QDialog):
             header.insertWidget(0,traffic)
         root.addWidget(self.title_bar);root.addWidget(self.update_activity)
         root.addWidget(self.update_notes_area)
-        navigation_body=QWidget(self.surface);navigation=QHBoxLayout(navigation_body);navigation.setContentsMargins(14,8,0,0);navigation.setSpacing(0)
+        navigation_body=QWidget(self.surface);navigation=QHBoxLayout(navigation_body);navigation.setContentsMargins(16,8,0,0);navigation.setSpacing(0)
         from settings_navigation import AnimatedCategoryList
         self.category_list=AnimatedCategoryList(navigation_body);self.category_list.setObjectName('settingsCategories');self.category_list.setFixedWidth(146)
         self.category_list.setAccessibleName('设置分类');self.category_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -1769,7 +1782,7 @@ class SettingsDialog(QDialog):
         self.scroll.setViewportMargins(0,0,0,2)
         # Qt reserves six pixels for its scroll bar; the source's overlay
         # scrollbar occupies that space inside the right-hand 20px inset.
-        self.body_layout.setContentsMargins(21,20,15,12);self.body_layout.setSpacing(16)
+        self.body_layout.setContentsMargins(20,24,14,16);self.body_layout.setSpacing(16)
         self._empty_layout(self.body_layout)
         self.account_slot=QWidget(self.body);self.account_slot_layout=QVBoxLayout(self.account_slot)
         self.account_slot_layout.setContentsMargins(0,0,0,0);self.account_slot_layout.setSpacing(0)
@@ -1801,6 +1814,13 @@ class SettingsDialog(QDialog):
         self.accent_reset_button.setAccessibleName('恢复默认黑色主题');self.accent_reset_button.setAutoDefault(False)
         self.accent_reset_button.setFixedHeight(28);self.accent_reset_button.clicked.connect(lambda:self._set_accent_color('#000000'))
         accent.addWidget(self.accent_reset_button);al.addLayout(accent)
+        from accent_presets import AccentSwatch,PRESETS
+        preset_row=QHBoxLayout();preset_row.setSpacing(8);preset_row.addWidget(QLabel('预设',appearance))
+        self.accent_presets={}
+        for name,color in PRESETS:
+            swatch=AccentSwatch(name,color,appearance);swatch.clicked.connect(lambda _,color=color:self._set_accent_color(color))
+            self.accent_presets[color]=swatch;preset_row.addWidget(swatch)
+        preset_row.addStretch();al.addLayout(preset_row)
         self._accent_picker=None
         # Preserve the exact input objects and all original range/preview signals.
         dock=self.dock_card;dl=dock.layout();self._empty_layout(dl)
@@ -1808,7 +1828,7 @@ class SettingsDialog(QDialog):
         dl.setContentsMargins(16,16,16,16);dl.setSpacing(16)
         section=QLabel('边缘停靠与触发',dock);section.setObjectName('settingsSection');dl.addWidget(section)
         dr=QGridLayout();dr.setHorizontalSpacing(12)
-        trigger=self._reference_toggle(self.trigger_visible_checkbox,'显示触发区域',dock)
+        trigger=self._reference_toggle(self.trigger_visible_checkbox,'启用触发区域',dock)
         empty=self._reference_toggle(self.keep_empty_handle_checkbox,'空搁架仍显示边缘入口',dock)
         # Each label and its switch form one bounded option, at both widths.
         for option in (trigger,empty):
@@ -1830,6 +1850,10 @@ class SettingsDialog(QDialog):
         self.display_trigger_editor.profiles_changed.connect(self._emit_preview)
         self.display_trigger_editor.geometry_changed.connect(self._schedule_settings_fit)
         dl.addWidget(self.display_trigger_editor)
+        from magnetic_editor import MagneticEditor
+        self.magnetic_editor=MagneticEditor(self.store,dock)
+        self.magnetic_editor.setObjectName('settingsInset')
+        dl.addWidget(self.magnetic_editor)
         sensitivity_panel=self._reference_subcard(dock);sl=QHBoxLayout(sensitivity_panel);sl.setContentsMargins(12,12,12,12);sl.setSpacing(16)
         sl.addWidget(QLabel('摇动灵敏度 (1–100)',sensitivity_panel));sl.addWidget(self.shake_sensitivity_slider,1)
         self.shake_sensitivity_spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons);self.shake_sensitivity_spin.setFixedSize(64,28)
@@ -1920,7 +1944,7 @@ class SettingsDialog(QDialog):
         footer_frame=QFrame(self.surface);self.footer_frame=footer_frame
         footer_frame.setObjectName('settingsFooter');footer_frame.setFixedHeight(52)
         footer_frame.setAttribute(Qt.WidgetAttribute.WA_StyledBackground,True)
-        footer=QHBoxLayout(footer_frame);footer.setContentsMargins(24,0,24,0);footer.setSpacing(10)
+        footer=QHBoxLayout(footer_frame);footer.setContentsMargins(20,0,20,0);footer.setSpacing(10)
         self.author_button.setMinimumHeight(28);footer.addWidget(self.author_button)
         dot=QLabel('·',footer_frame);dot.setObjectName('settingsDetail');footer.addWidget(dot)
         self.reference_about_button=_SettingsButton('关于与第三方许可',footer_frame);self.reference_about_button.setObjectName('settingsLink')
@@ -2193,8 +2217,8 @@ class SettingsDialog(QDialog):
         dock_heading = QLabel("边缘停靠", card)
         dock_heading.setObjectName("settingsSection")
         layout.addWidget(dock_heading)
-        self.trigger_visible_checkbox = SettingsToggleSwitch("显示触发区域", card)
-        self.trigger_visible_checkbox.setAccessibleName("显示触发区域")
+        self.trigger_visible_checkbox = SettingsToggleSwitch("启用触发区域", card)
+        self.trigger_visible_checkbox.setAccessibleName("启用触发区域")
         layout.addWidget(self.trigger_visible_checkbox)
         edge_row = QHBoxLayout()
         edge_row.addWidget(QLabel("停靠边缘", card), 1)
@@ -2374,6 +2398,7 @@ class SettingsDialog(QDialog):
         painter.setBrush(QColor(self._draft_accent));painter.setPen(QPen(QColor('#A3A3A3'),1))
         painter.drawRoundedRect(QRectF(2.5,2.5,13,13),3,3);painter.end()
         self.accent_color_button.setIcon(QIcon(swatch))
+        for color,button in getattr(self,'accent_presets',{}).items():button.setChecked(color.upper()==self._draft_accent)
         self._queue_preferences(accent_color=self._draft_accent)
 
     def choose_accent_color(self):
@@ -2404,6 +2429,7 @@ class SettingsDialog(QDialog):
     def load_values(self):
         self._loading_values = True
         self.display_trigger_editor.load_values()
+        self.magnetic_editor.load_values()
         self.automatic_updates_checkbox.setChecked(self.store.automatic_updates)
         self.sync_upload_checkbox.setChecked(self.store.sync_upload_enabled)
         self.sync_receive_checkbox.setChecked(self.store.sync_receive_enabled)
@@ -2496,6 +2522,7 @@ class SettingsDialog(QDialog):
             self._queue_preferences(capture_dir=chosen)
 
     def _connect_live_preferences(self):
+        self.magnetic_editor.changed.connect(lambda:self._queue_preferences(magnetic_edges=self.magnetic_editor.values()))
         for control,key in ((self.theme_combo,'theme'),(self.view_combo,'view_mode'),
                             (self.capture_mode_combo,'capture_mode'),(self.trigger_view_combo,'trigger_view')):
             control.currentIndexChanged.connect(lambda _,control=control,key=key:self._queue_preferences(**{key:control.currentData()}))
@@ -2552,7 +2579,7 @@ class SettingsDialog(QDialog):
                 self.theme_combo.setCurrentIndex(1 if self.store.theme=='dark' else 0)
                 self.theme_combo.blockSignals(blocked)
             self._sync_direction_controls();self._refresh_translation_preferences()
-            self.apply_theme(self.store.theme)
+            if set(keys)-{'magnetic_edges'}:self.apply_theme(self.store.theme)
 
     def save(self):
         """Compatibility entry point: apply edited values without closing."""
@@ -2575,7 +2602,7 @@ class SettingsDialog(QDialog):
 
     def draft(self):
         """Return the form values without committing preferences or new behavior."""
-        return {"theme": self.theme_combo.currentData(), "accent_color":self._draft_accent, "capture_dir": self.folder_edit.text(),
+        return {"theme": self.theme_combo.currentData(), "accent_color":self._draft_accent, "magnetic_edges":self.magnetic_editor.values(), "capture_dir": self.folder_edit.text(),
                 "capture_mode": self.capture_mode_combo.currentData(),
                 "keep_empty_handle": self.keep_empty_handle_checkbox.isChecked(),
                 "trigger_view": self.trigger_view_combo.currentData(),
@@ -2596,6 +2623,8 @@ class SettingsDialog(QDialog):
         self.surface.dark = dark
         self.surface.update()
         if hasattr(self,'display_trigger_editor'):self.display_trigger_editor.apply_theme(theme)
+        if hasattr(self,'magnetic_editor'):self.magnetic_editor.apply_theme(theme)
+        for button in getattr(self,'accent_presets',{}).values():button.dark=dark;button.update()
         shadow=self.surface.graphicsEffect()
         if isinstance(shadow,QGraphicsDropShadowEffect):
             from surface_morph import neutral_shadow_color
@@ -2724,7 +2753,7 @@ class SettingsDialog(QDialog):
             QDialog#flickdockSettings QKeySequenceEdit {{background:transparent;border:0;font-size:12px;}}
             QDialog#flickdockSettings QKeySequenceEdit QLineEdit {{padding:2px 5px;}}
             QDialog#flickdockSettings QPushButton {{font-size:12px;padding:4px 10px;background:{ref_control};border:0;}}
-            QFrame#settingsFooter {{border-top:1px solid {ref_edge};background:{ui_colors(theme)['dialog_surface']};border-bottom-left-radius:10px;border-bottom-right-radius:10px;}}
+            QFrame#settingsFooter {{border-top:1px solid {ref_edge};background:{ui_colors(theme)['dialog_surface']};border-bottom-left-radius:{RADIUS_WINDOW_PX}px;border-bottom-right-radius:{RADIUS_WINDOW_PX}px;}}
         '''
         for switch in self.findChildren(SettingsToggleSwitch):switch.dark=dark;switch.update()
         style+=f'''

@@ -30,13 +30,15 @@ class DockHandle(QWidget):
         self.appearance=Spring(self,{'alpha':0},lambda _:self.update(),motion=manager.motion)
         self.position_at_edge()
 
-    def screen_area(self): return self.display.availableGeometry()
+    def screen_area(self):
+        return self.display.geometry() if self.values().get('_full_screen_edge') else self.display.availableGeometry()
 
     def values(self):
         from display_triggers import display_values
         return display_values(self.manager.settings,self.display,getattr(self.manager,'_dock_preview_values',None))
 
     def activation_region(self):
+        if not self.active():return QRect()
         region=QRect(self.geometry())
         if sys.platform=='darwin':
             screen=self.display.geometry()
@@ -53,7 +55,7 @@ class DockHandle(QWidget):
         self.update()  # Color/opacity changes need paint even when geometry stays identical.
 
     def show_handle(self):
-        if not self.values()["enabled"]:self.hide();return
+        if not self.active():self.appearance.stop();self.hide();return
         self.position_at_edge()
         if not self.isVisible():
             self.appearance.jump({'alpha':0}); self.show()
@@ -61,6 +63,10 @@ class DockHandle(QWidget):
             self.repaint()
             self.appearance.animate({'alpha':1},response=.18,damping=1)
         raise_edge_target(self)
+
+    def active(self):
+        from display_triggers import trigger_active
+        return trigger_active(self.values())
 
     def paintEvent(self,event):
         painter=QPainter(self)
@@ -76,18 +82,37 @@ class DockHandle(QWidget):
         painter.end()
 
     def enterEvent(self,event):
+        if not self.active():super().enterEvent(event);return
         self.manager.edge=self
-        if not self.manager.edge_suppressed: self.manager.show_docked()
+        magnetic=getattr(self.manager,'edge_file_drag',None)
+        if not self.manager.edge_suppressed and (not (magnetic and magnetic.prepared) or getattr(magnetic,'coexisting_preview',False)): self.manager.show_docked()
         super().enterEvent(event)
+
+    def _magnetic_event(self,event,*,dropping=False):
+        magnetic=getattr(self.manager,'edge_file_drag',None)
+        if not magnetic or not magnetic.prepared:return False
+        from edge_file_drag import file_urls
+        position=self.mapToGlobal(event.position().toPoint())
+        if not file_urls(event.mimeData()) or magnetic.visual.target_at(position) is None:return False
+        # A native re-order can briefly route an event to the original narrow
+        # handle. Keep one intake owner instead of revealing a second target.
+        if dropping:magnetic._native_drop(event,position)
+        else:magnetic._native_move(event,position,entering=True)
+        if not dropping and getattr(magnetic,'coexisting_preview',False):self.manager.show_docked()
+        return True
 
     def dragEnterEvent(self,event):
         self.manager.edge=self
+        if self._magnetic_event(event):return
+        if not self.active():event.ignore();return
         if self.manager.shelf.accepts_content_drop(event):
             event.setDropAction(Qt.DropAction.CopyAction); event.accept()
             self.manager.show_docked()
         else: event.ignore()
 
     def dropEvent(self,event):
+        if self._magnetic_event(event,dropping=True):return
+        if not self.active():event.ignore();return
         if self.manager.shelf.accepts_content_drop(event) and self.manager.shelf.receive_mime('permanent',event.mimeData()):
             event.setDropAction(Qt.DropAction.CopyAction); event.accept()
         else: event.ignore()

@@ -6,7 +6,7 @@ import time
 import weakref
 from PySide6.QtCore import QEasingCurve,QEvent,QObject,QPoint,QPropertyAnimation,QTimer,Qt
 from PySide6.QtGui import QColor,QPalette
-from PySide6.QtWidgets import QAbstractButton,QApplication,QMessageBox,QToolTip
+from PySide6.QtWidgets import QAbstractButton,QApplication,QMessageBox,QToolButton,QToolTip,QWidget
 from shiboken6 import isValid
 
 _theme = 'light'
@@ -16,6 +16,13 @@ TOOLTIP_FADE_MS = 90
 # Legacy painter aliases resolve through the one semantic palette in
 # native_ui_common.colors; keep the Qt color strings valid for QColor.
 _PALETTES = ('light', 'dark')
+
+
+def allows_hover_hint(widget):
+    if not isinstance(widget,QAbstractButton):return False
+    hides_text=isinstance(widget,QToolButton) and widget.toolButtonStyle()==Qt.ToolButtonIconOnly
+    if widget.text().strip() and not hides_text:return False
+    return not widget.icon().isNull() or bool(getattr(widget,'glyph',None)) or bool(widget.property('flickdockIconOnly'))
 
 
 def _style_tooltip(widget):
@@ -54,7 +61,7 @@ class _TooltipCorners(QObject):
 
     def _show_button_tip(self):
         button=self._current_button()
-        if button is None or not button.isVisible() or not button.underMouse() or not button.toolTip():return
+        if not allows_hover_hint(button) or not button.isVisible() or not button.underMouse() or not button.toolTip():return
         # One anchor rule for every button: centred below, flipped above only
         # when the tip would leave the screen, so neighbours never disagree.
         top=button.mapToGlobal(QPoint(0,0));width=button.width()
@@ -69,6 +76,8 @@ class _TooltipCorners(QObject):
 
     def eventFilter(self,watched,event):
         if getattr(self,'_updating',False):return False
+        if event.type()==QEvent.ToolTip and isinstance(watched,QWidget) and not allows_hover_hint(watched):
+            event.accept();return True
         if isinstance(watched,QAbstractButton):
             if event.type()==QEvent.Enter:
                 self._timer.stop();self._button=weakref.ref(watched);self._entered_at=time.monotonic()
@@ -143,11 +152,11 @@ _DARK.update({'#fff':'#0a0a0a','#ffffff':'#0a0a0a','#fefeff':'#171717',
               '#1d1d1f':'#fafafa','#282d35':'#fafafa','#313741':'#fafafa',
               '#7c8796':'#a3a3a3','#8490a0':'#a3a3a3','#a3a3a3':'#737373'})
 
-def qss(source, font_family, *, for_button=False):
+def qss(source, font_family):
     from native_ui_common import readable_qss,font_css_stack
     from PySide6.QtWidgets import QApplication
     app=QApplication.instance()
-    stack=font_css_stack(for_button=for_button) if app is not None and getattr(app,'_flickdock_fonts_loaded',False) else f"'{font_family}'"
+    stack=font_css_stack() if app is not None and getattr(app,'_flickdock_fonts_loaded',False) else f"'{font_family}'"
     result = source.replace("'PingFang SC'", stack).replace("'FlickDock UI'", stack)
     if _theme == 'dark':
         result = re.sub(r'#[0-9a-fA-F]{3,8}\b', lambda m: _DARK.get(m.group(0).lower(), m.group(0)), result)
@@ -156,7 +165,7 @@ def qss(source, font_family, *, for_button=False):
 
 def style_widget(widget, source, font_family):
     widget._flickdock_style = source
-    widget.setStyleSheet(qss(source, font_family,for_button=isinstance(widget,QAbstractButton)))
+    widget.setStyleSheet(qss(source, font_family))
 
 def apply_application(app, font_family):
     from native_ui_common import colors,font_css_stack,UiButton,icon
@@ -201,6 +210,6 @@ def apply_application(app, font_family):
             name,tint=named_icon;widget.setIcon(icon(name,c.get(tint,tint)))
         source = getattr(widget, '_flickdock_style', None)
         if source is not None:
-            resolved=qss(source, font_family,for_button=isinstance(widget,QAbstractButton))
+            resolved=qss(source, font_family)
             if widget.styleSheet()!=resolved:widget.setStyleSheet(resolved)
         widget.update()

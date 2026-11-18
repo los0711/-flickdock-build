@@ -422,13 +422,13 @@ class VideoDialog(ReferenceModalDialog):
         self.manager=manager;self.controller=controller;self.results={};self.cards={};self._theme=None;self.cover_preview=None
         self._phase_timer=QTimer(self);self._phase_timer.setInterval(1000);self._phase_timer.timeout.connect(self._tick_phase_times)
         self.setWindowTitle('FlickDock · 视频解析');self.setMinimumSize(VIDEO_WINDOW_MIN_SIZE)
-        self.body_layout.setContentsMargins(18,10,18,16);self.body_layout.setSpacing(20)
+        self.body_layout.setContentsMargins(22,12,22,20);self.body_layout.setSpacing(20)
         self.title_bar=QWidget(self.surface);self.title_bar.setFixedHeight(44)
-        header=QHBoxLayout(self.title_bar);header.setContentsMargins(18,0,4,0);header.setSpacing(12)
+        header=QHBoxLayout(self.title_bar);header.setContentsMargins(22,0,12,0);header.setSpacing(12)
         header.addWidget(plain_label('视频解析',self.title_bar,'videoSourceTitle'));header.addWidget(plain_label('FlickDock',self.title_bar));header.addStretch()
         self.close_button=SettingsCloseButton(self.title_bar,glyph_size=14);self.close_button.setFixedSize(28,28);self.close_button.clicked.connect(self.close);self.close_button.setAccessibleName('关闭视频解析');header.addWidget(self.close_button)
         self.surface.layout().insertWidget(0,self.title_bar)
-        input_container=QWidget(self.surface);input_row=QHBoxLayout(input_container);input_row.setContentsMargins(18,8,18,8);input_row.setSpacing(8)
+        input_container=QWidget(self.surface);input_row=QHBoxLayout(input_container);input_row.setContentsMargins(22,10,22,10);input_row.setSpacing(8)
         self.url=QLineEdit(input_container);self.url.setPlaceholderText('粘贴视频网页链接…');self.url.setAccessibleName('视频网页链接');self.url.setMaxLength(8192);input_row.addWidget(self.url,1)
         self.parse_button=button('解析',variant='primary',parent=input_container);self.parse_button.setFixedHeight(38);self.parse_button.setMinimumWidth(72);self.parse_button.clicked.connect(self._parse);input_row.addWidget(self.parse_button)
         self.stop_button=button('取消',parent=input_container);self.stop_button.clicked.connect(controller.cancel_parse);input_row.addWidget(self.stop_button)
@@ -438,7 +438,7 @@ class VideoDialog(ReferenceModalDialog):
         self.result_layout=QVBoxLayout();self.result_layout.setSpacing(24);self.body_layout.addLayout(self.result_layout);self.body_layout.addStretch()
         self.scroll._flickdock_edge_bounce=True
         footer=QWidget(self.surface);footer.setObjectName('videoFooter');footer.setAttribute(Qt.WA_StyledBackground,True)
-        foot=QHBoxLayout(footer);foot.setContentsMargins(18,8,18,8);foot.setSpacing(8)
+        foot=QHBoxLayout(footer);foot.setContentsMargins(22,10,22,10);foot.setSpacing(8)
         self.prompt_label=plain_label('复制视频链接时提示解析',footer,'videoSourceTitle');foot.addWidget(self.prompt_label)
         self.prompt=SettingsToggleSwitch('',footer);self.prompt.setFixedWidth(PROMPT_SWITCH_WIDTH_PX)
         self.prompt.setAccessibleName('复制视频链接时提示解析');self.prompt_label.setBuddy(self.prompt)
@@ -530,7 +530,7 @@ class VideoDialog(ReferenceModalDialog):
         if self._theme!=theme or getattr(self,'_accent',None)!=accent:
             self._accent=accent
             self._theme=theme;self.set_surface_theme(theme);self.close_button.dark=dark;c=colors(theme)
-            self.setStyleSheet(f'QLabel{{color:{c["text"]};background:transparent;font-size:12px;}} QLabel#videoTitle{{font-size:15px;font-weight:600;}} QLabel#videoSourceTitle{{font-size:12px;font-weight:600;}} QLabel#videoMeta{{font-size:11px;color:{c["secondary"]};}} QLabel#videoSuccess{{font-size:11px;color:{c["green"]};}} QWidget#videoFooter{{background:{c["dialog_surface"]};border:0;}} QFrame#videoSourceCard{{background:{c["card"]};border:1px solid {c["border"]};border-radius:{RADIUS_CARD_PX}px;}} QFrame#videoSourceCard:hover{{background:{c["hover"]};}} QLineEdit{{background:{c["input"]};color:{c["text"]};border:1px solid {c["input_border"]};border-radius:{RADIUS_CONTROL_PX}px;padding:10px 12px;}} QLineEdit:focus{{border-color:{c["ring"]};}} QProgressBar{{background:{c["control"]};border:0;border-radius:3px;}} QProgressBar::chunk{{background:{c["action"]};border-radius:3px;}}')
+            self.setStyleSheet(f'QLabel{{color:{c["text"]};background:transparent;font-size:12px;}} QLabel#videoTitle{{font-size:15px;font-weight:600;}} QLabel#videoSourceTitle{{font-size:12px;font-weight:600;}} QLabel#videoMeta{{font-size:11px;color:{c["secondary"]};}} QLabel#videoSuccess{{font-size:11px;color:{c["green"]};}} QWidget#videoFooter{{background:{c["dialog_surface"]};border:0;border-bottom-left-radius:{c["radius"]}px;border-bottom-right-radius:{c["radius"]}px;}} QFrame#videoSourceCard{{background:{c["card"]};border:1px solid {c["border"]};border-radius:{RADIUS_CARD_PX}px;}} QFrame#videoSourceCard:hover{{background:{c["hover"]};}} QLineEdit{{background:{c["input"]};color:{c["text"]};border:1px solid {c["input_border"]};border-radius:{RADIUS_CONTROL_PX}px;padding:10px 12px;}} QLineEdit:focus{{border-color:{c["ring"]};}} QProgressBar{{background:{c["control"]};border:0;border-radius:3px;}} QProgressBar::chunk{{background:{c["action"]};border-radius:3px;}}')
             refresh_tree(self,theme)
             self.prompt.dark=dark
             self.setStyleSheet(self.styleSheet()+f'QCheckBox{{font-size:12px;color:{c["text"]};}} QLabel#videoFolder{{font-size:11px;color:{c["secondary"]};font-family:{font_css_stack(technical=True)};}} QFrame#videoSourceCard[downloadComplete="true"]{{background:{c["selected"]};}}')

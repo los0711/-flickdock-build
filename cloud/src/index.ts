@@ -10,9 +10,10 @@ import {intakeRequest} from './intake';
 import {storageBudget,StorageBudgetError} from './storage-budget';
 import {shelfStorage,shelfResetAt} from './shelf-storage';
 import {translate,type TranslationEnv} from './translation';
+import {speech,type SpeechEnv} from './speech';
 export {WanHub} from './wan';
 
-interface Env extends WanEnv,TranslationEnv {
+interface Env extends WanEnv,TranslationEnv,SpeechEnv {
   DB:D1Database; FILES:R2Bucket; EVENTS:DurableObjectNamespace<AccountEvents>;
   ACCOUNT_QUOTA_BYTES?:string; GLOBAL_QUOTA_BYTES?:string; CHUNK_BYTES?:string; AUTH_PEPPER?:string;
   SINGLE_PUT_LIMIT_BYTES?:string;
@@ -392,6 +393,7 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
     return translate(request,env);
   }
   const owner=await auth(request,env);
+  if(path.startsWith('/v1/speech/'))return speech(request,env,owner.id);
   if(path==='/v1/wan/account'&&method==='POST'){
     const value=await body(request,['credential','lan_id','nonce']);const credential=digest(value.credential);
     const nonce=text(value.nonce,'nonce',32,32);if(!/^[a-f0-9]{32}$/.test(nonce))fail(400,'INVALID_REQUEST','Invalid account intent');

@@ -122,12 +122,12 @@ class _WindowButton(QPushButton):
 
 
 class WindowChrome(QObject):
-    def __init__(self,window,title_bar,settings,key,*,surface=None):
+    def __init__(self,window,title_bar,settings,key,*,surface=None,system_resize=True):
         super().__init__(window);self.window=window;self.title=title_bar;self.surface=surface or window
         self.key=key;self.path=Path(settings.base)/'window-sizes.json';self._drag=None;self._cursor=False
         self.default_size=QSize(892,632) if key=="settings" else QSize(980,704)
         self._normal=window.size();self._restoring=False
-        self._native_resize=False;self._native_configuring=False
+        self._native_resize=False;self._native_configuring=False;self._system_resize=system_resize
         if sys.platform=='win32':
             window.setWindowFlags(window.windowFlags()|Qt.WindowMinimizeButtonHint|Qt.WindowMaximizeButtonHint|Qt.WindowSystemMenuHint)
             old=getattr(window,'close_button',None)
@@ -136,6 +136,9 @@ class WindowChrome(QObject):
             from PySide6.QtWidgets import QHBoxLayout
             row=QHBoxLayout(controls);row.setContentsMargins(0,0,0,0);row.setSpacing(0)
             self.buttons={role:_WindowButton(window,role) for role in ('min','max','close')}
+            for role,control in self.buttons.items():
+                control.setToolTip({'min':'最小化','max':'最大化','close':'关闭'}[role])
+                control.setAccessibleName(control.toolTip())
             for button in self.buttons.values():row.addWidget(button)
             window.close_button=self.buttons['close'];title_bar.layout().addWidget(controls)
             if old is not None:window.close_button.setAccessibleName(old.accessibleName())
@@ -196,7 +199,7 @@ class WindowChrome(QObject):
         if QCoreApplication.closingDown() or not isValid(self.window):return False
         w=self.window
         if watched is w:
-            if kind in (QEvent.Show,QEvent.WinIdChange,QEvent.WindowStateChange) and not self._native_configuring:
+            if self._system_resize and kind in (QEvent.Show,QEvent.WinIdChange,QEvent.WindowStateChange) and not self._native_configuring:
                 self._native_configuring=True
                 try:self._native_resize=ensure_native_resize(w)
                 finally:self._native_configuring=False
@@ -221,7 +224,8 @@ class WindowChrome(QObject):
                     if drag_edges&Qt.RightEdge:target.setRight(max(rect.right()+delta.x(),rect.left()+w.minimumWidth()-1))
                     if drag_edges&Qt.TopEdge:target.setTop(min(rect.top()+delta.y(),rect.bottom()-w.minimumHeight()+1))
                     if drag_edges&Qt.BottomEdge:target.setBottom(max(rect.bottom()+delta.y(),rect.top()+w.minimumHeight()-1))
-                w.setGeometry(target);event.accept();return True
+                if target!=w.geometry():w.setGeometry(target)
+                event.accept();return True
             if edges:
                 diagonal=(bool(edges&Qt.LeftEdge) and bool(edges&Qt.TopEdge)) or (bool(edges&Qt.RightEdge) and bool(edges&Qt.BottomEdge))
                 cursor=Qt.SizeFDiagCursor if diagonal else Qt.SizeBDiagCursor if (edges&(Qt.LeftEdge|Qt.RightEdge) and edges&(Qt.TopEdge|Qt.BottomEdge)) else Qt.SizeHorCursor if edges&(Qt.LeftEdge|Qt.RightEdge) else Qt.SizeVerCursor
@@ -229,7 +233,7 @@ class WindowChrome(QObject):
             elif self._cursor:w.unsetCursor();self._cursor=False
         if kind==QEvent.MouseButtonRelease and self._drag:self._drag=None;event.accept();return True
         if kind==QEvent.MouseButtonPress and event.button()==Qt.LeftButton and edges:
-            if not (native_input_available() and (sys.platform!='win32' or self._native_resize) and w.windowHandle() and w.windowHandle().startSystemResize(edges)):
+            if not (self._system_resize and native_input_available() and (sys.platform!='win32' or self._native_resize) and w.windowHandle() and w.windowHandle().startSystemResize(edges)):
                 self._drag=(global_point,QRect(w.geometry()),edges)
             event.accept();return True
         header=watched is self.title or self.title.isAncestorOf(watched)

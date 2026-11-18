@@ -13,7 +13,7 @@ from PySide6.QtWidgets import QGraphicsDropShadowEffect, QGraphicsEffect, QPushB
 from flickdock_icons import document_pixmap, draw_glyph
 from surface_morph import paint_surface_shadow, surface_clip, neutral_shadow_color
 from display_frames import FramePulse
-from native_ui_common import paint_rounded_surface,RADIUS_CONTROL_PX
+from native_ui_common import paint_rounded_surface,RADIUS_CONTROL_PX,RADIUS_WINDOW_PX
 import ui_theme
 
 
@@ -257,10 +257,17 @@ class MotionShadow(QGraphicsDropShadowEffect):
         if active:
             snapshot.paint_frame(painter,rect,live_draw=draw_live,target_size=bounds.size())
         else:
-            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            painter.save()
             painter.setClipPath(surface_clip(rect))
             painter.fillRect(rect,QColor(ui_theme.color('surface')))
             draw_live(painter)
+            painter.restore()
+        widget=self.parent()
+        outline=getattr(widget,'surface_outline',None)
+        if outline is not None:
+            # Draw one pixel-aligned edge over both the live and snapshot
+            # surfaces after their rounded content clipping has been restored.
+            paint_rounded_surface(painter,rect,RADIUS_WINDOW_PX,None,outline(),border_widget=widget)
         painter.restore()
 
 

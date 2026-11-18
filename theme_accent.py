@@ -22,6 +22,11 @@ def _luminance(color):
     return sum((v/12.92 if v<=.04045 else ((v+.055)/1.055)**2.4)*weight
                for v,weight in zip(values,(.2126,.7152,.0722)))
 
+def contrasting_ink(background):
+    luminance=_luminance(QColor(background))
+    return '#FFFFFF' if 1.05/(luminance+.05)>=(luminance+.05)/.05 else '#000000'
+
+
 def action_tokens(theme):
     return dict(_action_tokens(_current,theme))
 
@@ -34,8 +39,7 @@ def _action_tokens(value,theme):
             action_hover='#333333' if theme=='light' else '#D4D4D4',
             action_pressed='#4D4D4D' if theme=='light' else '#C4C4C4',
             on_action='#FFFFFF' if theme=='light' else '#171717')
-    color=QColor(value);luminance=_luminance(color)
-    on='#FFFFFF' if (1.05/(luminance+.05))>=((luminance+.05)/.05) else '#000000'
+    color=QColor(value);on=contrasting_ink(color)
     return dict(action=value,on_action=on,
         action_hover=(color.darker(110) if on=='#FFFFFF' else color.lighter(110)).name(),
         action_pressed=(color.darker(120) if on=='#FFFFFF' else color.lighter(120)).name(),ring=value)
