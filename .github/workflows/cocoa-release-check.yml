@@ -1,27 +1,42 @@
-name: Diagnose Cocoa widgets before packaging
+name: Verify the published 1.8.39 channel from the shipped Mac updater
 
 on:
   push:
     branches: [ci-cocoa-release-check-1839]
 
 permissions:
+  actions: read
   contents: read
 
 jobs:
   cocoa:
     if: github.repository == 'los0711/-flickdock-build'
     runs-on: macos-15
-    timeout-minutes: 12
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          ref: 26b24c3d3fb61e03bfcbadcf38a39896eb8c294d
-          persist-credentials: false
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
-        with:
-          python-version: '3.12'
-          architecture: arm64
-      - name: Install Cocoa test dependencies
-        run: python -m pip install 'PySide6==6.12.0' 'pyobjc-framework-Quartz>=11,<13' 'keyring==25.7.0' 'cryptography==50.0.2' 'requests==2.34.2'
-      - name: Verify deterministic frame completion and scroll motion
-        run: python -m unittest test_display_frames test_scroll_motion_v1837.ScrollTests test_edge_magnetic_v1839.FieldGeometryTests test_lan_dialog_v183.LanDialogTests.test_mac_activity_cards_stay_fixed_while_history_scrolls -q
+          github-token: ${{ github.token }}
+          run-id: 44798776240
+          name: FlickDock-macOS-arm64-26b24c3d3fb61e03bfcbadcf38a39896eb8c294d
+          path: verified
+      - name: Download and authenticate the live update with the packaged client
+        run: |
+          mount="$(mktemp -d)"
+          profile="$(mktemp -d)"
+          /usr/bin/hdiutil attach -readonly -nobrowse -mountpoint "$mount" verified/FlickDock-1.8.39-macOS-arm64.dmg
+          /usr/bin/ditto "$mount/FlickDock.app" "$profile/FlickDock.app"
+          /usr/bin/hdiutil detach "$mount"
+          result=0
+          HOME="$profile" APPDATA="$profile" XDG_CONFIG_HOME="$profile" QT_QPA_PLATFORM=offscreen \
+            "$profile/FlickDock.app/Contents/MacOS/FlickDock" --verify-update --verify-current 1.8.38 --verify-output "$profile/channel.json" || result=$?
+          if [ -f "$profile/channel.json" ]; then cat "$profile/channel.json"; printf '\n'; fi
+          if [ "$result" -ne 0 ]; then exit "$result"; fi
+          python3 - "$profile/channel.json" <<'PY'
+          import json,sys
+          from pathlib import Path
+          result=json.loads(Path(sys.argv[1]).read_bytes())
+          assert result['ok'] and result['frozen'] and not result['installer_executed'],result
+          assert result['version']==result['available_version']==result['latest_version']=='1.8.39',result
+          assert result['verified_download'],result
+          PY
