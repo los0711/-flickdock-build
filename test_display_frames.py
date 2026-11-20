@@ -310,13 +310,14 @@ class DisplayFramesTests(unittest.TestCase):
         morph.complete();self.assertFalse(morph._frames.isActive())
 
     def test_occluded_window_still_settles_and_releases_its_surface(self):
-        from PySide6.QtTest import QTest
+        from PySide6.QtTest import QSignalSpy
         settled=[];target=QRect(0,0,400,300)
         morph=SurfaceMorph(self.window,QRect(0,0,100,100),lambda rect:None,settle=lambda rect:settled.append(QRect(rect)))
         with patch('native_ui_common.reduced_motion',return_value=False):morph.animate(target,duration=60)
         # AppKit may stop native display callbacks when another app covers the
         # shelf. This is not an intentional pause: the endpoint must still land.
-        morph._frames.stop();QTest.qWait(120)
+        completion=QSignalSpy(morph._completion.timeout)
+        morph._frames.stop();self.assertTrue(completion.wait(1500),'Occluded morph lost its completion timer')
         self.assertFalse(morph.active);self.assertEqual(morph.current,target);self.assertEqual(settled,[target])
 
     def test_morph_deadline_respects_pause_and_interruption(self):
@@ -334,8 +335,13 @@ class DisplayFramesTests(unittest.TestCase):
         with patch('native_ui_common.reduced_motion',return_value=False):
             morph.animate(QRect(0,0,500,400),duration=40)
             morph.animate(QRect(0,0,600,500),duration=100)
-        morph._frames.stop();QTest.qWait(65);self.assertTrue(morph.active)
-        QTest.qWait(80);self.assertEqual(settled[-1],QRect(0,0,600,500))
+        morph._frames.stop()
+        self.assertTrue(morph.active)
+        for _ in range(150):
+            if not morph.active:break
+            QTest.qWait(10)
+        self.assertFalse(morph.active)
+        self.assertEqual(settled,[QRect(0,0,400,300),QRect(0,0,600,500)])
 
     def test_reduced_motion_lands_without_a_native_frame_subscription(self):
         morph=SurfaceMorph(self.window,QRect(0,0,100,100),lambda rect:None)

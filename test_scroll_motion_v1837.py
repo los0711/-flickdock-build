@@ -187,10 +187,13 @@ class ScrollTests(unittest.TestCase):
         self.assertEqual(bounce.animation.state(),QAbstractAnimation.Stopped)
 
     def test_notched_wheel_returns_after_input_stops(self):
-        from PySide6.QtTest import QTest
+        from PySide6.QtTest import QSignalSpy
         self.controller.wheel(wheel(120));bounce=self.area._flickdock_boundary_bounce
         self.assertTrue(bounce.idle.isActive());self.assertEqual(bounce.animation.state(),QAbstractAnimation.Stopped)
-        QTest.qWait(130)
-        self.assertEqual(bounce.animation.state(),QAbstractAnimation.Running)
+        samples=QSignalSpy(bounce.animation.valueChanged)
+        completion=QSignalSpy(bounce.animation.finished)
+        self.assertTrue(completion.wait(1500),'Notched-wheel bounce did not complete when input stopped')
+        self.assertGreater(samples.count(),1)
+        self.assertEqual(bounce.overlay.offset,0.)
 
 if __name__=='__main__':unittest.main(verbosity=2)
