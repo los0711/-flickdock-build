@@ -103,20 +103,18 @@ def main():
             report['automatic_preferences'].append(dict(theme=theme,chooser_readable=True,applied_first_selection=True,persisted_after_reopen=True))
         with patch('ui_transitions.motion_allowed',return_value=True),patch('native_ui_common.reduced_motion',return_value=False):
             settings.scroll.ensureWidgetVisible(settings._theme_segment,0,0);app.processEvents()
-            before=settings.geometry();fade=settings._theme_transition;original=fade.change;frames=[]
-            def observe(mutation):
-                original(mutation)
-                assert fade.snapshot is not None and fade.isVisible()
-                fade.animation.setCurrentTime(fade.animation.duration()//2)
-                frames.append((fade.alpha,settings.geometry()))
-            with patch.object(fade,'change',side_effect=observe):
-                settings._theme_segment._selection_buttons[0].click()
-                assert settings.theme_combo.currentData()=='dark'
-                wait(lambda:bool(frames))
-            assert 0<frames[0][0]<1 and frames[0][1]==before
-            fade.finish();settings._preference_writer.flush();wait(lambda:not settings._preference_writer.busy)
+            from ui_transitions import SnapshotFade
+            before=settings.geometry()
+            segment=settings._theme_segment
+            segment._selection_buttons[0].click()
+            assert settings.theme_combo.currentData()=='light'
+            assert segment.selection_is_moving() and settings.surface.dark
+            wait(lambda:not settings.surface.dark)
+            assert not segment.selection_is_moving() and settings.surface.findChild(SnapshotFade) is None
+            assert settings.geometry()==before
+            settings._preference_writer.flush();wait(lambda:not settings._preference_writer.busy)
             assert store.theme=='light'
-        report['theme_transition']=dict(selection_first=True,crossfade_intermediate=True,native_geometry_unchanged=True)
+        report['theme_transition']=dict(selection_first=True,recolored_after_settling=True,native_geometry_unchanged=True)
         settings.close();wait(lambda:not settings.isVisible())
         from types import SimpleNamespace
         from intake_notice import ClipboardNotice,COMPACT_SIDE_PX

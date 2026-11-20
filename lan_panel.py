@@ -709,7 +709,7 @@ class _TransferSurface(RoundedSurfaceFrame):
         owner=self._owner()
         if owner is None or self._surface_role=='code_inner' or self._surface_role=='row' and self.property('offerFrame'):return None
         c=ui_colors('dark' if owner._dark else 'light')
-        if self._surface_role=='route':return ('#1F3514' if owner._dark else '#E6F9D5'),None,RADIUS_CARD_PX
+        if self._surface_role=='route':return ('#1F3514' if owner._dark else '#E3F5EA'),None,RADIUS_CARD_PX
         if self._surface_role=='pairing':return c['subcard'],c['border'],RADIUS_CARD_PX
         if self._surface_role=='code':return c['subcard'],c['border'],RADIUS_CONTROL_PX
         if self._surface_role=='workbench':return c['card'],c['border'],RADIUS_PANEL_PX

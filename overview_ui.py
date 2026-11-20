@@ -493,7 +493,9 @@ class ContentsPopup(QFrame):
 
     def _scrollbar_gutter(self):
         bar=self.scroll.verticalScrollBar()
-        return 0 if bar.style().styleHint(QStyle.SH_ScrollBar_Transient,None,bar) else bar.sizeHint().width()
+        style=bar.style()
+        if style.styleHint(QStyle.SH_ScrollBar_Transient,None,bar):return 0
+        return max(bar.sizeHint().width(),style.pixelMetric(QStyle.PM_ScrollBarExtent,None,bar))
 
     def _update_scroll_gutter(self, minimum, maximum):
         # Keep the viewport the same width when a non-overlay scrollbar
@@ -504,7 +506,9 @@ class ContentsPopup(QFrame):
 
     def _grid_available_width(self):
         margins=self.rows_layout.contentsMargins()
-        width=self.scroll.contentsRect().width()-self._scrollbar_gutter()-margins.left()-margins.right()
+        viewport_width=self.scroll.viewport().width()
+        reserved_width=self.scroll.contentsRect().width()-self._scrollbar_gutter()
+        width=min(viewport_width,reserved_width)-margins.left()-margins.right()
         transition=getattr(self,'preview_width_motion',None)
         if transition is not None and transition.active and transition.target_visible:
             # Use the final viewport width throughout the resize; otherwise
@@ -521,6 +525,12 @@ class ContentsPopup(QFrame):
         width=self._grid_available_width()
         columns=self._grid_column_count()
         return max(1,(width-8*(columns-1))//columns)
+
+    def _grid_horizontal_inset(self,columns,width):
+        margins=self.rows_layout.contentsMargins()
+        occupied=columns*width+(columns-1)*8
+        gap=self.scroll.viewport().width()-margins.left()-margins.right()-occupied
+        return max(0,gap)//2
 
     @property
     def view_mode(self):
@@ -540,7 +550,7 @@ class ContentsPopup(QFrame):
         columns=self._grid_columns if grid else 1
         row,column=divmod(index,columns)
         margins=self.rows_layout.contentsMargins()
-        x=margins.left()+column*(self._grid_cell_px+8)
+        x=margins.left()+self._grid_inset+column*(self._grid_cell_px+8)
         y=margins.top()+row*(GRID_CARD_HEIGHT_PX+8 if grid else FILE_ROW_HEIGHT_PX+6)
         origin=self._grid_origins.get(widget.path)
         if origin is not None:
@@ -564,7 +574,8 @@ class ContentsPopup(QFrame):
         grid=self.view_mode=='icons'
         columns=self._grid_column_count() if grid else 1
         width=self._grid_card_width() if grid else self._grid_available_width()
-        if (self._grid_columns,self._grid_cell_px)==(columns,width):return
+        inset=self._grid_horizontal_inset(columns,width) if grid else 0
+        if (self._grid_columns,self._grid_cell_px,self._grid_inset)==(columns,width,inset):return
         changed_columns=columns!=self._grid_columns
         from ui_transitions import motion_allowed
         animate=(changed_columns and self.isVisible() and self.shelf.manager.motion and motion_allowed()
@@ -572,7 +583,7 @@ class ContentsPopup(QFrame):
         if animate:
             self._grid_origins={ref:widget.pos() for ref,widget in self._item_widgets.items()}
             self._grid_shift.stop();self._grid_fraction=0.
-        self._grid_columns=columns;self._grid_cell_px=width
+        self._grid_columns=columns;self._grid_cell_px=width;self._grid_inset=inset
         if changed_columns:self._reserve_rows_height()
         self._position_live_rows(self._grid_fraction)
         if animate and self._grid_origins:
@@ -1022,7 +1033,11 @@ class ContentsPopup(QFrame):
             for ref,w in old_widgets.items():
                 if self._item_widgets.get(ref) is not w:self.retirement.retire(w)
             self._layout_animation=(positions,animate)
-            self._file_entry_pending=bool(animate_items and refs and getattr(self,'_file_entry_requested',False)
+            # A batch deletion settles the live rows before the entry effect.
+            # Moving several surviving widgets through the old rows would
+            # make the visible order and hit areas disagree during the update.
+            batch_deleted=animate and len(removed)>1 and removed.keys().isdisjoint(present)
+            self._file_entry_pending=bool(animate_items and refs and (getattr(self,'_file_entry_requested',False) or batch_deleted)
                                           and self.isVisible() and self.shelf.manager.motion)
             self._file_entry_requested=False
         self.selected.intersection_update(refs)
@@ -1059,6 +1074,7 @@ class ContentsPopup(QFrame):
         elif positioned:
             columns=self._grid_columns=self._grid_column_count() if row_type is IconItem else 1
             self._grid_cell_px=self._grid_card_width() if row_type is IconItem else self._grid_available_width()
+            self._grid_inset=self._grid_horizontal_inset(columns,self._grid_cell_px) if row_type is IconItem else 0
             def append(index,ref):
                 widget=self._item_widget(ref,row_type,changed)
                 self._place_file(index,widget);widget.show()
