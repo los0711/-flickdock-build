@@ -150,7 +150,7 @@
           "archive": "https://github.com/los0711/-flickdock-build/releases/download/v1.8.36/FlickDock-1.8.36-macOS-arm64.dmg"
         }
       ],
-      "r2Removed": false
+      "r2Removed": true
     },
     {
       "version": "1.8.37",
@@ -216,6 +216,33 @@
           "sha256": "90a3c03f758f0b21398017b138b3552831c9596112472a8c7fff3234df201d7b",
           "archive": "https://gitee.com/rooogerluo/flick-dock-macos-releases-12/releases/download/v1.8.38/FlickDock-1.8.38-macOS-arm64.pkg",
           "originKey": "v1.8.38/sha256-90a3c03f758f0b21398017b138b3552831c9596112472a8c7fff3234df201d7b/FlickDock-1.8.38-macOS-arm64.pkg"
+        }
+      ],
+      "r2Removed": false
+    },
+    {
+      "version": "1.8.39",
+      "assets": [
+        {
+          "name": "FlickDock-1.8.39-macOS-arm64.zip",
+          "bytes": 84123514,
+          "sha256": "00f9ce429a296b02980a6565365db12cacce17c22fa54e24421d149cc48033cf",
+          "archive": "https://gitee.com/rooogerluo/flick-dock-macos-releases-12/releases/download/v1.8.39/FlickDock-1.8.39-macOS-arm64.zip",
+          "originKey": "v1.8.39/sha256-00f9ce429a296b02980a6565365db12cacce17c22fa54e24421d149cc48033cf/FlickDock-1.8.39-macOS-arm64.zip"
+        },
+        {
+          "name": "FlickDock-1.8.39-macOS-arm64.dmg",
+          "bytes": 97615184,
+          "sha256": "49636aea3dca790669dbf735681f933c9dcaadb290813fe969a760256df3e871",
+          "archive": "https://gitee.com/rooogerluo/flick-dock-macos-releases-12/releases/download/v1.8.39/FlickDock-1.8.39-macOS-arm64.dmg",
+          "originKey": "v1.8.39/sha256-49636aea3dca790669dbf735681f933c9dcaadb290813fe969a760256df3e871/FlickDock-1.8.39-macOS-arm64.dmg"
+        },
+        {
+          "name": "FlickDock-1.8.39-macOS-arm64.pkg",
+          "bytes": 80492517,
+          "sha256": "b06998e630427097d2c6c0395db25764e23a0fde9b137188c34840baff5e6362",
+          "archive": "https://gitee.com/rooogerluo/flick-dock-macos-releases-12/releases/download/v1.8.39/FlickDock-1.8.39-macOS-arm64.pkg",
+          "originKey": "v1.8.39/sha256-b06998e630427097d2c6c0395db25764e23a0fde9b137188c34840baff5e6362/FlickDock-1.8.39-macOS-arm64.pkg"
         }
       ],
       "r2Removed": false
