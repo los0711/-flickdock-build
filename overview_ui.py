@@ -613,7 +613,6 @@ class ContentsPopup(QFrame):
         else:self.sidebar.setFixedWidth(176 if condensed else 210)
         self.header_brand.setFixedWidth(48 if self.width()<480 else 176 if condensed else 210)
         self.title.setVisible(self.width()>=480)
-        self.count_label.setVisible(not condensed)
         self.header_status.setFixedWidth(238 if narrow else 280 if condensed else 340)
         self.selection_navigation.setVisible(narrow);self.selection_bar.setFixedHeight(92 if narrow else 56)
         self.search_edit.show();self.view_segment.show();self.sort_segment.setVisible(toolbar_width>=430)

@@ -315,6 +315,20 @@ class OverviewMotionTests(unittest.TestCase):
         star=icon(*_shelf_pin_glyph(palette)).pixmap(16,16).toImage()
         self.assertEqual(star.pixelColor(8,8),QColor('#FFAE33'))
 
+    def test_overview_count_is_fixed_to_the_category_rows_right_edge(self):
+        from test_html_native_workspace import flush
+
+        view=self.view;count=view.count_label
+        flush()
+        self.assertFalse(view.header.isAncestorOf(count))
+        self.assertIs(count.parentWidget(),view.type_bar.parentWidget())
+        self.assertTrue(count.isVisible())
+        self.assertEqual(count.text(),f'{len(view.shelf.display_refs())} 项')
+        self.assertEqual(count.mapTo(view.middle,count.rect().topRight()).x(),
+                         view.select_all_button.mapTo(view.middle,view.select_all_button.rect().topRight()).x())
+        view.set_type('video');flush()
+        self.assertEqual(count.text(),f'{len(view.shelf.display_refs())} 项')
+
     def test_sort_animates_only_a_real_reorder_with_spring_overshoot(self):
         from time import perf_counter
         from test_html_native_workspace import until
