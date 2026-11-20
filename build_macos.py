@@ -254,6 +254,7 @@ def main(arguments=None):
         run([python,'-m','unittest','-v','test_architecture','test_dropdown_fan_v1839',
              'test_glass_ui_v1839.OverviewMotionTests','test_mac_install',
              'test_mac_window_order_v1810','test_mac_updates',
+             'test_bulk_cloud_v1837.BatchCloudTests.test_send_dropdown_keeps_its_mouse_owner_during_the_opening_spring',
              settings+'test_theme_button_slides_before_recoloring_and_rapid_reversal_keeps_latest',
              settings+'test_theme_button_under_reduced_motion_recolors_immediately',
              settings+'test_closing_settings_persists_the_selected_theme',

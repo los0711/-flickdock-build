@@ -69,8 +69,10 @@ def _gitee_asset(client, path, metadata, kind, version, notes):
     stable = 'https://gitee.com/' + OWNER + '/' + repo + '/releases/download/v' + version + '/' + metadata['name']
     if not matches:
         with Path(path).open('rb') as stream:
+            # Requests also uses the connect timeout while writing the request
+            # body. A slow Gitee upload needs longer than an API metadata call.
             response = client.post(endpoint, files={'file':(metadata['name'],stream,'application/octet-stream')},
-                                   timeout=(30,600))
+                                   timeout=(180,600))
         uploaded = _check(response, 'Gitee attachment upload')
         if uploaded.get('name') != metadata['name'] or uploaded.get('size') != metadata['bytes']:
             raise ValueError('Gitee attachment metadata differs from the built asset.')

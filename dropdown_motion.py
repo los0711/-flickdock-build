@@ -3,7 +3,7 @@ import math
 import time
 import weakref
 
-from PySide6.QtCore import QCoreApplication, QEvent, QObject, QPoint, QRectF, QTimer, Qt, Slot
+from PySide6.QtCore import QCoreApplication, QEvent, QObject, QPoint, QRect, QRectF, QTimer, Qt, Slot
 from PySide6.QtGui import QColor, QGuiApplication, QPainter, QPainterPath, QPixmap
 from PySide6.QtWidgets import QAbstractItemView, QMenu, QWidget
 from shiboken6 import isValid
@@ -108,22 +108,34 @@ class DropdownTextRoll(QObject):
 class _PopupPresentation(QWidget):
     """One input-transparent image above the live popup during motion."""
 
-    def __init__(self,owner,controller,*,topmost=False):
-        flags=(Qt.ToolTip | Qt.FramelessWindowHint | Qt.WindowTransparentForInput
-               | Qt.WindowDoesNotAcceptFocus | Qt.NoDropShadowWindowHint)
-        if topmost:flags|=Qt.WindowStaysOnTopHint
+    def __init__(self,owner,controller,*,topmost=False,inline=False):
+        flags=Qt.Widget if inline else (
+            Qt.ToolTip | Qt.FramelessWindowHint | Qt.WindowTransparentForInput
+            | Qt.WindowDoesNotAcceptFocus | Qt.NoDropShadowWindowHint)
+        if topmost and not inline:flags|=Qt.WindowStaysOnTopHint
         super().__init__(owner,flags)
-        self.setAttribute(Qt.WA_TranslucentBackground)
-        self.setAttribute(Qt.WA_ShowWithoutActivating)
+        self.inline=inline
+        if inline:
+            self.setAttribute(Qt.WA_NoSystemBackground)
+            self.setAttribute(Qt.WA_TransparentForMouseEvents)
+        else:
+            self.setAttribute(Qt.WA_TranslucentBackground)
+            self.setAttribute(Qt.WA_ShowWithoutActivating)
         self.controller = controller
 
     def paintEvent(self, event):
         motion = self.controller
         progress = max(0., min(1.06, motion.height.values['height']))
         opacity = max(0., min(1., motion.alpha.values['opacity']))
-        if progress <= 0 or opacity <= 0 or motion.snapshot.isNull():
-            return
         p = QPainter(self)
+        if self.inline:
+            # Use the menu's backing store. Creating another top-level
+            # window here can interrupt the native QMenu mouse grab.
+            p.setCompositionMode(QPainter.CompositionMode_Source)
+            p.fillRect(self.rect(),Qt.transparent)
+            p.setCompositionMode(QPainter.CompositionMode_SourceOver)
+        if progress <= 0 or opacity <= 0 or motion.snapshot.isNull():
+            p.end();return
         p.setRenderHints(QPainter.Antialiasing | QPainter.SmoothPixmapTransform)
         p.setOpacity(opacity)
         width, height = motion.snapshot.deviceIndependentSize().toTuple()
@@ -156,6 +168,7 @@ class DropdownMotion(QObject):
         self.owner=owner
         self.popup=weakref.ref(popup)
         self._owned_menu=False
+        self._inline_open=bool(popup.property('flickdockInlineDropdown'))
         self.presentation=None
         self.snapshot=QPixmap()
         self.rows=()
@@ -191,12 +204,14 @@ class DropdownMotion(QObject):
                 self.enabled=(not reduced_motion() and QGuiApplication.platformName() in ('windows','cocoa'))
                 self.opened=True
                 if self.enabled:
-                    watched.setWindowOpacity(.01)
+                    if not self._inline_open:watched.setWindowOpacity(.01)
                     self.after_layout.start(0)
             elif event.type()==QEvent.Hide:
                 self.opened=False
                 self.after_layout.stop()
                 if self.enabled and self.presentation is not None and not self.snapshot.isNull():
+                    if self._inline_open:
+                        self._present(watched,inline=False)
                     self.presentation.show()
                     self._order_presentation()
                     self.height.animate_physical({'height':0.},300,23)
@@ -234,6 +249,8 @@ class DropdownMotion(QObject):
             previous=getattr(self.owner,'_moving_dropdown',None)
             if previous is not None and previous is not self:previous._clear()
             self.owner._moving_dropdown=self
+        if self._inline_open and self.presentation is not None:
+            self.presentation.hide()
         self.snapshot=popup.grab()
         if self.snapshot.isNull():
             self._clear()
@@ -250,16 +267,25 @@ class DropdownMotion(QObject):
         if anchor is not None and not isValid(anchor):anchor=None
         point=popup.mapToGlobal(QPoint())
         self.upward=bool(anchor is not None and point.y()+popup.height()<=anchor.mapToGlobal(QPoint()).y()+2)
-        topmost=bool(popup.windowFlags() & Qt.WindowStaysOnTopHint)
         self._owned_menu=bool(popup.property('flickdockOwnedShelfMenu'))
-        if self.presentation is None:
-            self.presentation=_PopupPresentation(self.owner,self,topmost=topmost)
-        self.presentation.setGeometry(point.x(),point.y(),popup.width(),popup.height())
+        self._present(popup,inline=self._inline_open)
         self.started=time.monotonic()
         self.presentation.show()
         self._order_presentation()
         self.height.animate_physical({'height':1.},300,23)
         self.alpha.animate_physical({'opacity':1.},400,34)
+
+    def _present(self,popup,*,inline):
+        if self.presentation is not None and self.presentation.inline!=inline:
+            self.presentation.hide()
+            self.presentation.deleteLater()
+            self.presentation=None
+        if self.presentation is None:
+            topmost=bool(popup.windowFlags() & Qt.WindowStaysOnTopHint)
+            self.presentation=_PopupPresentation(popup if inline else self.owner,self,topmost=topmost,inline=inline)
+        bounds=popup.rect() if inline else QRect(popup.mapToGlobal(QPoint()),popup.size())
+        self.presentation.setGeometry(bounds)
+        if inline:self.presentation.raise_()
 
     def paint_rows(self, painter, opacity):
         """Leave the frame fixed and let just the visible rows drop into it."""
@@ -284,7 +310,7 @@ class DropdownMotion(QObject):
             painter.restore()
 
     def _order_presentation(self):
-        if self.owner is None or not isValid(self.owner):return
+        if self.presentation.inline or self.owner is None or not isValid(self.owner):return
         popup=self._live()
         if self._owned_menu:
             from platform_native import raise_owned_popup

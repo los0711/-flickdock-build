@@ -349,7 +349,12 @@ class PreviewPane(_PreviewSurfaceBase):
         if getattr(self,'_send_menu_just_closed_on_button',None) is button:
             self._send_menu_just_closed_on_button=None;return
         if existing is not None:existing.deleteLater();self._send_menu=None
-        menu=AnimatedMenu(self);style_menu(menu);self._send_menu=menu
+        menu=AnimatedMenu(self)
+        menu.setProperty('flickdockInlineDropdown',True)
+        menu.setProperty('flickdockOwnedShelfMenu',True)
+        style_menu(menu)
+        menu.setWindowFlag(Qt.WindowStaysOnTopHint,True)
+        self._send_menu=menu
         from native_ui_common import PopupChevronMotion
         if not hasattr(button,'_popup_chevron'):button._popup_chevron=PopupChevronMotion(button)
         button._popup_chevron.attach(menu)
@@ -401,6 +406,9 @@ class PreviewPane(_PreviewSurfaceBase):
         menu.aboutToHide.connect(closed)
         self.shelf._menu_open=True
         menu.adjustSize();menu.popup(button.mapToGlobal(QPoint(button.width()-menu.sizeHint().width(),-menu.sizeHint().height()-4)))
+        if menu.isVisible():
+            from platform_native import raise_owned_popup
+            raise_owned_popup(menu,self.shelf)
 
     def _paths_for_send(self,refs):
         paths=[]

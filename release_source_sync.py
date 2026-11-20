@@ -129,7 +129,7 @@ def _commit_github(token, expected, files):
 
 def _checkout_baseline(parent, selected, env):
     root = Path(parent)/'source'
-    _git(['clone','--quiet','--branch','master',GITEE_URL,str(root)],cwd=parent,env=env)
+    _git(['clone','--quiet','--depth','1','--single-branch','--branch','master',GITEE_URL,str(root)],cwd=parent,env=env)
     baseline = json.loads((ROOT/'SOURCE_MANIFEST.json').read_text(encoding='utf-8'))
     verify_new_source_paths(root,verify_baseline(root,baseline),selected)
     return root

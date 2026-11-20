@@ -86,8 +86,9 @@ def run_overview(argv,load_font):
     import time
     import traceback
     from types import SimpleNamespace
-    from PySide6.QtCore import QPoint,QRect,QTimer
+    from PySide6.QtCore import QPoint,QRect,QTimer,Qt
     from PySide6.QtGui import QImage,QColor
+    from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication
     from app_settings import SettingsStore
     from app_version import APP_VERSION
@@ -151,8 +152,10 @@ def run_overview(argv,load_font):
                 assert capture_card(capture);report['capture']=str(capture)
             preview.copy_path_button.click();assert app.clipboard().text()==str(archive)
             preview.send_button.click();assert queued==[('lan',[str(archive)])]
-            preview.send_menu_button.click();send_menu=preview._send_menu
+            QTest.mouseClick(preview.send_menu_button,Qt.LeftButton);send_menu=preview._send_menu
             assert send_menu is not None and send_menu.actions()[0].text()=='登录后可选择同账号设备'
+            QTest.qWait(550)
+            assert send_menu.isVisible() and preview._send_menu is send_menu
             assert send_menu.actions()[-1].text()=='其他设备…'
             send_menu.actions()[-1].trigger();send_menu.close();app.processEvents()
             assert queued==[('lan',[str(archive)]),('lan',[str(archive)])]
@@ -170,7 +173,8 @@ def run_overview(argv,load_font):
             while str(archive) in shelf.files['permanent'] and time.monotonic()<deadline:
                 app.processEvents();time.sleep(.01)
             assert str(archive) not in shelf.files['permanent'] and archive.is_file()
-            report.update(ok=True,copy_path=True,send_queue=True,remove_preserves_original=True,delete_cancel=True)
+            report.update(ok=True,copy_path=True,send_queue=True,send_menu_stays_open=True,
+                          remove_preserves_original=True,delete_cancel=True)
             shelf.resolver.close();shelf.image_cache.close();shelf.image_cache._pool.waitForDone(5000)
             shelf.presentation.stop();shelf.geometry_morph.stop();shelf.hide();shelf.deleteLater();app.processEvents();shelf=None
     except Exception as error:

@@ -199,6 +199,26 @@ class BatchCloudTests(unittest.TestCase):
             self.assertEqual(self.popup.chosen_refs(),[self.refs[0]])
             w.flush()
 
+    def test_send_dropdown_keeps_its_mouse_owner_during_the_opening_spring(self):
+        self.popup.select_item(self.refs[0])
+        preview=self.popup.preview
+        with patch('dropdown_motion.QGuiApplication.platformName',return_value='windows'), \
+             patch('native_ui_common.reduced_motion',return_value=False):
+            QTest.mouseClick(preview.send_menu_button,Qt.LeftButton)
+            menu=preview._send_menu
+            self.assertIsNotNone(menu)
+            motion=menu._dropdown_motion
+            w.until(lambda:motion.presentation is not None)
+            self.assertIs(motion.presentation.parentWidget(),menu)
+            self.assertFalse(motion.presentation.isWindow())
+            self.assertTrue(motion.presentation.testAttribute(Qt.WA_TransparentForMouseEvents))
+            w.until(lambda:not motion.height._timer.isActive())
+            self.assertTrue(menu.isVisible())
+            self.assertEqual(menu.windowOpacity(),1.)
+            QTest.keyClick(menu,Qt.Key_Escape)
+            w.until(lambda:motion.presentation is None)
+            self.assertIsNone(preview._send_menu)
+
     def test_retry_creates_only_selected_missing_journal_entry_and_skips_synced(self):
         from shelf_sync import ShelfSync
         a,b,c=self.refs;entries={};index={}
