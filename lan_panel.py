@@ -1392,7 +1392,12 @@ class LanPanel(QFrame):
             if self.activity_column.size()!=viewport.size():self.activity_column.setFixedSize(viewport.size())
             chrome=self.tasks_card.minimumSizeHint().height()-rows.minimumHeight()
             room=viewport.height()-WORKBENCH_GAP_PX-self.history_card.minimumSizeHint().height()-chrome
-            height=max(76,min(room,self.transfers_body.sizeHint().height()))
+            active=sum(not row.get('finished') for row in self._rows.values())
+            # Reserve space from the outer viewport, never from the inner
+            # layout's current size hint. A history scroll or a wrapped offer
+            # can otherwise resize the two cards while the user scrolls.
+            target=76 if not active else max(104,round(viewport.height()*(.32 if active==1 else .48)))
+            height=max(76,min(room,target))
             if rows.height()!=height:rows.setFixedHeight(height)
             return
         width=max(1,self.activity_scroll.viewport().width())
