@@ -1,0 +1,36 @@
+name: Diagnose Cocoa checks on the built Mac package
+
+on:
+  push:
+    branches: [ci-cocoa-release-check-1839]
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  cocoa:
+    if: github.repository == 'los0711/-flickdock-build'
+    runs-on: macos-15
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          github-token: ${{ github.token }}
+          run-id: 44788397650
+          name: FlickDock-macOS-incomplete-arm64-96812d82d4657ef192748f836f358c5b925c203a
+          path: built
+      - name: Run both Cocoa checks independently and print synthetic reports
+        run: |
+          /usr/bin/ditto -x -k built/FlickDock-1.8.39-macOS-arm64.zip unpacked
+          launch="$(find "$PWD/unpacked" -type f -path '*/FlickDock.app/Contents/MacOS/FlickDock' -print -quit)"
+          test -n "$launch"
+          for name in overview translator; do
+            profile="$(mktemp -d)"
+            if HOME="$profile" APPDATA="$profile" XDG_CONFIG_HOME="$profile" QT_QPA_PLATFORM=cocoa FLICKDOCK_VERIFY_NATIVE_UI=1 "$launch" --verify-"$name" --verify-output "$profile/report.json"; then
+              echo "$name succeeded"
+            else
+              echo "$name exited with status $?"
+            fi
+            if [ -f "$profile/report.json" ]; then cat "$profile/report.json"; printf '\n'; fi
+          done
