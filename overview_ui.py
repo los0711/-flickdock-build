@@ -506,9 +506,11 @@ class ContentsPopup(QFrame):
 
     def _grid_available_width(self):
         margins=self.rows_layout.contentsMargins()
-        viewport_width=self.scroll.viewport().width()
+        # The viewport transiently changes width while Qt toggles the bar
+        # and the equivalent blank gutter. Column count must not depend on
+        # that intermediate width: it changes height and toggles the bar again.
         reserved_width=self.scroll.contentsRect().width()-self._scrollbar_gutter()
-        width=min(viewport_width,reserved_width)-margins.left()-margins.right()
+        width=reserved_width-margins.left()-margins.right()
         transition=getattr(self,'preview_width_motion',None)
         if transition is not None and transition.active and transition.target_visible:
             # Use the final viewport width throughout the resize; otherwise
@@ -1061,7 +1063,7 @@ class ContentsPopup(QFrame):
             button.setChecked(key==self.scope)
         for key,title in self.TYPES:
             control=self.type_buttons[key];count=len(scope_refs) if key=='all' else category_counts[key]
-            control.setText(f'{title} {count}');control.setFixedWidth(control.fontMetrics().horizontalAdvance(control.text())+12)
+            control.setText(f'{title} {count}');control.setFixedWidth(control.fontMetrics().horizontalAdvance(control.text())+16)
             control.setChecked(key==self.type_filter);control.setAccessibleName(f'{title}，{count} 项')
         self.clear_button.setEnabled(self.shelf.has_files())
         self._position_nav_counts()

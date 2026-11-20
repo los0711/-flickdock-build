@@ -1627,17 +1627,17 @@ def build_overview(view,preview_type):
     mid.addWidget(view.selection_bar)
     mid.addWidget(InsetDivider(view.middle,16))
     type_header=QWidget(view.middle);type_header.setFixedHeight(44)
-    filter_row=QHBoxLayout(type_header);filter_row.setContentsMargins(0,0,14,0);filter_row.setSpacing(6)
+    filter_row=QHBoxLayout(type_header);filter_row.setContentsMargins(0,0,14,0);filter_row.setSpacing(3)
     view.type_bar=QScrollArea(type_header);view.type_bar.setWidgetResizable(True);view.type_bar.setFrameShape(QFrame.NoFrame)
     view.type_bar.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff);view.type_bar.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
     css(view.type_bar,'QScrollArea{background:transparent;border:0;} QScrollBar:horizontal{height:4px;background:transparent;} QScrollBar::handle:horizontal{background:rgba(128,128,128,70);border-radius:2px;min-width:24px;} QScrollBar::add-line:horizontal,QScrollBar::sub-line:horizontal{width:0;} QScrollBar::add-page:horizontal,QScrollBar::sub-page:horizontal{background:transparent;}')
     from ui_transitions import TabPillSurface
     view.type_body=TabPillSurface(view.type_bar,motion=lambda:view.shelf.manager.motion)
-    type_line=QHBoxLayout(view.type_body);type_line.setContentsMargins(12,8,4,8);type_line.setSpacing(3)
+    type_line=QHBoxLayout(view.type_body);type_line.setContentsMargins(12,8,0,8);type_line.setSpacing(1)
     view.category_group=QButtonGroup(view);view.category_group.setExclusive(True);view.type_buttons={}
     for key,title in view.TYPES:
         control=button(title+' 0',parent=view.type_body);control.setCheckable(True);control.setFixedHeight(26)
-        css(control,*[f"QPushButton{{background:transparent;color:{colors(t)['secondary']};border:0;padding:3px 6px;font:11px 'FlickDock UI';}} QPushButton:checked{{color:{colors(t)['text']};}}" for t in ('dark','light')])
+        css(control,*[f"QPushButton{{background:transparent;color:{colors(t)['secondary']};border:0;padding:3px 8px;font:11px 'FlickDock UI';}} QPushButton:checked{{color:{colors(t)['text']};}}" for t in ('dark','light')])
         control.clicked.connect(lambda checked=False,key=key:view.set_type(key));view.category_group.addButton(control);type_line.addWidget(control);view.type_body.add_selection_button(control)
         view.type_buttons[key]=control
     type_line.addStretch(1);view.type_bar.setWidget(view.type_body);view.type_body.setAutoFillBackground(False);view.type_bar.viewport().setAutoFillBackground(False)
@@ -1647,8 +1647,8 @@ def build_overview(view,preview_type):
     filter_row.addWidget(view.type_bar,1)
     view.count_label=label('',10,600,'secondary',type_header,control_type=RoundedBadge);view.count_label.setAlignment(Qt.AlignCenter)
     view.count_label.set_theme_backgrounds('rgba(255,255,255,28)','rgba(0,0,0,18)')
-    css(view.count_label,"color:#D4D4D8;background:transparent;border:0;padding:1px 9px;font:600 10px 'FlickDock UI';",
-        "color:#515154;background:transparent;border:0;padding:1px 9px;font:600 10px 'FlickDock UI';")
+    css(view.count_label,"color:#D4D4D8;background:transparent;border:0;padding:1px 4px;font:600 10px 'FlickDock UI';",
+        "color:#515154;background:transparent;border:0;padding:1px 4px;font:600 10px 'FlickDock UI';")
     view.count_label.setFixedHeight(20);filter_row.addWidget(view.count_label,0,Qt.AlignVCenter)
     mid.addWidget(type_header)
     view.pin_error=label('',10,400,'red',view.middle);view.pin_error.setWordWrap(True);view.pin_error.hide();mid.addWidget(view.pin_error)
