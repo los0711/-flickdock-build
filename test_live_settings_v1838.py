@@ -116,6 +116,29 @@ class LiveSettingsTests(unittest.TestCase):
             settle_preferences(dialog)
         self.assertEqual(SettingsStore(self.store.base).theme,'dark')
 
+    def test_reopening_during_theme_save_keeps_the_new_selection(self):
+        self.dialog.show();flush();dialog=self.dialog
+        saving=threading.Event();release=threading.Event()
+        original=self.store._commit
+        def delayed_commit(*args,**kwargs):
+            saving.set();release.wait(3)
+            return original(*args,**kwargs)
+        try:
+            with patch.object(self.store,'_commit',side_effect=delayed_commit), \
+                 patch('ui_transitions.motion_allowed',return_value=True), \
+                 patch('native_ui_common.reduced_motion',return_value=False):
+                dialog._theme_segment._selection_buttons[1].click()
+                dialog.hide()
+                dialog._preference_writer.flush()
+                until(saving.is_set)
+                dialog.show()
+                self.assertTrue(dialog.surface.dark)
+                self.assertTrue(dialog._theme_segment._selection_buttons[1].isChecked())
+                release.set();settle_preferences(dialog)
+            self.assertEqual(self.store.theme,'dark')
+            self.assertEqual(dialog.theme_combo.currentData(),'dark')
+        finally:release.set()
+
     def test_theme_change_has_no_snapshot_and_does_not_resize_window(self):
         from ui_transitions import SnapshotFade
         self.dialog.show();flush();dialog=self.dialog;geometry=dialog.geometry()

@@ -2638,7 +2638,9 @@ class SettingsDialog(QDialog):
         self.clipboard_sync_checkbox.setChecked(self.store.clipboard_sync_enabled)
         self.video_prompt_checkbox.setChecked(self.store.video_link_prompt)
         self.clipboard_success_checkbox.setChecked(self.store.clipboard_success_notice)
-        self.theme_combo.setCurrentIndex(1 if self.store.theme == "dark" else 0)
+        writer=getattr(self,'_preference_writer',None)
+        theme=self._applied_settings_theme if writer is not None and writer.busy else self.store.theme
+        self.theme_combo.setCurrentIndex(1 if theme=="dark" else 0)
         self._set_accent_color(self.store.accent_color)
         self.folder_edit.setText(str(self.store.capture_dir))
         self.capture_mode_combo.setCurrentIndex(self.capture_mode_combo.findData(self.store.capture_mode))
@@ -2663,7 +2665,7 @@ class SettingsDialog(QDialog):
         self.overview_shortcut_edit.setKeySequence(QKeySequence(self.store.overview_shortcut))
         self.error_label.clear()
         self.error_label.hide()
-        self.apply_theme(self.store.theme)
+        self.apply_theme(theme)
         self._loading_values = False
         self._emit_preview()
         self._emit_gesture_preview()
@@ -2802,7 +2804,7 @@ class SettingsDialog(QDialog):
             self.error_label.setText(error);self.error_label.show()
         else:self.error_label.clear();self.error_label.hide()
         if not self._preference_writer.busy:
-            if error and 'theme' in keys and self._pending_theme is None:
+            if 'theme' in keys and self._pending_theme is None:
                 self._loading_values=True
                 try:self.theme_combo.setCurrentIndex(1 if self.store.theme=='dark' else 0)
                 finally:self._loading_values=False

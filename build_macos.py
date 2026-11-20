@@ -257,6 +257,7 @@ def main(arguments=None):
              settings+'test_theme_button_slides_before_recoloring_and_rapid_reversal_keeps_latest',
              settings+'test_theme_button_under_reduced_motion_recolors_immediately',
              settings+'test_closing_settings_persists_the_selected_theme',
+             settings+'test_reopening_during_theme_save_keeps_the_new_selection',
              settings+'test_theme_change_has_no_snapshot_and_does_not_resize_window'],env=env)
     else:
         run([python, '-m', 'unittest', 'test_accent_theme_v1838','test_live_settings_v1838','test_text_preview_v1838','test_translation','test_architecture','test_video_tls','test_startup_resources','test_sync_scheduler','test_cloud_events_v1825','test_cloud_only_v1825','test_window_zoom_v1824', 'test_surface_source_cache', 'test_surface_elements', 'test_mac_install', 'test_preview_continuity', 'test_overview_controls_v1823', 'test_video_matrix', 'test_receive_notice', 'test_copy_notice_v1824', 'test_virtual_clipboard', 'test_platform_startup', 'test_platform_native', 'test_mac_window_order_v1810', 'test_mac_updates',

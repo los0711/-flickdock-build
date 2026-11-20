@@ -78,8 +78,7 @@ jobs:
       contents: read
 
   macos:
-    if: inputs.mode == 'publish'
-    needs: authorization
+    if: inputs.mode == 'publish' && github.repository == 'los0711/-flickdock-build' && github.ref == 'refs/heads/main'
     uses: ./.github/workflows/macos-build.yml
     with:
       test_build: true
