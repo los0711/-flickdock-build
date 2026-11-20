@@ -33,7 +33,10 @@ concurrency:
 jobs:
   authorization:
     if: github.repository == 'los0711/-flickdock-build' && github.ref == 'refs/heads/main'
-    runs-on: windows-2025
+    runs-on: ${{ inputs.target == 'mac-arm64' && 'ubuntu-24.04' || 'windows-2025' }}
+    defaults:
+      run:
+        shell: pwsh
     timeout-minutes: 10
     environment: flickdock-release
     steps:

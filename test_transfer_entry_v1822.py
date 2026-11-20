@@ -122,7 +122,7 @@ class EntryTests(unittest.TestCase):
                 self.assertTrue(dialog.mode_buttons['wan'].isChecked());self.assertFalse(dialog.mode_buttons['lan'].isChecked())
             finally:dialog.hide();dialog.deleteLater();wan.close();wan.deleteLater();flush()
 
-    def test_remote_receive_codes_have_distinct_field_backgrounds_in_both_themes(self):
+    def test_local_receive_code_uses_the_theme_accent_and_peer_input_keeps_its_surface(self):
         from native_ui_common import colors
         from PySide6.QtGui import QColor
         with tempfile.TemporaryDirectory() as directory:
@@ -133,11 +133,12 @@ class EntryTests(unittest.TestCase):
                 for theme in ('light','dark'):
                     dialog.apply_theme(theme);flush()
                     self.assertEqual(panel.send_code_value.height(),panel.peer_code_input.height())
-                    self.assertNotEqual(QColor(colors(theme)['control']),QColor(colors(theme)['input']))
-                    for field in (panel.send_code_value,panel.peer_code_input):
+                    palette=colors(theme)
+                    self.assertNotEqual(QColor(palette['action']),QColor(palette['input']))
+                    for field,role in ((panel.send_code_value,'action'),(panel.peer_code_input,'input')):
                         image=field.grab().toImage();ratio=image.devicePixelRatio()
                         pixel=image.pixelColor(round(8*ratio),round((field.height()-8)*ratio))
-                        self.assertEqual(pixel.name(),QColor(colors(theme)['input']).name(),(theme,field.objectName(),pixel.name()))
+                        self.assertEqual(pixel.name(),QColor(palette[role]).name(),(theme,field.objectName(),pixel.name()))
                     panel.peer_code_input.setText('EF67');self.assertEqual(panel.peer_code_input.text(),'EF67')
             finally:dialog.hide();dialog.deleteLater();wan.close();wan.deleteLater();flush()
 
