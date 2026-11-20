@@ -1061,7 +1061,7 @@ class ContentsPopup(QFrame):
             button.setChecked(key==self.scope)
         for key,title in self.TYPES:
             control=self.type_buttons[key];count=len(scope_refs) if key=='all' else category_counts[key]
-            control.setText(f'{title} {count}');control.setFixedWidth(control.fontMetrics().horizontalAdvance(control.text())+16)
+            control.setText(f'{title} {count}');control.setFixedWidth(control.fontMetrics().horizontalAdvance(control.text())+12)
             control.setChecked(key==self.type_filter);control.setAccessibleName(f'{title}，{count} 项')
         self.clear_button.setEnabled(self.shelf.has_files())
         self._position_nav_counts()

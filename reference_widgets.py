@@ -1633,11 +1633,11 @@ def build_overview(view,preview_type):
     css(view.type_bar,'QScrollArea{background:transparent;border:0;} QScrollBar:horizontal{height:4px;background:transparent;} QScrollBar::handle:horizontal{background:rgba(128,128,128,70);border-radius:2px;min-width:24px;} QScrollBar::add-line:horizontal,QScrollBar::sub-line:horizontal{width:0;} QScrollBar::add-page:horizontal,QScrollBar::sub-page:horizontal{background:transparent;}')
     from ui_transitions import TabPillSurface
     view.type_body=TabPillSurface(view.type_bar,motion=lambda:view.shelf.manager.motion)
-    type_line=QHBoxLayout(view.type_body);type_line.setContentsMargins(12,8,4,8);type_line.setSpacing(4)
+    type_line=QHBoxLayout(view.type_body);type_line.setContentsMargins(12,8,4,8);type_line.setSpacing(3)
     view.category_group=QButtonGroup(view);view.category_group.setExclusive(True);view.type_buttons={}
     for key,title in view.TYPES:
         control=button(title+' 0',parent=view.type_body);control.setCheckable(True);control.setFixedHeight(26)
-        css(control,*[f"QPushButton{{background:transparent;color:{colors(t)['secondary']};border:0;padding:3px 8px;font:11px 'FlickDock UI';}} QPushButton:checked{{color:{colors(t)['text']};}}" for t in ('dark','light')])
+        css(control,*[f"QPushButton{{background:transparent;color:{colors(t)['secondary']};border:0;padding:3px 6px;font:11px 'FlickDock UI';}} QPushButton:checked{{color:{colors(t)['text']};}}" for t in ('dark','light')])
         control.clicked.connect(lambda checked=False,key=key:view.set_type(key));view.category_group.addButton(control);type_line.addWidget(control);view.type_body.add_selection_button(control)
         view.type_buttons[key]=control
     type_line.addStretch(1);view.type_bar.setWidget(view.type_body);view.type_body.setAutoFillBackground(False);view.type_bar.viewport().setAutoFillBackground(False)
