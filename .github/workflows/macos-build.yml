@@ -81,12 +81,16 @@ jobs:
         run: |
           sandbox="$(mktemp -d)"
           HOME="$sandbox" APPDATA="$sandbox" XDG_CONFIG_HOME="$sandbox" QT_QPA_PLATFORM=cocoa FLICKDOCK_VERIFY_NATIVE_UI=1 dist/FlickDock.app/Contents/MacOS/FlickDock --verify-overview --verify-output "$sandbox/overview.json"
-          python - "$sandbox/overview.json" <<'PY'
+          HOME="$sandbox" APPDATA="$sandbox" XDG_CONFIG_HOME="$sandbox" QT_QPA_PLATFORM=cocoa FLICKDOCK_VERIFY_NATIVE_UI=1 dist/FlickDock.app/Contents/MacOS/FlickDock --verify-translator --verify-output "$sandbox/translator.json"
+          python - "$sandbox/overview.json" "$sandbox/translator.json" <<'PY'
           import json,sys
           from pathlib import Path
           from app_version import APP_VERSION
           report=json.loads(Path(sys.argv[1]).read_bytes())
           assert report['ok'] and report['frozen'] and report['version']==APP_VERSION,report
+          translator=json.loads(Path(sys.argv[2]).read_bytes())
+          assert translator['ok'] and translator['frozen'] and translator['version']==APP_VERSION,translator
+          assert translator['mac_leading_controls'],translator
           PY
       - name: Verify Keychain startup, automatic update, cached retry and completed notice
         run: build/macos-venv/bin/python -m unittest test_account_security_v180 test_mac_updates test_update_macos_controller test_update_macos test_update_resume_v1821 test_update_notice_v1813 test_shelf_live_v1821 test_utility_feedback_v1828 -q

@@ -78,6 +78,47 @@ def dock_window_state(window,needed,*,appkit=None):
     appkit.NSApplication.sharedApplication().setActivationPolicy_(policy)
 
 
+class _MacCaptionButton(QPushButton):
+    def __init__(self,parent,role,fill,label,action):
+        super().__init__(parent)
+        self._role=role
+        self._fill=QColor(fill)
+        self.setFixedSize(12,12)
+        self.setAccessibleName(label)
+        self.setAutoDefault(False)
+        self.clicked.connect(action)
+
+    def paintEvent(self,event):
+        painter=QPainter(self)
+        paint_rounded_surface(painter,self.rect(),6,self._fill.darker(120) if self.isDown() else self._fill)
+        if self.underMouse() or self.hasFocus():
+            painter.setPen(QPen(QColor(38,20,16,185),1))
+            if self._role=='close':
+                painter.drawLine(4,4,8,8);painter.drawLine(8,4,4,8)
+            elif self._role=='min':
+                painter.drawLine(3,6,9,6)
+            else:
+                painter.drawLine(4,8,8,4)
+        painter.end()
+
+
+def mac_caption_controls(window,parent):
+    """Shared leading caption controls on frameless macOS utility windows."""
+    from PySide6.QtWidgets import QHBoxLayout
+    from native_ui_common import toggle_window_zoom
+    group=QWidget(parent)
+    row=QHBoxLayout(group);row.setContentsMargins(0,0,0,0);row.setSpacing(8)
+    group.buttons={}
+    for role,fill,label,action in (
+            ('close','#FF5F56','关闭窗口',window.close),
+            ('min','#FFBD2E','最小化',lambda:minimize_utility(window)),
+            ('max','#27C93F','最大化或还原',lambda:toggle_window_zoom(window))):
+        control=_MacCaptionButton(group,role,fill,label,action)
+        group.buttons[role]=control
+        row.addWidget(control)
+    return group
+
+
 class _WindowButton(QPushButton):
     def __init__(self,window,role):
         super().__init__('',window);self.owner=window;self.role=role

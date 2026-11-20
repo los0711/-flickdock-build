@@ -1,5 +1,6 @@
 """One scroll document with accessible anchor navigation and scroll tracking."""
 from collections import Counter
+import sys
 from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, QRectF, QSignalBlocker, QTimer, QEasingCurve, Qt
 from PySide6.QtGui import QColor,QImage,QLinearGradient,QPainter,QRegion
 from PySide6.QtWidgets import QApplication,QAbstractItemView,QAbstractScrollArea,QListWidget,QStyledItemDelegate,QStyle,QWidget
@@ -15,6 +16,7 @@ SETTINGS_ANCHOR_DURATION_MS = 220
 SCROLL_BOUNCE_DISTANCE_PX = 36
 SCROLL_BOUNCE_DURATION_MS = 250
 SCROLL_BOUNCE_IDLE_MS = 100
+MAC_TRACKPAD_PULL_PX = 16
 
 
 def _at_scroll_edge(bar,distance):
@@ -154,6 +156,36 @@ def _stop_bounce(area):
     if bounce is not None:bounce.stop()
 
 
+def _release_precision_bounce(area):
+    area._flickdock_trackpad_edge=0
+    bounce=getattr(area,'_flickdock_boundary_bounce',None)
+    if bounce is not None and bounce.animation.state()!=bounce.animation.Running:bounce.release()
+
+
+def _precision_bounce(area,distance,phase):
+    if sys.platform!='darwin' or phase==Qt.ScrollPhase.NoScrollPhase:
+        return _bounce_at_edge(area,distance)
+    if phase==Qt.ScrollPhase.ScrollBegin:area._flickdock_trackpad_edge=0
+    direction=1 if distance>0 else -1
+    locked=getattr(area,'_flickdock_trackpad_edge',0)
+    if not _at_scroll_edge(area.verticalScrollBar(),distance):
+        area._flickdock_trackpad_edge=0
+        if locked:
+            _stop_bounce(area)
+            return False
+    elif phase==Qt.ScrollPhase.ScrollMomentum:
+        _release_precision_bounce(area)
+        return False
+    elif locked==direction:
+        return True
+    if not _bounce_at_edge(area,distance):return False
+    bounce=getattr(area,'_flickdock_boundary_bounce',None)
+    if bounce is not None and abs(bounce.overlay.offset)>=MAC_TRACKPAD_PULL_PX:
+        bounce.release()
+        area._flickdock_trackpad_edge=direction
+    return True
+
+
 class InertialWheelScroll(QObject):
     """Coalesced mouse-wheel glide; native precision scrolling stays native."""
     def __init__(self,area):
@@ -172,8 +204,7 @@ class InertialWheelScroll(QObject):
     def wheel(self,event):
         if event.modifiers() & (Qt.ControlModifier|Qt.ShiftModifier):return False
         if event.phase()==Qt.ScrollPhase.ScrollEnd:
-            bounce=getattr(self.area,'_flickdock_boundary_bounce',None)
-            if bounce is not None:bounce.release()
+            _release_precision_bounce(self.area)
             return False
         if event.pixelDelta().y() or event.angleDelta().y():
             before=getattr(self.area,'_flickdock_before_scroll',None)
@@ -181,7 +212,8 @@ class InertialWheelScroll(QObject):
         if event.pixelDelta().y() or event.phase()!=Qt.ScrollPhase.NoScrollPhase:
             self.motion.stop()
             distance=-(event.pixelDelta().y() or event.angleDelta().y())
-            if distance and _bounce_at_edge(self.area,distance):event.accept();return True
+            if distance and _precision_bounce(self.area,distance,event.phase()):event.accept();return True
+            if event.phase()==Qt.ScrollPhase.ScrollMomentum and sys.platform=='darwin' and _at_scroll_edge(self.bar,distance):return False
             _stop_bounce(self.area);return False
         angle=event.angleDelta().y()
         if not angle:return False
@@ -513,20 +545,21 @@ class SettingsNavigation(QObject):
     def _wheel(self,event):
         if event.modifiers() & (Qt.ControlModifier|Qt.ShiftModifier):return False
         if event.phase()==Qt.ScrollPhase.ScrollEnd:
-            bounce=getattr(self.dialog.scroll,'_flickdock_boundary_bounce',None)
-            if bounce is not None:bounce.release()
+            _release_precision_bounce(self.dialog.scroll)
             return False
         pixels=event.pixelDelta().y();angle=event.angleDelta().y()
         if not pixels and not angle:return False
         self.motion.stop();self.anchor=None
         if not pixels and event.phase()!=Qt.ScrollPhase.NoScrollPhase:
             self.wheel_motion.stop()
-            if angle and _bounce_at_edge(self.dialog.scroll,-angle):event.accept();return True
+            if angle and _precision_bounce(self.dialog.scroll,-angle,event.phase()):event.accept();return True
+            if event.phase()==Qt.ScrollPhase.ScrollMomentum and sys.platform=='darwin' and _at_scroll_edge(self.bar,-angle):return False
             _stop_bounce(self.dialog.scroll);return False
         if pixels:
             # Precision trackpads already supply their own system momentum.
-            if _bounce_at_edge(self.dialog.scroll,-pixels):event.accept();return True
-            _stop_bounce(self.dialog.scroll)
+            if _precision_bounce(self.dialog.scroll,-pixels,event.phase()):event.accept();return True
+            if not (event.phase()==Qt.ScrollPhase.ScrollMomentum and sys.platform=='darwin' and _at_scroll_edge(self.bar,-pixels)):
+                _stop_bounce(self.dialog.scroll)
             self.wheel_motion.stop();self.bar.setValue(self.bar.value()-pixels)
         else:
             distance=-angle/120*max(1,QApplication.wheelScrollLines())*self.bar.singleStep()

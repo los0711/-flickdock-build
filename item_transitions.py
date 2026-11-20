@@ -94,8 +94,8 @@ class FileSelection:
     tick: QColor
 
     def between(self,other,t):
-        return FileSelection(_rect_between(self.rect,other.rect,t),_ink_between(self.fill,other.fill,t),
-                             _ink_between(self.edge,other.edge,t),_ink_between(self.tick,other.tick,t))
+        return FileSelection(_rect_between(self.rect,other.rect,t),_selection_ink(self.fill,other.fill,t),
+                             _selection_ink(self.edge,other.edge,t),_selection_ink(self.tick,other.tick,t))
 
     def paint(self,painter):
         from native_ui_common import paint_rounded_surface
@@ -175,6 +175,17 @@ def _rect_between(a,b,t):
 def _ink_between(a,b,t):
     t=max(0.,min(1.,t))
     return QColor.fromRgbF(*(_between(x,y,t) for x,y in zip(a.getRgbF(),b.getRgbF())))
+
+
+def _selection_ink(a,b,t):
+    # Interpolate premultiplied color so Qt.transparent does not inject black
+    # into the moving circle, border or tick as it fades in or out.
+    t=max(0.,min(1.,t))
+    start,end=a.getRgbF(),b.getRgbF()
+    alpha=_between(start[3],end[3],t)
+    if not alpha:return QColor(Qt.transparent)
+    channels=[max(0.,min(1.,_between(x*start[3],y*end[3],t)/alpha)) for x,y in zip(start[:3],end[:3])]
+    return QColor.fromRgbF(*channels,alpha)
 
 
 def _faded(parts,fraction,delta):

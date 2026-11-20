@@ -110,6 +110,20 @@ class FieldModelTests(unittest.TestCase):
 
 
 class FieldGeometryTests(unittest.TestCase):
+    def test_mac_accepts_the_rounded_outermost_pixel_without_extending_the_display(self):
+        from types import SimpleNamespace
+        visual=EdgeAbsorb(config=replace(DEFAULT_CONFIG,edge_position='right'),seed=10)
+        try:
+            area=APP.primaryScreen().geometry()
+            point=QPoint(area.right()+1,area.center().y())
+            with patch('edge_absorb.sys',SimpleNamespace(platform='darwin')):
+                target=visual.target_at(point)
+                self.assertIsNotNone(target)
+                self.assertEqual(target.distance,0)
+                self.assertEqual(target.point.x(),area.right())
+                self.assertIsNone(visual.target_at(point+QPoint(2,0)))
+        finally:visual.close();flush()
+
     def test_all_edges_negative_origins_and_adjacent_screens_stay_inside(self):
         for area in (QRect(0,0,1920,1080),QRect(-2560,-400,2560,1440),QRect(1920,200,1707,960)):
             for edge in ('left','right','top','bottom'):

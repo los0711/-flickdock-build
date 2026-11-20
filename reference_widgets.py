@@ -1753,6 +1753,7 @@ def build_preview(view,elided_type,image_type,media_type,content_type):
     view.stack=PreviewSurfaceStack(content);view.stack.setMinimumHeight(176);view.stack.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Expanding)
     view.icon=content_type(view,motion=view.shelf.manager.motion)
     view.text=RoundedPreviewText(view);view.text.setReadOnly(True);view.text.setAcceptDrops(False);view.text.viewport().setAcceptDrops(False)
+    if sys.platform=='darwin':view.text.setProperty('scrollEdgeBlur',False)
     css(view.text,"QPlainTextEdit{background:transparent;color:#F5F5F7;border:0;padding:14px;font:13px 'FlickDock UI';}",
         "QPlainTextEdit{background:transparent;color:#1D1D1F;border:0;padding:14px;font:13px 'FlickDock UI';}")
     view.image=image_type(view);view.image.set_loader(view.shelf.image_cache);view.image.source_ready.connect(view._image_source_ready)

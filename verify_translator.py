@@ -5,7 +5,8 @@ from types import SimpleNamespace
 
 
 def run(argv,load_font):
-    if os.environ.get('QT_QPA_PLATFORM')!='offscreen':raise RuntimeError('Translator verification requires QT_QPA_PLATFORM=offscreen')
+    from offscreen_verify import verification_platform_allowed
+    if not verification_platform_allowed():raise RuntimeError('Translator verification requires isolated Qt verification mode')
     from PySide6.QtCore import QObject,Signal
     from PySide6.QtGui import QShortcut
     from PySide6.QtMultimedia import QMediaPlayer
@@ -53,6 +54,12 @@ def run(argv,load_font):
             speech=TranslatorSpeech(api=SpeechFixture(),player_factory=lambda owner:(PlayerFixture(owner),None))
             view=TranslatorDialog(SimpleNamespace(settings=settings,shelf=shelf),api=api,store=store,detector=lambda text:'中文',speech=speech)
             view.show();settle();view.source_editor.setPlainText('你好，请确认交付时间。');view.session.translate();api.finish('Hello, please confirm the delivery schedule.');settle()
+            if sys.platform=='darwin':
+                group=view.caption_controls
+                assert view.title_bar.layout().itemAt(0).widget() is group and view.close_button.isHidden()
+                assert all(button.isVisible() for button in group.buttons.values())
+                assert tuple(group.buttons)==('close','min','max')
+                report['mac_leading_controls']=True
             assert view.output_editor.toPlainText()=='Hello, please confirm the delivery schedule.'
             view.session.polish('更亲切');api.finish('Hello, could you please confirm the delivery schedule?');settle()
             assert view.session.original=='Hello, please confirm the delivery schedule.';view.session.undo();assert not view.session.revisions

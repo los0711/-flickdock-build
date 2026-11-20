@@ -204,8 +204,15 @@ class DropdownMotion(QObject):
                 self.enabled=(not reduced_motion() and QGuiApplication.platformName() in ('windows','cocoa'))
                 self.opened=True
                 if self.enabled:
-                    if not self._inline_open:watched.setWindowOpacity(.01)
+                    if self._inline_open:
+                        # Cover the live menu before its first paint. _open()
+                        # removes this child only while grabbing the snapshot.
+                        self._present(watched,inline=True)
+                        self.presentation.show()
+                    else:watched.setWindowOpacity(.01)
                     self.after_layout.start(0)
+            elif event.type()==QEvent.Resize and self.presentation is not None and self.presentation.inline:
+                self.presentation.setGeometry(watched.rect())
             elif event.type()==QEvent.Hide:
                 self.opened=False
                 self.after_layout.stop()

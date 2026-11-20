@@ -53,6 +53,7 @@ from overview_ui import ContentsPopup
 from owned_files import delete_owned_copy
 from owned_files import owned_copy_spec
 from pathlib import Path
+from platform_native import keep_tool_visible_when_inactive
 from platform_native import lower_shelf_after_reveal
 from platform_native import raise_shelf_for_reveal
 from platform_native import remove_host_window_shadow
@@ -166,6 +167,7 @@ class ShelfWindow(QWidget):
         self.active_mode = "permanent"
         self._rename_mode = "permanent"
         self.setWindowFlags(shelf_window_flags())
+        keep_tool_visible_when_inactive(self)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setAcceptDrops(True)

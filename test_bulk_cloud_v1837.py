@@ -208,7 +208,8 @@ class BatchCloudTests(unittest.TestCase):
             menu=preview._send_menu
             self.assertIsNotNone(menu)
             motion=menu._dropdown_motion
-            w.until(lambda:motion.presentation is not None)
+            self.assertTrue(motion.after_layout.isActive())
+            self.assertIsNotNone(motion.presentation,'Cover should exist before the first live paint')
             self.assertIs(motion.presentation.parentWidget(),menu)
             self.assertFalse(motion.presentation.isWindow())
             self.assertTrue(motion.presentation.testAttribute(Qt.WA_TransparentForMouseEvents))

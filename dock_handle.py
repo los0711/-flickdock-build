@@ -49,6 +49,11 @@ class DockHandle(QWidget):
             else:region.setBottom(screen.bottom()+1)
         return region
 
+    def file_preview_region(self):
+        if sys.platform=='darwin':
+            return QRect(self.geometry()) if self.active() else QRect()
+        return self.activation_region()
+
     def position_at_edge(self):
         values=self.values()
         self.setGeometry(trigger_rect(self.screen_area(),values['dock_edge'],values['dock_position'],values['dock_length'],values['dock_thickness']))
@@ -85,20 +90,26 @@ class DockHandle(QWidget):
         if not self.active():super().enterEvent(event);return
         self.manager.edge=self
         magnetic=getattr(self.manager,'edge_file_drag',None)
-        if not self.manager.edge_suppressed and (not (magnetic and magnetic.prepared) or getattr(magnetic,'coexisting_preview',False)): self.manager.show_docked()
+        if not self.manager.edge_suppressed:
+            if not (magnetic and magnetic.prepared):
+                self.manager.show_docked()
+            elif (getattr(magnetic,'coexisting_preview',False) and
+                  self.file_preview_region().contains(event.globalPosition().toPoint())):
+                self.manager.show_docked()
         super().enterEvent(event)
 
     def _magnetic_event(self,event,*,dropping=False):
         magnetic=getattr(self.manager,'edge_file_drag',None)
         if not magnetic or not magnetic.prepared:return False
-        from edge_file_drag import file_urls
-        position=self.mapToGlobal(event.position().toPoint())
+        from edge_file_drag import drop_position,file_urls
+        position=drop_position(self,event)
         if not file_urls(event.mimeData()) or magnetic.visual.target_at(position) is None:return False
         # A native re-order can briefly route an event to the original narrow
         # handle. Keep one intake owner instead of revealing a second target.
         if dropping:magnetic._native_drop(event,position)
         else:magnetic._native_move(event,position,entering=True)
-        if not dropping and getattr(magnetic,'coexisting_preview',False):self.manager.show_docked()
+        if not dropping and getattr(magnetic,'coexisting_preview',False) and self.file_preview_region().contains(position):
+            self.manager.show_docked()
         return True
 
     def dragEnterEvent(self,event):

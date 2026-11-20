@@ -16,7 +16,7 @@ from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QFileDialog, QFrame, QGraphicsDropShadowEffect,
                                QGridLayout, QHBoxLayout, QLayout, QLabel, QLineEdit, QProgressBar, QPushButton,
                                QListView, QMenu, QScrollArea, QSizePolicy, QStyle, QStyledItemDelegate,
-                               QStyleOptionButton, QStyleOptionComboBox, QStylePainter, QToolTip, QVBoxLayout, QWidget, QStackedWidget, QButtonGroup)
+                               QStyleOptionButton, QStyleOptionComboBox, QStylePainter, QVBoxLayout, QWidget, QStackedWidget, QButtonGroup)
 
 from flickdock_icons import draw_glyph
 from flickdock_motion import Spring
@@ -94,7 +94,7 @@ class _PressButton(QPushButton):
         elif name=='lanOfferReject':
             fill=c['hover'] if hover else c['card'];edge=c['border']
         elif name=='lanSendCodeValue' and pairing:
-            fill=c['selected'] if down else c['hover'] if hover else c['input'];edge=c['input_border']
+            fill=c['control'] if not enabled else c['action_pressed'] if down else c['action_hover'] if hover else c['action']
         elif name=='lanDeckArrow':
             fill=c['control_pressed'] if down else c['control_hover'] if hover else c['control']
             radius=self.height()/2
@@ -147,7 +147,8 @@ class _CopyCodeButton(_PressButton):
         self.setText(current)
         QApplication.clipboard().setText(code)
         self.setToolTip('已复制');self._feedback.start(1600)
-        QToolTip.showText(self.mapToGlobal(QPoint(0,self.height()+4)),'已复制到剪贴板',self,self.rect(),1600)
+        from ui_theme import show_tooltip_feedback
+        show_tooltip_feedback(self,'已复制到剪贴板')
         self.setAccessibleDescription('已复制到剪贴板')
 
 
@@ -1605,7 +1606,8 @@ class LanPanel(QFrame):
             QFrame#lanDropZone QLabel#lanDropTitle {{ font-size:12px; font-weight:500; color:{color}; }}
             QFrame#lanDropZone QLabel#lanDropHint {{ font-size:11px; color:{muted}; }}
             QFrame#lanSendCode {{ background:transparent; border:0; }}
-            QFrame#lanPanel QPushButton#lanSendCodeValue {{ color:{c['cyan'] if self._dark else accent}; font-size:16px; font-weight:400; font-family:{font_css_stack(technical=True)}; }}
+            QFrame#lanPanel QPushButton#lanSendCodeValue {{ color:{c['on_action'] if self._wan else accent}; font-size:16px; font-weight:400; font-family:{font_css_stack(technical=True)}; }}
+            QFrame#lanPanel QPushButton#lanSendCodeValue:disabled {{ color:{muted}; }}
             QFrame#lanPanel QPushButton {{ color:{color}; background:transparent; border:0; padding:5px 13px; font-size:12px; }}
             QFrame#lanPanel QPushButton#lanTextButton {{ color:{muted}; background:transparent; border:0; padding:2px 4px; min-height:18px; }}
             QFrame#lanPanel QPushButton#lanTextButton:hover {{ color:{accent}; }}
@@ -2135,21 +2137,10 @@ class LanDialog(QDialog):
         title_row = QHBoxLayout(self.title_bar); title_row.setContentsMargins(20,0,20,0);title_row.setSpacing(12)
         self.traffic_buttons=[]
         if sys.platform=='darwin':
-            from native_ui_common import toggle_window_zoom
-            controls=QHBoxLayout();controls.setSpacing(8)
-            from window_chrome import minimize_utility
-            for value,title,callback in (('#FF5F56','关闭窗口',self.close),
-                                         ('#FFBD2E','最小化',lambda:minimize_utility(self)),
-                                         ('#27C93F','最大化或还原',lambda:toggle_window_zoom(self))):
-                button=_button('',self.title_bar);button.setFixedSize(12,12)
-                button.setAccessibleName(title)
-                button.setProperty('flickdockIconOnly',True)
-                button.setProperty('trafficColor',value)
-                button.setStyleSheet('QPushButton{background:transparent;border:0;padding:0;min-height:0;}')
-                if callback:button.clicked.connect(callback)
-                else:button.setEnabled(False)
-                controls.addWidget(button);self.traffic_buttons.append(button)
-            title_row.addLayout(controls)
+            from window_chrome import mac_caption_controls
+            self.caption_controls=mac_caption_controls(self,self.title_bar)
+            self.traffic_buttons=list(self.caption_controls.buttons.values())
+            title_row.addWidget(self.caption_controls)
         title = _label('文件互传', self.title_bar); title.setObjectName('lanDialogTitle')
         self.title_label=title
         title.setWordWrap(False);title.setSizePolicy(QSizePolicy.Fixed,QSizePolicy.Preferred)
@@ -2178,6 +2169,7 @@ class LanDialog(QDialog):
         close.setAutoDefault(False);close.setDefault(False);close.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         close.setFixedSize(32, 32); close.setAccessibleName('关闭局域网传输窗口')
         close.clicked.connect(self.close); title_row.addWidget(close)
+        if sys.platform=='darwin':close.hide()
         mode_band=QWidget(self.card);mode_band_layout=QVBoxLayout(mode_band);mode_band_layout.setContentsMargins(WORKBENCH_MARGIN_PX,8,WORKBENCH_MARGIN_PX,0);mode_band_layout.addWidget(self.mode_segment)
         content.addWidget(mode_band)
         self.panel_stack=QStackedWidget(self.card)

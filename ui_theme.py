@@ -3,13 +3,14 @@ from __future__ import annotations
 import re
 import weakref
 from PySide6.QtCore import QEvent,QObject,QPoint,QTimer,Qt
-from PySide6.QtGui import QColor,QPalette
-from PySide6.QtWidgets import QAbstractButton,QApplication,QMessageBox,QToolButton,QToolTip,QWidget
+from PySide6.QtGui import QColor,QPainter,QPalette
+from PySide6.QtWidgets import QAbstractButton,QApplication,QMessageBox,QToolButton,QWidget
 from shiboken6 import isValid
 
 _theme = 'light'
 TOOLTIP_DELAY_MS = 500
 TOOLTIP_GAP_PX = 6
+TOOLTIP_RADIUS_PX = 8
 # Legacy painter aliases resolve through the one semantic palette in
 # native_ui_common.colors; keep the Qt color strings valid for QColor.
 _PALETTES = ('light', 'dark')
@@ -44,11 +45,36 @@ class _DialogPalette(QObject):
         return False
 
 
+class _PaintedTooltip(QWidget):
+    def __init__(self,owner):
+        super().__init__(owner,Qt.ToolTip|Qt.FramelessWindowHint|Qt.NoDropShadowWindowHint|
+                         Qt.WindowDoesNotAcceptFocus|Qt.WindowTransparentForInput)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_ShowWithoutActivating)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self._text=''
+
+    def paintEvent(self,event):
+        from native_ui_common import colors,paint_rounded_surface,qss_color
+        tokens=colors(_theme)
+        painter=QPainter(self)
+        painter.setCompositionMode(QPainter.CompositionMode_Source)
+        painter.fillRect(self.rect(),Qt.transparent)
+        painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
+        paint_rounded_surface(painter,self.rect(),TOOLTIP_RADIUS_PX,qss_color(tokens['popup_surface']),qss_color(tokens['input_border']))
+        painter.setPen(qss_color(tokens['text']))
+        painter.drawText(self.rect().adjusted(9,5,-9,-5),Qt.AlignCenter|Qt.TextWordWrap|Qt.TextDontClip,self._text)
+        painter.end()
+
+
 class _TooltipCorners(QObject):
     """Use one directly timed tooltip for every single-icon button."""
     def __init__(self,parent):
         super().__init__(parent)
         self._button=None
+        self._popup=None
+        self._dismiss=QTimer(self);self._dismiss.setSingleShot(True)
+        self._dismiss.timeout.connect(self._clear)
         self._timer=QTimer(self);self._timer.setSingleShot(True)
         self._timer.setInterval(TOOLTIP_DELAY_MS)
         self._timer.setTimerType(Qt.PreciseTimer);self._timer.timeout.connect(self._show_button_tip)
@@ -70,28 +96,40 @@ class _TooltipCorners(QObject):
 
     def _clear(self):
         self._timer.stop()
+        self._dismiss.stop()
         self._button=None
-        if QToolTip.isVisible():QToolTip.hideText()
+        if self._popup is not None and isValid(self._popup):self._popup.hide()
 
     def _show_button_tip(self):
         button=self._current_button()
         if button is None or not button.isVisible() or not button.underMouse():return
         text=self._text(button)
         if not text:return
+        self.show_tip(button,text)
+
+    def show_tip(self,button,text,*,duration=0):
         from native_ui_common import screen_for_widget
+        owner=button.window()
+        popup=self._popup
+        if popup is None or not isValid(popup) or popup.parentWidget() is not owner:
+            if popup is not None and isValid(popup):popup.hide();popup.deleteLater()
+            popup=self._popup=_PaintedTooltip(owner)
+        popup.setFont(button.font())
+        popup._text=text
         top=button.mapToGlobal(QPoint())
-        metrics=button.fontMetrics()
-        width=metrics.horizontalAdvance(text)+20
-        height=metrics.height()+18
+        metrics=popup.fontMetrics()
         from PySide6.QtGui import QGuiApplication
         screen=QGuiApplication.screenAt(top) or screen_for_widget(button)
         area=screen.availableGeometry() if screen is not None else None
+        width=min(metrics.horizontalAdvance(text)+20,area.width() if area is not None else 560,560)
+        height=metrics.boundingRect(0,0,max(1,width-18),0,Qt.TextWordWrap,text).height()+12
         x=top.x()+(button.width()-width)//2
         below=top.y()+button.height()+TOOLTIP_GAP_PX
         above=top.y()-height-TOOLTIP_GAP_PX
         y=below if area is None or below+height<=area.bottom()+1 else max(area.top(),above)
         if area is not None:x=max(area.left(),min(x,area.right()-width+1))
-        QToolTip.showText(QPoint(x,y),text,button)
+        popup.resize(width,height);popup.move(QPoint(x,y));popup.show();popup.update()
+        if duration:self._dismiss.start(duration)
 
     def eventFilter(self,watched,event):
         if getattr(self,'_updating',False):return False
@@ -104,6 +142,9 @@ class _TooltipCorners(QObject):
                 self._start(watched)
             elif kind in (QEvent.Leave,QEvent.Hide,QEvent.MouseButtonPress,QEvent.WindowDeactivate):
                 if watched is self._current_button():self._clear()
+        if (kind in (QEvent.Hide,QEvent.WindowDeactivate) and self._popup is not None
+                and isValid(self._popup) and self._popup.parentWidget() is watched):
+            self._clear()
         if kind in (QEvent.Polish,QEvent.Show,QEvent.Resize) and watched.metaObject().className()=='QTipLabel':
             self._updating=True
             try:
@@ -117,6 +158,17 @@ class _TooltipCorners(QObject):
                         watched.setWindowFlag(Qt.NoDropShadowWindowHint,True)
             finally:self._updating=False
         return False
+
+
+def show_tooltip_feedback(anchor,text,duration=1600):
+    app=QApplication.instance()
+    if app is None:return
+    controller=getattr(app,'_flickdock_tooltip_corners',None)
+    if controller is None:
+        controller=app._flickdock_tooltip_corners=_TooltipCorners(app)
+        app.installEventFilter(controller)
+    controller._clear()
+    controller.show_tip(anchor,text,duration=duration)
 
 
 def set_theme(theme):

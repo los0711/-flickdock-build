@@ -9,6 +9,8 @@ input-transparent. No general-purpose desktop-wide interception is installed.
 from __future__ import annotations
 
 import weakref
+import sys
+from math import floor
 
 from dataclasses import replace
 
@@ -27,6 +29,13 @@ def file_urls(mime):
     # Do not open/stat files, read the clipboard, materialize a promised file,
     # decode a thumbnail, or query any cloud service during DragOver.
     return [url for url in mime.urls() if url.isLocalFile() and url.toLocalFile()]
+
+
+def drop_position(widget,event):
+    local=event.position()
+    if sys.platform=='darwin':
+        return widget.mapToGlobal(QPoint(floor(local.x()),floor(local.y())))
+    return widget.mapToGlobal(local.toPoint())
 
 
 class _FileDestination(QWidget):
@@ -54,14 +63,14 @@ class _FileDestination(QWidget):
     def dragEnterEvent(self, event):
         owner = self.owner()
         if owner is not None:
-            owner._native_move(event, self.mapToGlobal(event.position().toPoint()), entering=True)
+            owner._native_move(event,drop_position(self,event),entering=True)
         else:
             event.ignore()
 
     def dragMoveEvent(self, event):
         owner = self.owner()
         if owner is not None:
-            owner._native_move(event, self.mapToGlobal(event.position().toPoint()))
+            owner._native_move(event,drop_position(self,event))
         else:
             event.ignore()
 
@@ -74,7 +83,7 @@ class _FileDestination(QWidget):
     def dropEvent(self, event):
         owner = self.owner()
         if owner is not None:
-            owner._native_drop(event, self.mapToGlobal(event.position().toPoint()))
+            owner._native_drop(event,drop_position(self,event))
         else:
             event.ignore()
 

@@ -1123,12 +1123,19 @@ class ShelfManager:
 
     def return_to_overview(self,dialog):
         if confirmation_active(self.shelf) or self.shelf._archive_choosing:return
-        dialog.close()
-        self.show_overview_from_transfer(dialog)
+        if dialog.close():self.show_overview_from_transfer(dialog)
 
     def show_overview_from_transfer(self,dialog):
         if confirmation_active(self.shelf) or self.shelf._archive_choosing:return
         self.reset_drag_gesture();self.edge_suppressed=False
+        if sys.platform=='darwin':
+            # Closing the last regular utility switches Cocoa back to an
+            # accessory app. That handoff can emit a temporary deactivate
+            # and expose the same click at the new shelf coordinates.
+            self._overview_return_until=time.monotonic()+.55
+            self._button_mask=mouse_buttons_mask()
+            self.was_down=bool(self._button_mask&1)
+        self.shelf.touch()
         target=QRect(getattr(self,'_overview_return_rect',QRect()))
         if target.isEmpty():target=self.shelf._expansion_rect(self.shelf.visual_geometry())
         screen=QGuiApplication.screenAt(target.center()) or QGuiApplication.primaryScreen()
@@ -1344,7 +1351,7 @@ class ShelfManager:
         from display_triggers import trigger_active
         if self.edge_suppressed:return
         for edge in self.edges.values():
-            if trigger_active(edge.values()) and edge.activation_region().contains(position):
+            if trigger_active(edge.values()) and edge.file_preview_region().contains(position):
                 self.edge=edge
                 if not self.shelf.isVisible() or self.shelf.visible_state=='hiding':self.show_docked()
                 break
@@ -1415,6 +1422,7 @@ class ShelfManager:
         if app_deactivated:
             retired=False
             for shelf in self.shelves:
+                if shelf is self.shelf and now<getattr(self,'_overview_return_until',0):continue
                 if (shelf.isVisible() and not shelf.pinned and not shelf.dragging
                         and not shelf.incoming_drop and not shelf._archive_choosing and not shelf.picker_hold_active(now)
                         and not shelf.rename_edit.isVisible()
@@ -1423,7 +1431,9 @@ class ShelfManager:
                                  and self.clipboard_preview_dialog.frameGeometry().contains(pos))):
                     shelf.hide_animated(explicit=True);retired=True;retired_shelves.add(shelf)
             if retired:self.update_handles()
-        if (self.edge.isVisible() and self.edge.activation_region().contains(pos)
+        reveal_region=(self.edge.file_preview_region() if sys.platform=='darwin' and self.edge_file_drag.prepared
+                       else self.edge.activation_region())
+        if (self.edge.isVisible() and reveal_region.contains(pos)
                 and not self.edge_suppressed and not self.shelf.isVisible()): self.show_docked()
         for shelf in self.shelves:
             if not shelf.isVisible():

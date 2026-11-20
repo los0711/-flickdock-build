@@ -198,7 +198,11 @@ class TranslatorDialog(ReferenceModalDialog):
         # Keep a translucent window on Qt's client resize path on Windows.
         # A system resize adds a native thick frame and a second resize loop.
         self.chrome=WindowChrome(self,self.title_bar,manager.settings,'translator',surface=self.surface,system_resize=sys.platform!='win32');self.chrome.default_size=QSize(WINDOW_SIZE)
-        if sys.platform=='darwin':self._mac_controls(head)
+        if sys.platform=='darwin':
+            from window_chrome import mac_caption_controls
+            self.close_button.hide()
+            self.caption_controls=mac_caption_controls(self,self.title_bar)
+            head.insertWidget(0,self.caption_controls)
         for control in self.title_bar.findChildren(QPushButton):
             control.setAutoDefault(False);control.setDefault(False)
         self.resize(WINDOW_SIZE)
@@ -542,16 +546,6 @@ class TranslatorDialog(ReferenceModalDialog):
         if epoch is None or epoch!=self.session.epoch or not self.isVisible():return
         if self.session.detected_code in TARGETS:self._speak(False)
         else:self._message('未能识别原文语言，请先指定原文语言后再朗读。')
-
-    def _mac_controls(self,layout):
-        from window_chrome import _WindowButton, minimize_utility
-        self.close_button.hide()
-        for role in ('min','max','close'):
-            control=_WindowButton(self,role)
-            control.setToolTip({'min':'最小化','max':'最大化','close':'关闭翻译器'}[role]);control.setAccessibleName(control.toolTip())
-            if role=='min':control.clicked.disconnect();control.clicked.connect(lambda:minimize_utility(self))
-            layout.addWidget(control)
-            if role=='close':self.close_button=control
 
     def sizeHint(self):return QSize(WINDOW_SIZE) if self._layout_ready else super().sizeHint()
     def adjustSize(self):

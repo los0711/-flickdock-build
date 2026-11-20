@@ -78,6 +78,24 @@ class ScrollTests(unittest.TestCase):
         bar.setValue(bar.maximum());self.assertTrue(self.controller.wheel(wheel(pixels=-7)))
         self.assertTrue(self.area._flickdock_boundary_bounce.overlay.isVisible())
 
+    def test_mac_trackpad_releases_at_the_edge_without_waiting_for_momentum(self):
+        from types import SimpleNamespace
+        bar=self.area.verticalScrollBar()
+        bar.setValue(bar.maximum())
+        with patch('settings_navigation.sys',SimpleNamespace(platform='darwin')):
+            self.assertTrue(self.controller.wheel(wheel(pixels=-100,phase=Qt.ScrollBegin)))
+            bounce=self.area._flickdock_boundary_bounce
+            self.assertTrue(self.controller.wheel(wheel(pixels=-100,phase=Qt.ScrollUpdate)))
+            self.assertEqual(bounce.animation.state(),bounce.animation.Running)
+            self.assertFalse(bounce.idle.isActive())
+            self.assertFalse(self.controller.wheel(wheel(pixels=-100,phase=Qt.ScrollMomentum)))
+            self.assertEqual(bounce.animation.state(),bounce.animation.Running)
+            bounce.animation.setCurrentTime(bounce.animation.duration())
+            self.assertFalse(bounce.overlay.isVisible())
+            self.assertFalse(self.controller.wheel(wheel(pixels=-100,phase=Qt.ScrollMomentum)))
+            self.assertFalse(bounce.overlay.isVisible())
+            self.assertEqual(bar.value(),bar.maximum())
+
     def test_nested_scroll_passes_to_a_parent_that_can_continue(self):
         outer=QScrollArea();outer.resize(350,250);holder=QWidget();holder.resize(330,1200);outer.setWidget(holder)
         self.area.setParent(holder);self.area.move(0,0);outer.show();self.area.show();APP.processEvents()

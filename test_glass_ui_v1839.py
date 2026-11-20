@@ -245,6 +245,21 @@ class OverviewMotionTests(unittest.TestCase):
         view.scope_buttons['pinned'].click()
         self.assertEqual(view.scope,'pinned')
 
+    def test_transparent_selection_endpoints_do_not_darken_the_shared_circle(self):
+        from PySide6.QtCore import QRectF
+        from PySide6.QtGui import QColor
+        from item_transitions import FileSelection
+        rect=QRectF(1,1,14,14)
+        clear,fill,edge=QColor(Qt.transparent),QColor('#F5F6F8'),QColor('#7C3AED')
+        card=FileSelection(rect,clear,edge,clear)
+        row=FileSelection(rect.translated(20,0),fill,clear,fill)
+        for amount in (.1,.5,.9):
+            pose=card.between(row,amount)
+            self.assertEqual(pose.fill.name(),fill.name())
+            self.assertEqual(pose.edge.name(),edge.name())
+            self.assertEqual(pose.tick.name(),fill.name())
+            self.assertAlmostEqual(pose.fill.alphaF(),amount,places=4)
+
     def test_expand_card_keeps_file_identity_during_rapid_mode_switch(self):
         from content_grid import IconItem
         from overview_ui import FileRow

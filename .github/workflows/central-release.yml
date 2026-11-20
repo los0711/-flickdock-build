@@ -92,7 +92,10 @@ jobs:
       needs.macos.result == 'success' &&
       (needs.windows.result == 'success' || (inputs.target == 'mac-arm64' && needs.windows.result == 'skipped'))
     needs: [authorization, windows, macos]
-    runs-on: windows-2025
+    runs-on: ${{ inputs.target == 'mac-arm64' && 'ubuntu-24.04' || 'windows-2025' }}
+    defaults:
+      run:
+        shell: pwsh
     timeout-minutes: 90
     environment: flickdock-release
     permissions:

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 import math
+import sys
 import time
 from types import MappingProxyType
 import weakref
@@ -159,6 +160,16 @@ class EdgeAbsorb(QObject):
 
     def target_at(self, position, *, distance=None):
         screen = QGuiApplication.screenAt(position)
+        if screen is None and sys.platform=='darwin':
+            # The Cocoa-to-Qt conversion can round the outermost fraction to
+            # the first logical pixel beyond QRect's inclusive right/bottom.
+            for candidate in QGuiApplication.screens():
+                area=candidate.geometry()
+                if area.adjusted(-1,-1,1,1).contains(position):
+                    screen=candidate
+                    position=QPoint(min(area.right(),max(area.left(),position.x())),
+                                    min(area.bottom(),max(area.top(),position.y())))
+                    break
         if screen is None:
             return None
         if self._regions is not None:

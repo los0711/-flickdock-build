@@ -1906,8 +1906,9 @@ class SettingsDialog(QDialog):
             if combo is self.theme_combo or combo is self.view_combo:
                 from native_ui_common import icon
                 glyph=('sun' if index==0 else 'moon') if combo is self.theme_combo else ('list' if index==0 else 'grid')
-                button.setProperty('segmentGlyph',glyph);button.setProperty('alignIconToTextInk',True)
-                button.setIcon(icon(glyph,'#68686D'))
+                button._reference_icon=(glyph,'secondary')
+                button.setProperty('alignIconToTextInk',True)
+                button.setIcon(icon(glyph,ui_colors(self.theme_combo.currentData())['secondary']))
                 button.setIconSize(QSize(15,15))
             button.clicked.connect(lambda _checked=False,i=index:combo.setCurrentIndex(i))
             row.addWidget(button,1);buttons.append(button);group.add_selection_button(button)
@@ -1917,13 +1918,8 @@ class SettingsDialog(QDialog):
             # combo. Programmatic changes can apply without waiting for a slide.
             combo.currentIndexChanged.connect(self._request_theme)
         def synchronize(*_):
-            from native_ui_common import icon
             for i,button in enumerate(buttons):
                 button.setChecked(combo.currentIndex()==i)
-                if button.property('segmentGlyph'):
-                    dark=self.surface.dark
-                    tint=('#0E0F11' if dark else '#FAFAFC') if button.isChecked() else ('#A1A5B2' if dark else '#5C5F6A')
-                    button.setIcon(icon(button.property('segmentGlyph'),tint))
         combo.currentIndexChanged.connect(synchronize);synchronize()
         return group
 
@@ -1952,16 +1948,10 @@ class SettingsDialog(QDialog):
         self.update_button.setMinimumSize(0,28);self.update_button.setMaximumHeight(28)
         self.close_button.setMinimumSize(28,28);self.close_button.setMaximumSize(28,28)
         if sys.platform=='darwin':
-            traffic=QWidget(self.title_bar);dots=QHBoxLayout(traffic);dots.setContentsMargins(0,0,0,0);dots.setSpacing(8)
-            from native_ui_common import toggle_window_zoom
-            from window_chrome import minimize_utility
-            for color,action in (('#FF5F56',self.reject),('#FFBD2E',lambda:minimize_utility(self)),('#27C93F',lambda:toggle_window_zoom(self))):
-                dot=_SettingsButton(traffic);dot.setFixedSize(12,12);dot.setObjectName('settingsTraffic')
-                dot.setProperty('trafficColor',color);dot.setStyleSheet('background:transparent;border:0;padding:0;')
-                dot.setAutoDefault(False)
-                if action:dot.clicked.connect(action)
-                dots.addWidget(dot)
-            header.insertWidget(0,traffic)
+            from window_chrome import mac_caption_controls
+            self.close_button.hide()
+            self.caption_controls=mac_caption_controls(self,self.title_bar)
+            header.insertWidget(0,self.caption_controls)
         root.addWidget(self.title_bar);root.addWidget(self.update_activity)
         root.addWidget(self.update_notes_area)
         navigation_body=QWidget(self.surface);navigation=QHBoxLayout(navigation_body);navigation.setContentsMargins(16,8,12,12);navigation.setSpacing(14)
@@ -2880,14 +2870,10 @@ class SettingsDialog(QDialog):
         self.shake_sensitivity_reset_button.update()
         self.close_button.dark = dark
         self.close_button.update()
-        from native_ui_common import icon as segment_icon
         from ui_transitions import SelectionSurface
         for group in self.findChildren(SelectionSurface,'settingsSegment'):group.set_selection_theme(theme)
         for button in self.findChildren(QPushButton,'settingsSegmentButton'):
-            button.setProperty('referenceTheme',theme)
-            if button.property('segmentGlyph'):
-                tint=('#0E0F11' if dark else '#FAFAFC') if button.isChecked() else ('#A1A5B2' if dark else '#5C5F6A')
-                button.setIcon(segment_icon(button.property('segmentGlyph'),tint))
+            button.setProperty('referenceTheme',theme);button.update()
         self.trigger_visible_checkbox.dark = dark
         self.trigger_visible_checkbox.update()
         self.update_activity.dark = dark
