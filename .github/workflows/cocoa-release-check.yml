@@ -22,9 +22,11 @@ jobs:
           path: built
       - name: Run both Cocoa checks independently and print synthetic reports
         run: |
-          /usr/bin/ditto -x -k built/FlickDock-1.8.39-macOS-arm64.zip unpacked
-          launch="$(find "$PWD/unpacked" -type f -path '*/FlickDock.app/Contents/MacOS/FlickDock' -print -quit)"
-          test -n "$launch"
+          mount="$(mktemp -d)"
+          /usr/bin/hdiutil attach -readonly -nobrowse -mountpoint "$mount" built/FlickDock-1.8.39-macOS-arm64.dmg
+          trap '/usr/bin/hdiutil detach "$mount"' EXIT
+          launch="$mount/FlickDock.app/Contents/MacOS/FlickDock"
+          test -x "$launch"
           for name in overview translator; do
             profile="$(mktemp -d)"
             if HOME="$profile" APPDATA="$profile" XDG_CONFIG_HOME="$profile" QT_QPA_PLATFORM=cocoa FLICKDOCK_VERIFY_NATIVE_UI=1 "$launch" --verify-"$name" --verify-output "$profile/report.json"; then
