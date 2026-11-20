@@ -2204,6 +2204,7 @@ class LanDialog(QDialog):
             from window_chrome import mac_caption_controls
             self.caption_controls=mac_caption_controls(self,self.title_bar)
             self.traffic_buttons=list(self.caption_controls.buttons.values())
+            self.close_button=self.caption_controls.buttons['close']
             title_row.addWidget(self.caption_controls)
         title = _label('文件互传', self.title_bar); title.setObjectName('lanDialogTitle')
         self.title_label=title
@@ -2228,12 +2229,12 @@ class LanDialog(QDialog):
             control.setObjectName('transferModeSegment');self.mode_group.addButton(control);self.mode_buttons[mode]=control
             control.clicked.connect(lambda checked=False,mode=mode:self.mode_selected.emit(mode))
             mode_row.addWidget(control,1);self.mode_segment.add_selection_button(control)
-        close = _CloseButton('', self.title_bar); close.setObjectName('lanDialogClose')
-        self.close_button=close
-        close.setAutoDefault(False);close.setDefault(False);close.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        close.setFixedSize(32, 32); close.setAccessibleName('关闭局域网传输窗口')
-        close.clicked.connect(self.close); title_row.addWidget(close)
-        if sys.platform=='darwin':close.hide()
+        if sys.platform!='darwin':
+            close = _CloseButton('', self.title_bar); close.setObjectName('lanDialogClose')
+            self.close_button=close
+            close.setAutoDefault(False);close.setDefault(False);close.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+            close.setFixedSize(32,32);close.clicked.connect(self.close);title_row.addWidget(close)
+        self.close_button.setAccessibleName('关闭局域网传输窗口')
         mode_band=QWidget(self.card);mode_band_layout=QVBoxLayout(mode_band);mode_band_layout.setContentsMargins(WORKBENCH_MARGIN_PX,8,WORKBENCH_MARGIN_PX,0);mode_band_layout.addWidget(self.mode_segment)
         content.addWidget(mode_band)
         self.panel_stack=QStackedWidget(self.card)

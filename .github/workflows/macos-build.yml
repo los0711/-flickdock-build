@@ -80,9 +80,17 @@ jobs:
         if: inputs.desktop_checks
         run: |
           sandbox="$(mktemp -d)"
-          HOME="$sandbox" APPDATA="$sandbox" XDG_CONFIG_HOME="$sandbox" QT_QPA_PLATFORM=cocoa FLICKDOCK_VERIFY_NATIVE_UI=1 dist/FlickDock.app/Contents/MacOS/FlickDock --verify-overview --verify-output "$sandbox/overview.json"
-          HOME="$sandbox" APPDATA="$sandbox" XDG_CONFIG_HOME="$sandbox" QT_QPA_PLATFORM=cocoa FLICKDOCK_VERIFY_NATIVE_UI=1 dist/FlickDock.app/Contents/MacOS/FlickDock --verify-translator --verify-output "$sandbox/translator.json"
-          python - "$sandbox/overview.json" "$sandbox/translator.json" <<'PY'
+          succeeded=0
+          for view in overview translator; do
+            profile="$sandbox/$view"
+            mkdir "$profile"
+            output="../outputs/mac-cocoa-$view-${{ matrix.arch }}.json"
+            HOME="$profile" APPDATA="$profile" XDG_CONFIG_HOME="$profile" QT_QPA_PLATFORM=cocoa FLICKDOCK_VERIFY_NATIVE_UI=1 \
+              dist/FlickDock.app/Contents/MacOS/FlickDock --verify-"$view" --verify-output "$output" || succeeded=1
+            if [ -f "$output" ]; then cat "$output"; printf '\n'; fi
+          done
+          if [ "$succeeded" -ne 0 ]; then exit "$succeeded"; fi
+          python - ../outputs/mac-cocoa-overview-${{ matrix.arch }}.json ../outputs/mac-cocoa-translator-${{ matrix.arch }}.json <<'PY'
           import json,sys
           from pathlib import Path
           from app_version import APP_VERSION

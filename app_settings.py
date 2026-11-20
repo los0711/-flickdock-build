@@ -1647,6 +1647,11 @@ class SettingsDialog(QDialog):
         header = QHBoxLayout(self.title_bar)
         header.setContentsMargins(0, 0, 0, 0)
         header.setSpacing(8)
+        if sys.platform=='darwin':
+            from window_chrome import mac_caption_controls
+            self.caption_controls=mac_caption_controls(self,self.title_bar)
+            header.addWidget(self.caption_controls)
+            self.close_button=self.caption_controls.buttons['close']
         title = QLabel("设置", self.title_bar)
         title.setObjectName("settingsTitle")
         title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
@@ -1680,9 +1685,10 @@ class SettingsDialog(QDialog):
         self.update_button.setAccessibleName("检查更新")
         self.update_button.clicked.connect(self.update_requested.emit)
         header.addWidget(self.update_button)
-        self.close_button = SettingsCloseButton(self.title_bar, glyph_size=14)
-        self.close_button.clicked.connect(self.reject)
-        header.addWidget(self.close_button)
+        if sys.platform!='darwin':
+            self.close_button = SettingsCloseButton(self.title_bar, glyph_size=14)
+            self.close_button.clicked.connect(self.reject)
+            header.addWidget(self.close_button)
         root.addWidget(self.title_bar)
         self.update_activity = UpdateActivityBar(self.surface)
         root.addWidget(self.update_activity)
@@ -1946,12 +1952,8 @@ class SettingsDialog(QDialog):
         self.title_bar.setFixedHeight(55)
         self.version_label.setFixedHeight(20)
         self.update_button.setMinimumSize(0,28);self.update_button.setMaximumHeight(28)
-        self.close_button.setMinimumSize(28,28);self.close_button.setMaximumSize(28,28)
-        if sys.platform=='darwin':
-            from window_chrome import mac_caption_controls
-            self.close_button.hide()
-            self.caption_controls=mac_caption_controls(self,self.title_bar)
-            header.insertWidget(0,self.caption_controls)
+        if sys.platform!='darwin':
+            self.close_button.setMinimumSize(28,28);self.close_button.setMaximumSize(28,28)
         root.addWidget(self.title_bar);root.addWidget(self.update_activity)
         root.addWidget(self.update_notes_area)
         navigation_body=QWidget(self.surface);navigation=QHBoxLayout(navigation_body);navigation.setContentsMargins(16,8,12,12);navigation.setSpacing(14)

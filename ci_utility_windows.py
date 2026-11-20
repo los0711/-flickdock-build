@@ -55,8 +55,8 @@ def main():
             else:
                 import AppKit
                 assert AppKit.NSApplication.sharedApplication().activationPolicy()==AppKit.NSApplicationActivationPolicyRegular
-                assert window.close_button.isHidden()
-                assert window.title_bar.layout().itemAt(0).widget() is window.caption_controls
+                assert window.close_button is window.caption_controls.buttons['close']
+                assert window.title_bar.layout().indexOf(window.caption_controls)==0
                 assert all(button.isVisible() for button in window.caption_controls.buttons.values())
                 from window_chrome import minimize_utility
                 minimize_utility(window);wait(window.isMinimized)

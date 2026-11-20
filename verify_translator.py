@@ -56,8 +56,9 @@ def run(argv,load_font):
             view.show();settle();view.source_editor.setPlainText('你好，请确认交付时间。');view.session.translate();api.finish('Hello, please confirm the delivery schedule.');settle()
             if sys.platform=='darwin':
                 group=view.caption_controls
-                assert view.title_bar.layout().itemAt(0).widget() is group and view.close_button.isHidden()
-                assert all(button.isVisible() for button in group.buttons.values())
+                assert view.title_bar.layout().indexOf(group)==0 and group.x()<view.back_button.x(),'macOS controls must be at the leading edge'
+                assert view.close_button is group.buttons['close'],'Only the leading group owns the macOS close button'
+                assert all(button.isVisible() for button in group.buttons.values()),'A macOS caption control is hidden'
                 assert tuple(group.buttons)==('close','min','max')
                 report['mac_leading_controls']=True
             assert view.output_editor.toPlainText()=='Hello, please confirm the delivery schedule.'

@@ -61,6 +61,11 @@ class TranslatorDialog(ReferenceModalDialog):
         self.title_bar=QWidget(self.surface);self.title_bar.setFixedHeight(50)
         head=QHBoxLayout(self.title_bar);head.setContentsMargins(16,0,8,0);head.setSpacing(7)
         from reference_widgets import overview_back_button
+        if sys.platform=='darwin':
+            from window_chrome import mac_caption_controls
+            self.caption_controls=mac_caption_controls(self,self.title_bar)
+            head.addWidget(self.caption_controls)
+            self.close_button=self.caption_controls.buttons['close']
         head.addWidget(label('翻译器',16,600,parent=self.title_bar))
         self.back_button=overview_back_button(self.title_bar,lambda:manager.return_to_overview(self));head.addWidget(self.back_button);head.addStretch(1)
         self.glossary_button=button('术语保护','shield',variant='secondary',parent=self.title_bar);self.glossary_button.clicked.connect(lambda:self.show_manager('glossary'));head.addWidget(self.glossary_button)
@@ -71,8 +76,9 @@ class TranslatorDialog(ReferenceModalDialog):
             css(control,*[f"QPushButton{{background:transparent;color:{colors(t)['text']};border:0;padding:3px 8px;font:500 10px {font_css_stack()};}}" for t in ('dark','light')])
         self.pin_button=ToolbarButton('pin',self.title_bar,motion=False);self.pin_button.setFixedSize(30,30)
         self.pin_button.setCheckable(True);self.pin_button.setToolTip('置顶窗口');self.pin_button.clicked.connect(self._pin);head.addWidget(self.pin_button)
-        self.close_button=SettingsCloseButton(self.title_bar,glyph_size=14);self.close_button.setFixedSize(30,30)
-        self.close_button.setAccessibleName('关闭翻译器');self.close_button.setToolTip('关闭翻译器');self.close_button.clicked.connect(self.close);head.addWidget(self.close_button)
+        if sys.platform!='darwin':
+            self.close_button=SettingsCloseButton(self.title_bar,glyph_size=14);self.close_button.setFixedSize(30,30)
+            self.close_button.setAccessibleName('关闭翻译器');self.close_button.setToolTip('关闭翻译器');self.close_button.clicked.connect(self.close);head.addWidget(self.close_button)
         self.surface.layout().insertWidget(0,self.title_bar)
         self.workspace=QWidget(self.surface);self.surface.layout().addWidget(self.workspace,1)
         body=QVBoxLayout(self.workspace);body.setContentsMargins(16,4,16,16);body.setSpacing(12)
@@ -198,11 +204,6 @@ class TranslatorDialog(ReferenceModalDialog):
         # Keep a translucent window on Qt's client resize path on Windows.
         # A system resize adds a native thick frame and a second resize loop.
         self.chrome=WindowChrome(self,self.title_bar,manager.settings,'translator',surface=self.surface,system_resize=sys.platform!='win32');self.chrome.default_size=QSize(WINDOW_SIZE)
-        if sys.platform=='darwin':
-            from window_chrome import mac_caption_controls
-            self.close_button.hide()
-            self.caption_controls=mac_caption_controls(self,self.title_bar)
-            head.insertWidget(0,self.caption_controls)
         for control in self.title_bar.findChildren(QPushButton):
             control.setAutoDefault(False);control.setDefault(False)
         self.resize(WINDOW_SIZE)
