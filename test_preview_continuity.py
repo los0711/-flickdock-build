@@ -207,17 +207,15 @@ class PreviewContinuityTests(unittest.TestCase):
                 marker=image.pixelColor(round(215*ratio),round(25*ratio))
                 stretched=image.pixelColor(round(40*ratio),round(75*ratio))
                 self.assertGreater(marker.red(),140);self.assertLess(stretched.red(),70)
-                # Once overview sections have entered, no compact text/card
+                # Once the overview has entered, no compact text/card
                 # pixels remain, even though the container is still moving.
                 render(.8)
                 self.assertEqual(image.pixelColor(round(215*ratio),round(25*ratio)),QColor('#2040aa'))
                 self.assertEqual(image.pixelColor(round(40*ratio),round(75*ratio)),QColor('#2040aa'))
-                snapshot.target_sections=[(QRectF(0,0,400,300),QPoint())]
                 image.fill(Qt.transparent);painter=QPainter(image)
                 snapshot.paint_frame(painter,QRectF(0,0,260,200));painter.end()
                 self.assertEqual(image.pixelColor(round(280*ratio),round(80*ratio)).alpha(),0)
                 self.assertEqual(image.pixelColor(round(180*ratio),round(220*ratio)).alpha(),0)
-                snapshot.target_sections=[]
         finally:snapshot.deleteLater();workspace.flush()
 
     def test_video_morph_and_rest_share_poster_without_intermediate_format_icon(self):

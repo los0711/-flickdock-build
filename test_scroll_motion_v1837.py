@@ -3,9 +3,9 @@ import os, unittest
 os.environ['QT_QPA_PLATFORM']='offscreen'
 from unittest.mock import patch
 from PySide6.QtCore import QAbstractAnimation, QCoreApplication, QPoint, QPointF, Qt
-from PySide6.QtGui import QWheelEvent
+from PySide6.QtGui import QColor, QImage, QPixmap, QWheelEvent
 from PySide6.QtWidgets import QApplication, QScrollArea, QWidget
-from settings_navigation import InertialWheelScroll, install_smooth_scrolling
+from settings_navigation import InertialWheelScroll, _bounce_edge_colors, install_smooth_scrolling
 
 APP=QApplication.instance() or QApplication([])
 APP.setQuitOnLastWindowClosed(False)
@@ -51,6 +51,25 @@ class ScrollTests(unittest.TestCase):
             bounce.release();bounce.animation.pause();bounce.animation.setCurrentTime(70)
             bounce.animation.setCurrentTime(bounce.animation.duration())
             self.assertFalse(bounce.overlay.isVisible());self.assertEqual(bar.value(),value)
+
+    def test_bounce_matches_each_exposed_edge_instead_of_a_corner_pixel(self):
+        image=QImage(160,100,QImage.Format_ARGB32)
+        top,bottom=QColor('#fafafc'),QColor('#17181b')
+        image.fill(top)
+        for row in range(94,100):
+            for x in range(image.width()):
+                image.setPixelColor(x,row,bottom)
+        image.setPixelColor(0,0,QColor('#707070'))
+        snapshot=QPixmap.fromImage(image)
+        self.assertEqual(_bounce_edge_colors(self.area,snapshot),(top,bottom))
+        import ui_theme
+        previous=ui_theme.current_theme()
+        self.addCleanup(ui_theme.set_theme,previous)
+        self.area.setProperty('scrollBackdropRole','window_backdrop')
+        for theme in ('light','dark'):
+            ui_theme.set_theme(theme)
+            expected=QColor(ui_theme.color('window_backdrop'))
+            self.assertEqual(_bounce_edge_colors(self.area,snapshot),(expected,expected))
 
     def test_native_precision_wheel_stays_native_inside_range_and_bounces_at_edge(self):
         bar=self.area.verticalScrollBar();bar.setValue(50)

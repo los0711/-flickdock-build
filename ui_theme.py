@@ -1,18 +1,15 @@
 """Shared light/dark semantic colors for painted controls and Qt styles."""
 from __future__ import annotations
-import math
 import re
-import time
 import weakref
-from PySide6.QtCore import QEasingCurve,QEvent,QObject,QPoint,QPropertyAnimation,QTimer,Qt
+from PySide6.QtCore import QEvent,QObject,QPoint,QTimer,Qt
 from PySide6.QtGui import QColor,QPalette
 from PySide6.QtWidgets import QAbstractButton,QApplication,QMessageBox,QToolButton,QToolTip,QWidget
 from shiboken6 import isValid
 
 _theme = 'light'
-TOOLTIP_DELAY_SECONDS = 0.35
+TOOLTIP_DELAY_MS = 500
 TOOLTIP_GAP_PX = 6
-TOOLTIP_FADE_MS = 90
 # Legacy painter aliases resolve through the one semantic palette in
 # native_ui_common.colors; keep the Qt color strings valid for QColor.
 _PALETTES = ('light', 'dark')
@@ -48,73 +45,79 @@ class _DialogPalette(QObject):
 
 
 class _TooltipCorners(QObject):
-    """Style tooltip surfaces and delay button hints until deliberate hover."""
+    """Use one directly timed tooltip for every single-icon button."""
     def __init__(self,parent):
         super().__init__(parent)
-        self._button=None;self._entered_at=0.;self._position=None
+        self._button=None
         self._timer=QTimer(self);self._timer.setSingleShot(True)
+        self._timer.setInterval(TOOLTIP_DELAY_MS)
         self._timer.setTimerType(Qt.PreciseTimer);self._timer.timeout.connect(self._show_button_tip)
 
     def _current_button(self):
         button=self._button() if self._button is not None else None
         return button if button is not None and isValid(button) else None
 
+    @staticmethod
+    def _text(button):
+        if not allows_hover_hint(button):return ''
+        return (button.toolTip() or button.accessibleName()).strip()
+
+    def _start(self,button):
+        if self._current_button() is button:return
+        self._clear()
+        self._button=weakref.ref(button)
+        self._timer.start()
+
+    def _clear(self):
+        self._timer.stop()
+        self._button=None
+        if QToolTip.isVisible():QToolTip.hideText()
+
     def _show_button_tip(self):
         button=self._current_button()
-        if not allows_hover_hint(button) or not button.isVisible() or not button.underMouse() or not button.toolTip():return
-        # One anchor rule for every button: centred below, flipped above only
-        # when the tip would leave the screen, so neighbours never disagree.
-        top=button.mapToGlobal(QPoint(0,0));width=button.width()
-        height=button.palette().fontMetrics().height()+18
-        area=button.screen().availableGeometry() if button.screen() is not None else None
-        x=top.x()+width//2-60
+        if button is None or not button.isVisible() or not button.underMouse():return
+        text=self._text(button)
+        if not text:return
+        from native_ui_common import screen_for_widget
+        top=button.mapToGlobal(QPoint())
+        metrics=button.fontMetrics()
+        width=metrics.horizontalAdvance(text)+20
+        height=metrics.height()+18
+        from PySide6.QtGui import QGuiApplication
+        screen=QGuiApplication.screenAt(top) or screen_for_widget(button)
+        area=screen.availableGeometry() if screen is not None else None
+        x=top.x()+(button.width()-width)//2
         below=top.y()+button.height()+TOOLTIP_GAP_PX
         above=top.y()-height-TOOLTIP_GAP_PX
         y=below if area is None or below+height<=area.bottom()+1 else max(area.top(),above)
-        if area is not None:x=max(area.left(),min(x,area.right()-120))
-        QToolTip.showText(QPoint(x,y),button.toolTip(),button)
+        if area is not None:x=max(area.left(),min(x,area.right()-width+1))
+        QToolTip.showText(QPoint(x,y),text,button)
 
     def eventFilter(self,watched,event):
         if getattr(self,'_updating',False):return False
-        if event.type()==QEvent.ToolTip and isinstance(watched,QWidget) and not allows_hover_hint(watched):
+        kind=event.type()
+        if kind==QEvent.ToolTip and isinstance(watched,QWidget):
+            if self._text(watched):self._start(watched)
             event.accept();return True
         if isinstance(watched,QAbstractButton):
-            if event.type()==QEvent.Enter:
-                self._timer.stop();self._button=weakref.ref(watched);self._entered_at=time.monotonic()
-            elif event.type() in (QEvent.Leave,QEvent.Hide,QEvent.MouseButtonPress):
-                if watched is self._current_button():self._timer.stop()
-            elif event.type()==QEvent.ToolTip and watched.toolTip():
-                if watched is not self._current_button():
-                    self._button=weakref.ref(watched);self._entered_at=time.monotonic()
-                self._position=event.globalPos()
-                remaining=max(0.,TOOLTIP_DELAY_SECONDS-(time.monotonic()-self._entered_at))
-                self._timer.start(math.ceil(remaining*1000))
-                event.accept();return True
-        if event.type() in (QEvent.Polish,QEvent.Show,QEvent.Resize) and watched.metaObject().className()=='QTipLabel':
+            if kind in (QEvent.Enter,QEvent.HoverEnter) and self._text(watched):
+                self._start(watched)
+            elif kind in (QEvent.Leave,QEvent.Hide,QEvent.MouseButtonPress,QEvent.WindowDeactivate):
+                if watched is self._current_button():self._clear()
+        if kind in (QEvent.Polish,QEvent.Show,QEvent.Resize) and watched.metaObject().className()=='QTipLabel':
             self._updating=True
             try:
                 if not watched.testAttribute(Qt.WA_TranslucentBackground):
                     watched.setAttribute(Qt.WA_TranslucentBackground,True)
                 if not watched.mask().isEmpty():watched.clearMask()
-                # Set geometry-affecting properties before the tooltip appears;
-                # resizing at Show made the popup visibly jump.
-                if event.type() in (QEvent.Polish,QEvent.Show):
-                    # Apply the changing colors only to the tooltip itself.
-                    # Replacing QApplication's stylesheet on every theme
-                    # change repolishes the entire widget tree synchronously.
+                if kind in (QEvent.Polish,QEvent.Show):
                     _style_tooltip(watched)
-                    if event.type()==QEvent.Show:
-                        watched.setWindowOpacity(0.0)
-                        fade=QPropertyAnimation(watched,b'windowOpacity',watched)
-                        fade.setDuration(TOOLTIP_FADE_MS);fade.setStartValue(0.0)
-                        fade.setEndValue(1.0);fade.setEasingCurve(QEasingCurve.OutCubic)
-                        fade.start(QPropertyAnimation.DeletionPolicy.DeleteWhenStopped)
-                        watched._flickdock_tip_fade=fade
                     if watched.margin()!=0:watched.setMargin(0);watched.adjustSize()
                     if not watched.windowFlags() & Qt.NoDropShadowWindowHint:
                         watched.setWindowFlag(Qt.NoDropShadowWindowHint,True)
             finally:self._updating=False
         return False
+
 
 def set_theme(theme):
     global _theme

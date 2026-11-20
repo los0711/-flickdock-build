@@ -10,8 +10,8 @@ import time
 import weakref
 from collections import deque
 
-from PySide6.QtCore import QByteArray, QEvent, QObject, QPoint, QRect, QRectF, QSize, Qt, QTimer, QUrl, Signal, QEasingCurve
-from PySide6.QtGui import QColor, QDesktopServices, QFont, QPainter, QPainterPath, QPalette,QPen
+from PySide6.QtCore import QByteArray, QEvent, QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, QUrl, Signal, QEasingCurve
+from PySide6.QtGui import QColor, QDesktopServices, QFont, QPainter, QPainterPath, QPen
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QFileDialog, QFrame, QGraphicsDropShadowEffect,
                                QGridLayout, QHBoxLayout, QLayout, QLabel, QLineEdit, QProgressBar, QPushButton,
@@ -19,7 +19,9 @@ from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QFileDialog, QF
                                QStyleOptionButton, QStyleOptionComboBox, QStylePainter, QToolTip, QVBoxLayout, QWidget, QStackedWidget, QButtonGroup)
 
 from flickdock_icons import draw_glyph
+from flickdock_motion import Spring
 from platform_native import remove_host_window_shadow
+from native_ui_common import SEGMENT_INSET_PX
 from native_ui_common import (colors as ui_colors, icon as ui_icon, reference_font, reduced_motion, set_ui_weight, screen_for_widget,
     font_css_stack, paint_rounded_surface, qss_color, RoundedSurfaceFrame, RoundedScrollBar,RoundedProgressBar,
     RADIUS_SMALL_PX, RADIUS_CONTROL_PX, RADIUS_CARD_PX, RADIUS_PANEL_PX)
@@ -79,7 +81,7 @@ class _PressButton(QPushButton):
         if self.property('trafficColor'):
             return self.property('trafficColor'),None,6
         if name=='transferModeSegment':
-            fill=c['selected'] if (hover and not self.isChecked()) or self.property('keyboardFocus') else 'transparent'
+            fill=c['selected'] if not self.isChecked() and (hover or self.property('keyboardFocus')) else 'transparent'
         elif name=='lanDialogClose':fill=c['red'] if hover else 'transparent'
         elif name=='lanDialogBack':fill=c['hover'] if hover else c['control']
         elif route_hint:
@@ -93,6 +95,9 @@ class _PressButton(QPushButton):
             fill=c['hover'] if hover else c['card'];edge=c['border']
         elif name=='lanSendCodeValue' and pairing:
             fill=c['selected'] if down else c['hover'] if hover else c['input'];edge=c['input_border']
+        elif name=='lanDeckArrow':
+            fill=c['control_pressed'] if down else c['control_hover'] if hover else c['control']
+            radius=self.height()/2
         elif name in ('lanQueueRemove','lanRevealFile','lanHistoryRemove') or self.accessibleName()=='取消传输':
             fill=c['control_pressed'] if down else c['control_hover'] if hover else 'transparent'
         elif name=='lanTextButton':fill=c['selected'] if down else c['hover'] if hover else 'transparent'
@@ -332,48 +337,6 @@ class _ScanIndicator(QWidget):
         painter.drawArc(QRectF(2, 2, 12, 12), start, 100 * 16)
 
 
-class _DevicePopupBackground(QWidget):
-    """Paint an antialiased frame behind the transparent native list view."""
-    def __init__(self,popup):
-        super().__init__(popup);self.background='#FFFFFF';self.border='#E5E5E5'
-        self.setAttribute(Qt.WA_TransparentForMouseEvents);self.setAttribute(Qt.WA_NoSystemBackground)
-        popup.installEventFilter(self);self.setGeometry(popup.rect());self.show();self.lower()
-
-    def eventFilter(self,watched,event):
-        if watched is self.parentWidget() and event.type() in (QEvent.Resize,QEvent.Show):
-            self.setGeometry(watched.rect());self.lower()
-        return False
-
-    def paintEvent(self,event):
-        painter=QPainter(self)
-        paint_rounded_surface(painter,self.rect(),RADIUS_CARD_PX,qss_color(self.background),qss_color(self.border))
-        painter.end()
-
-
-class _DevicePopupFade(QObject):
-    """Animate the alpha-capable popup itself, not Qt's opaque roll surface."""
-    def __init__(self,popup):
-        super().__init__(popup);self.popup=popup
-        from display_frames import DisplayAnimation
-        self.animation=DisplayAnimation(self);self.animation.setDuration(140)
-        self.animation.setEasingCurve(QEasingCurve.OutCubic)
-        self.animation.valueChanged.connect(popup.setWindowOpacity)
-        popup.installEventFilter(self)
-
-    def prepare(self):
-        self.animation.stop()
-        self.popup.setWindowOpacity(1. if reduced_motion() else .25)
-
-    def start(self):
-        if reduced_motion():self.popup.setWindowOpacity(1.);return
-        self.animation.setStartValue(self.popup.windowOpacity());self.animation.setEndValue(1.);self.animation.start()
-
-    def eventFilter(self,watched,event):
-        if watched is self.popup and event.type()==QEvent.Hide:
-            self.animation.stop();self.popup.setWindowOpacity(1.)
-        return False
-
-
 class _DevicesCombo(QComboBox):
     remove_requested=Signal(str)
     def __init__(self,parent=None):
@@ -384,67 +347,19 @@ class _DevicesCombo(QComboBox):
         self.view().setVerticalScrollBar(_TransferScrollBar(self.view()))
         from native_ui_common import PopupChevronMotion
         self._popup_chevron=PopupChevronMotion(self)
+        from dropdown_motion import DropdownTextRoll
+        self._text_roll=DropdownTextRoll(self,combo=True)
 
     def showPopup(self):
         view=self.view();popup=view.window()
         self._popup_chevron.attach(popup)
-        from native_ui_common import rounded_popup
+        from native_ui_common import prepare_combo_popup,show_rounded_combo
         dark=bool(getattr(self.itemDelegate(),'dark',False))
-        colors=ui_colors('dark' if dark else 'light');background=colors['popup_surface']
-        for surface in (popup,view,view.viewport()):
-            palette=surface.palette()
-            palette.setColor(QPalette.ColorRole.Window,QColor(background));palette.setColor(QPalette.ColorRole.Base,QColor(background))
-            surface.setPalette(palette);surface.setAutoFillBackground(False)
-            surface.setAttribute(Qt.WA_TranslucentBackground,True)
-            surface.setAttribute(Qt.WA_NoSystemBackground,True)
-        popup.setObjectName('lanDevicePopup')
-        popup.setStyleSheet("QFrame#lanDevicePopup{background:transparent;border:0;} QAbstractItemView{background:transparent;border:0;outline:0;}")
-        if popup.layout() is not None:popup.layout().setContentsMargins(5,5,5,5)
-        rounded_popup(popup)
-        if not hasattr(popup,'_device_background'):popup._device_background=_DevicePopupBackground(popup)
-        popup._device_background.background=background;popup._device_background.border=colors['input_border']
-        popup._device_background.setGeometry(popup.rect());popup._device_background.show();popup._device_background.lower();popup._device_background.update()
-        # Windows' built-in combo roll uses an opaque intermediate surface,
-        # exposing black corners even though the final popup has alpha. Keep
-        # the popup animation on its translucent host and restore the global
-        # Qt preference immediately after the synchronous show operation.
-        fade=None
-        if sys.platform=='win32':
-            fade=getattr(popup,'_device_fade',None)
-            if fade is None:fade=popup._device_fade=_DevicePopupFade(popup)
-            fade.prepare()
-        animate=QApplication.isEffectEnabled(Qt.UI_AnimateCombo)
-        if fade is not None and animate:QApplication.setEffectEnabled(Qt.UI_AnimateCombo,False)
-        try:super().showPopup()
-        finally:
-            if fade is not None and animate:QApplication.setEffectEnabled(Qt.UI_AnimateCombo,True)
-        # Qt sizes the private container before our rounded-frame margins are
-        # applied. Restore the missing viewport height so the final row and
-        # its lower rounded corners are not clipped by the popup.
-        count=min(self.count(),self.maxVisibleItems())
-        row_height=view.sizeHintForRow(0) if count else 0
-        last=view.visualRect(view.model().index(count-1,0,view.rootIndex())) if count else QRect()
-        required=max(count*max(0,row_height),last.bottom()+1 if last.isValid() else 0)
-        missing=max(0,required-view.viewport().height())
-        if missing:
-            screen=screen_for_widget(self);available=screen.availableGeometry().height() if screen is not None else popup.height()+missing
-            popup.resize(popup.width(),min(available,popup.height()+missing))
-            if popup.layout() is not None:popup.layout().activate()
-        # Prefer the combo's own screen: a popup must follow the monitor its
-        # anchor lives on, and the application-owned lookup can pick another
-        # display for a frameless transient window.
-        anchor=self.mapToGlobal(QPoint(0,0));screen=self.screen() or screen_for_widget(self)
-        if screen is not None:
-            area=screen.availableGeometry();below=anchor.y()+self.height()+DEVICE_POPUP_GAP_PX
-            above=anchor.y()-popup.height()-DEVICE_POPUP_GAP_PX
-            if below+popup.height()<=area.bottom()+1:y=below
-            elif above>=area.top():y=above
-            else:y=max(area.top(),min(popup.y(),area.bottom()+1-popup.height()))
-            x=max(area.left(),min(popup.x(),area.right()+1-popup.width()))
-            popup.move(x,y)
-        self.view().viewport().installEventFilter(self)
-        self.view().installEventFilter(self)
-        if fade is not None:fade.start()
+        c=ui_colors('dark' if dark else 'light')
+        prepare_combo_popup(popup,view,c,margin=5)
+        show_rounded_combo(self,super().showPopup,gap=DEVICE_POPUP_GAP_PX)
+        view.viewport().installEventFilter(self)
+        view.installEventFilter(self)
 
     def eventFilter(self,watched,event):
         if watched in (self.view(),self.view().viewport()) and getattr(self,'removable',False):
@@ -475,7 +390,7 @@ class _DevicesCombo(QComboBox):
         text_rect.setRight(min(text_rect.right(),self.width()-(52 if getattr(self,'show_online',True) and self.currentData(Qt.UserRole+2) is not None else 30)));painter.setFont(self.font())
         if self.currentData(Qt.UserRole+3):text_rect.adjust(_paint_account_badge(painter,text_rect.left(),text_rect.center().y(),dark),0,0,0)
         painter.setPen(QColor(colors['text'] if self.isEnabled() else colors['muted']))
-        painter.drawText(text_rect,Qt.AlignLeft|Qt.AlignVCenter,painter.fontMetrics().elidedText(self.currentText(),Qt.ElideRight,max(1,round(text_rect.width()))))
+        self._text_roll.paint(painter,text_rect,self.currentText())
         color=colors['secondary']
         cx,cy=self.width()-18,self.height()/2
         painter.save();painter.translate(cx,cy);painter.rotate(self._popup_chevron.angle);painter.translate(-cx,-cy)
@@ -509,7 +424,9 @@ class _DeviceDelegate(QStyledItemDelegate):
         selected = bool(option.state & QStyle.StateFlag.State_Selected)
         c=ui_colors('dark' if self.dark else 'light')
         background = c['hover']
-        if selected:
+        marker=getattr(self.parent(),'_dropdown_highlight',None)
+        moving=marker is not None and marker.paint(painter,QColor(background),RADIUS_CONTROL_PX,option.rect)
+        if selected and not moving:
             paint_rounded_surface(painter,QRectF(option.rect.adjusted(5,3,-5,-3)),RADIUS_CONTROL_PX,QColor(background))
         icon_color = c['secondary']
         platform=index.data(Qt.ItemDataRole.UserRole+1)
@@ -557,7 +474,8 @@ class _DropIllustration(QWidget):
 
     def paintEvent(self, event):
         painter=QPainter(self);painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        ui_icon('file', '#64D2FF' if self.dark else '#0A84FF').paint(painter, self.rect().adjusted(2,2,-2,-2))
+        c=ui_colors('dark' if self.dark else 'light')
+        ui_icon('upload',c['secondary']).paint(painter,self.rect().adjusted(4,4,-4,-4))
 
 
 class _PagerButton(_PressButton):
@@ -599,12 +517,14 @@ class _DropZone(QFrame):
         illustration = _DropIllustration(self)
         self.illustration = illustration
         layout.addWidget(illustration, 0, Qt.AlignmentFlag.AlignHCenter)
-        self.title = _label('拖入文件/文件夹，或点击添加', self); self.title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._idle_title='拖入文件/文件夹，或点击添加'
+        self.title = _label(self._idle_title, self); self.title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.title.setObjectName('lanDropTitle'); layout.addWidget(self.title)
         self.hint = _label('', self, muted=True)
         self.hint.setObjectName('lanDropHint')
         self.hint.setAlignment(Qt.AlignmentFlag.AlignCenter); layout.addWidget(self.hint)
         self.hint.hide()
+        for child in (self.illustration,self.title,self.hint):child.setAttribute(Qt.WA_TransparentForMouseEvents)
         layout.addStretch(1)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
 
@@ -617,20 +537,26 @@ class _DropZone(QFrame):
     def border_radius(self):
         return RADIUS_CONTROL_PX if self.height()-2<=DROP_ZONE_COMPACT_HEIGHT_PX else RADIUS_CARD_PX
 
-    def set_drag_active(self,active):
+    def set_idle_title(self,text):
+        self._idle_title=text
+        if not self._active:self.title.setText(text)
+
+    def set_drag_active(self,active,point=None,*,accepted=False):
+        changed=bool(active)!=self._active
         self._active=bool(active)
-        self.border_motion.set_active(self._active or self._hovered)
-        self.illustration.update()
+        if self._active:
+            self.border_motion.move_drag(point if point is not None else self.rect().center())
+        elif changed:
+            self.border_motion.end_drag(accepted=accepted,hovered=self._hovered)
+        if changed:self.title.setText('松手添加' if self._active else self._idle_title)
 
     def paintEvent(self,event):
         painter=QPainter(self);painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         dark=self.illustration.dark
-        if self.property('lanDropSurface'):
-            c=ui_colors('dark' if dark else 'light')
-            radius=RADIUS_CONTROL_PX if self.property('compactDrop') else RADIUS_CARD_PX
-            paint_rounded_surface(painter,self.rect(),radius,qss_color(c['hover'] if self._hovered else c['control']))
-        path=self.border_path()
-        self.border_motion.paint(painter,path,dark=dark,radius=self.border_radius(),idle_fill=QColor(255,255,255,7) if dark else QColor(0,0,0,5))
+        c=ui_colors('dark' if dark else 'light')
+        role='control' if self.property('lanDropSurface') else 'card'
+        self.border_motion.paint(painter,self.border_path(),dark=dark,radius=self.border_radius(),idle_fill=qss_color(c[role]))
+        painter.end()
 
     def enterEvent(self,event):
         self._hovered=True;self.border_motion.set_active(True);super().enterEvent(event)
@@ -639,7 +565,7 @@ class _DropZone(QFrame):
         self._hovered=False;self.border_motion.set_active(self._active);super().leaveEvent(event)
 
     def hideEvent(self,event):
-        self._hovered=False;self._active=False;self.border_motion.set_active(False);super().hideEvent(event)
+        self._hovered=False;self.set_drag_active(False);self.border_motion.set_active(False);super().hideEvent(event)
 
     def keyPressEvent(self, event):
         if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):
@@ -653,32 +579,35 @@ class _DropZone(QFrame):
 
 
     @staticmethod
-    def _paths(event):
+    def _paths(event,*,validate=False):
         mime = event.mimeData()
         if not mime.hasUrls(): return []
         urls = mime.urls()
         if not urls or any(not url.isLocalFile() for url in urls): return []
-        paths = [Path(url.toLocalFile()) for url in urls]
-        return [str(path) for path in paths] if all(path.exists() for path in paths) else []
+        paths=[url.toLocalFile() for url in urls]
+        if not all(paths) or validate and not all(Path(path).exists() for path in paths):return []
+        return paths
 
     def dragEnterEvent(self, event):
         if self._paths(event):
-            self.set_drag_active(True)
-            self.update()
+            self.set_drag_active(True,event.position())
             event.setDropAction(Qt.DropAction.CopyAction); event.accept()
         else: event.ignore()
 
     def dragMoveEvent(self, event):
-        if self._paths(event): event.setDropAction(Qt.DropAction.CopyAction); event.accept()
-        else: event.ignore()
+        if self._paths(event):
+            self.set_drag_active(True,event.position())
+            event.setDropAction(Qt.DropAction.CopyAction);event.accept()
+        else:
+            self.set_drag_active(False);event.ignore()
 
     def dragLeaveEvent(self, event):
         self.set_drag_active(False)
         event.accept()
 
     def dropEvent(self, event):
-        paths = self._paths(event)
-        self.dragLeaveEvent(event)
+        paths=self._paths(event,validate=True)
+        self.set_drag_active(False,accepted=bool(paths))
         if paths:
             self.dropped.emit(paths)
             event.setDropAction(Qt.DropAction.CopyAction); event.accept()
@@ -780,11 +709,12 @@ class _TransferSurface(RoundedSurfaceFrame):
         owner=self._owner()
         if owner is None or self._surface_role=='code_inner' or self._surface_role=='row' and self.property('offerFrame'):return None
         c=ui_colors('dark' if owner._dark else 'light')
-        if self._surface_role=='route':return ('#173829' if owner._dark else '#E3F5EA'),None,RADIUS_CARD_PX
-        if self._surface_role=='pairing':return c['control'],None,RADIUS_CARD_PX
-        if self._surface_role=='code':return c['control'],None,RADIUS_CONTROL_PX
-        fill=c['card'] if self._surface_role in ('workbench','offer_file') else c['control']
-        radius=RADIUS_CONTROL_PX if self._surface_role=='offer_file' else RADIUS_CARD_PX
+        if self._surface_role=='route':return ('#1F3514' if owner._dark else '#E6F9D5'),None,RADIUS_CARD_PX
+        if self._surface_role=='pairing':return c['subcard'],c['border'],RADIUS_CARD_PX
+        if self._surface_role=='code':return c['subcard'],c['border'],RADIUS_CONTROL_PX
+        if self._surface_role=='workbench':return c['card'],c['border'],RADIUS_PANEL_PX
+        fill=c['card'] if self._surface_role=='offer_file' else c['subcard']
+        radius=RADIUS_CONTROL_PX if self._surface_role=='offer_file' else 16
         return fill,c['border'],radius
 
 
@@ -793,11 +723,17 @@ class _TransferDialogSurface(RoundedSurfaceFrame):
     def __init__(self,parent):
         super().__init__(parent);self._dialog=weakref.ref(parent)
 
-    def surface_style(self):
+    def paintEvent(self,event):
         dialog=self._dialog()
-        if dialog is None:return None
+        if dialog is None:return
+        p=QPainter(self)
+        dark=dialog._theme=='dark'
         c=ui_colors(dialog._theme)
-        return c['dialog_surface'],c['glass_border'],TRANSFER_CORNER_RADIUS_PX
+        paint_rounded_surface(p,self.rect(),TRANSFER_CORNER_RADIUS_PX,qss_color(c['window_backdrop']),qss_color(c['glass_border']))
+        p.end()
+
+    def surface_style(self):
+        return None
 
 
 class _OfferBadge(QLabel):
@@ -884,6 +820,234 @@ class _HistoryRow(_TransferSurface):
         layout.addWidget(self.remove_button, 0, Qt.AlignmentFlag.AlignVCenter)
 
 
+class _PendingFileDeck(QWidget):
+    """A presentation-only stack over the workbench's existing send queue."""
+
+    FOLLOW=(900,50)
+    RETURN=(280,16)
+    DEPTH=(260,22)
+    THROW=(70,17)
+    THRESHOLD=110
+
+    def __init__(self,panel,parent):
+        super().__init__(parent)
+        self.panel=panel
+        self.paths=()
+        self.index=0
+        self._drag=None
+        self._flying=None
+        self._returning=None
+        self._grab_sign=1
+        self._offset=Spring(self,{'x':0.,'y':0.},self._frame)
+        self._depth=Spring(self,{'y':0.},self._frame)
+        self._reentry=Spring(self,{'amount':1.},self._frame)
+        self._reentry.settled.connect(self._finish_reentry)
+        self._recycle=QTimer(self);self._recycle.setSingleShot(True)
+        self._recycle.timeout.connect(self._clear_flight)
+        self.setFocusPolicy(Qt.StrongFocus)
+        self.setAccessibleName('待发送文件卡片')
+        self.setCursor(Qt.OpenHandCursor)
+        self.previous=self._control('','上一份文件',lambda:self._fling(1))
+        self.next=self._control('','下一份文件',lambda:self._fling(-1))
+        self.previous.setIcon(ui_icon('left'));self.next.setIcon(ui_icon('right'))
+        for arrow in (self.previous,self.next):
+            arrow.setObjectName('lanDeckArrow')
+            arrow.setFocusPolicy(Qt.TabFocus)
+        self.remove=self._control('', '移除当前文件', self._remove_current)
+        self.remove.setObjectName('lanQueueRemove')
+        self.remove.setIcon(ui_icon('close'))
+
+    def _control(self,title,name,callback):
+        control=_button(title,self);control.setFixedSize(26,26)
+        control.setAccessibleName(name)
+        control.clicked.connect(callback)
+        return control
+
+    @property
+    def current(self):
+        return self.paths[self.index] if self.paths else None
+
+    def set_paths(self,paths):
+        paths=tuple(paths)
+        if self.paths==paths:return
+        old=self.current
+        self._reset_gesture()
+        self.paths=paths
+        self.index=paths.index(old) if old in paths else min(self.index,max(0,len(paths)-1))
+        depth=min(3,max(0,len(paths)-1))
+        self.setFixedHeight(50 if depth==0 else 82+depth*16)
+        self._update_card()
+
+    def _reset_gesture(self):
+        self._drag=None;self._flying=None;self._recycle.stop();self._finish_reentry()
+        self._offset.jump({'x':0.,'y':0.});self._depth.jump({'y':0.})
+        self.setCursor(Qt.OpenHandCursor)
+
+    def _card(self):
+        side=34 if len(self.paths)>1 else 1
+        return QRectF(side,1,max(1,self.width()-2*side),72 if len(self.paths)>1 else 48)
+
+    def _update_card(self):
+        current=self.current
+        multiple=len(self.paths)>1
+        self.previous.setVisible(multiple);self.next.setVisible(multiple)
+        self.remove.setVisible(current is not None and self._drag is None)
+        if current:
+            name=Path(current).name
+            self.setAccessibleDescription(f'{self.index+1} / {len(self.paths)}：{name}')
+            self.remove.setAccessibleName('移除 '+name)
+            for offset in range(min(4,len(self.paths))):
+                self.panel._queue_info_ready(self.paths[(self.index+offset)%len(self.paths)])
+        self._frame()
+
+    def _frame(self,*_):
+        if not hasattr(self,'previous'):return
+        card=self._card()
+        self.previous.move(0,round(card.center().y())-13)
+        self.next.move(self.width()-26,round(card.center().y())-13)
+        self.remove.move(round(card.right())-33,round(card.center().y())-13)
+        self.remove.setVisible(self.current is not None and self._drag is None and
+                               (self._flying is not None or abs(self._offset.values['x'])<4))
+        self.update()
+
+    def _remove_current(self):
+        current=self.current
+        if current is not None:
+            self.panel.queue_paths((path for path in self.paths if path!=current),replace=True)
+
+    def _fling(self,direction,vx=0.,vy=0.):
+        if len(self.paths)<2 or self._flying is not None:return
+        self._finish_reentry()
+        current=self.current
+        self.index=(self.index-direction)%len(self.paths)
+        if reduced_motion() or not self.isVisible():
+            self._reset_gesture();self._update_card()
+            return
+        drag_progress=min(1.,abs(self._offset.values['x'])/(self.THRESHOLD*1.6))
+        self._flying=(current,self._grab_sign)
+        self._depth.jump({'y':1.-drag_progress})
+        self._depth.animate_physical({'y':0.},*self.DEPTH)
+        self._offset.animate_physical({'x':direction*(self.width()+220),
+                                       'y':self._offset.values['y']+max(-120.,min(120.,vy*.2))},*self.THROW)
+        self._offset.kick({'x':direction*max(1500.,abs(vx))-self._offset._velocities['x']})
+        self._recycle.start(420)
+        self._update_card()
+
+    def _clear_flight(self):
+        if self._flying is None:return
+        self._returning=self._flying[0];self._flying=None
+        self._offset.jump({'x':0.,'y':0.})
+        if not self.isVisible() or reduced_motion():
+            self._finish_reentry()
+        else:
+            self._reentry.jump({'amount':0.})
+            self._reentry.animate_physical({'amount':1.},*self.DEPTH)
+
+    def _finish_reentry(self):
+        if self._returning is None:return
+        self._returning=None;self._reentry.jump({'amount':1.})
+
+    def mousePressEvent(self,event):
+        if (event.button()==Qt.LeftButton and self._card().contains(event.position())
+                and len(self.paths)>1 and self._flying is None):
+            point=event.position()
+            offset=self._offset.values
+            self._drag=[point.x()-offset['x'],point.y()-offset['y']/ .6,point.x(),point.y(),time.perf_counter(),0.,0.,0.]
+            self._grab_sign=1 if point.y()<self._card().center().y() else -1
+            self.setFocus(Qt.MouseFocusReason);self.setCursor(Qt.ClosedHandCursor)
+            self.remove.hide();event.accept();return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self,event):
+        if self._drag is None:
+            super().mouseMoveEvent(event);return
+        x0,y0,last_x,last_y,last_at,vx,vy,_=self._drag
+        point=event.position();now=time.perf_counter();dt=max(.001,now-last_at)
+        x=point.x()-x0
+        self._drag[2:]=[point.x(),point.y(),now,(vx+(point.x()-last_x)/dt)/2,
+                       (vy+(point.y()-last_y)/dt)/2,x]
+        target={'x':x,'y':(point.y()-y0)*.6}
+        if reduced_motion():self._offset.jump(target)
+        else:self._offset.animate_physical(target,*self.FOLLOW)
+        event.accept()
+
+    def mouseReleaseEvent(self,event):
+        if event.button()==Qt.LeftButton and self._drag is not None:
+            _,_,_,_,last_at,vx,vy,x=self._drag
+            if time.perf_counter()-last_at>.12:vx=vy=0.
+            self._drag=None;self.setCursor(Qt.OpenHandCursor)
+            if abs(x)>self.THRESHOLD or (abs(x)>10 and abs(vx)>700 and vx*x>0):
+                self._fling(1 if x>0 else -1,vx,vy)
+            elif reduced_motion():self._offset.jump({'x':0.,'y':0.})
+            else:self._offset.animate_physical({'x':0.,'y':0.},*self.RETURN)
+            self._frame();event.accept();return
+        super().mouseReleaseEvent(event)
+
+    def keyPressEvent(self,event):
+        if event.key() in (Qt.Key_Left,Qt.Key_Right) and len(self.paths)>1:
+            self._fling(1 if event.key()==Qt.Key_Left else -1);event.accept();return
+        if event.key()==Qt.Key_Delete and self.current:
+            self._remove_current();event.accept();return
+        super().keyPressEvent(event)
+
+    def resizeEvent(self,event):
+        super().resizeEvent(event);self._frame()
+
+    def hideEvent(self,event):
+        self._reset_gesture()
+        super().hideEvent(event)
+
+    def paintEvent(self,event):
+        if not self.paths:return
+        c=ui_colors('dark' if self.panel._dark else 'light')
+        painter=QPainter(self)
+        painter.setRenderHints(QPainter.Antialiasing|QPainter.SmoothPixmapTransform)
+        x=self._offset.values['x'];y=self._offset.values['y']
+        lift=min(1.,abs(x)/(self.THRESHOLD*1.6)) if self._flying is None else 0.
+        rect=self._card()
+        for offset in reversed(range(min(len(self.paths),4))):
+            ref=self.paths[(self.index+offset)%len(self.paths)]
+            if self._flying is not None and ref==self._flying[0]:continue
+            depth=offset+self._depth.values['y'] if self._flying else max(0.,offset-(lift if offset else 0.))
+            active=not offset
+            painter.save()
+            reentry=min(1.,max(0.,self._reentry.values['amount'])) if ref==self._returning else 1.
+            if reentry<1.:painter.setOpacity(reentry)
+            card_y=y if active and self._flying is None else 10.*(1.-reentry)
+            self._paint_card(painter,c,rect,ref,depth,x if active and self._flying is None else 0.,
+                             card_y,self._grab_sign,active)
+            painter.restore()
+        if self._flying:
+            self._paint_card(painter,c,rect,self._flying[0],0.,x,y,self._flying[1],False)
+        painter.end()
+
+    def _paint_card(self,painter,c,rect,ref,depth,x,y,sign,active):
+        depth=min(3.,max(0.,depth))
+        painter.save()
+        center=rect.center()
+        painter.translate(center+QPointF(x,y+depth*16));painter.rotate(x*.065*sign)
+        scale=1.-depth*.055
+        painter.scale(scale,scale);painter.translate(-center)
+        fill=qss_color(c['subcard'] if depth>.05 else c['control'])
+        paint_rounded_surface(painter,rect,RADIUS_CARD_PX,fill,qss_color(c['border']))
+        if depth<1.1:
+            row=self.panel._queue_row_map[ref]
+            art=row.artwork.pixmap()
+            if art is not None:painter.drawPixmap(QPointF(rect.left()+12,center.y()-16),art)
+            ink=c['text'];font=reference_font();font.setPixelSize(12);set_ui_weight(font,600)
+            painter.setFont(font);painter.setPen(qss_color(ink))
+            text=rect.adjusted(54,0,-40,0)
+            text.setHeight(20);text.moveTop(center.y()-16)
+            title=painter.fontMetrics().elidedText(Path(ref).name,Qt.ElideRight,round(text.width()))
+            painter.drawText(text,Qt.AlignLeft|Qt.AlignVCenter,title)
+            font.setPixelSize(10);set_ui_weight(font,400);painter.setFont(font)
+            painter.setPen(qss_color(c['file_description']))
+            detail=self.panel._queue_labels[ref].text()
+            if active and len(self.paths)>1:detail+=f'  ·  {self.index+1} / {len(self.paths)}'
+            painter.drawText(text.translated(0,18),Qt.AlignLeft|Qt.AlignVCenter,detail)
+        painter.restore()
+
+
 class LanPanel(QFrame):
     """Overview's transfer surface. start() remains the owner's explicit decision.
 
@@ -943,6 +1107,11 @@ class LanPanel(QFrame):
         self.add_files.hide()  # The drop target remains clickable and keyboard accessible.
         self.clear_queue=_button('清空',queue_column);self.clear_queue.setObjectName('lanQueueClear')
         self.clear_queue.setToolTip('清除待发送列表');self.clear_queue.clicked.connect(lambda:self.queue_paths([],replace=True))
+        self.queue_view=_button('',queue_column);self.queue_view.setFixedSize(28,28)
+        self.queue_view.setIcon(ui_icon('list'));self.queue_view.setAccessibleName('查看待发送列表')
+        self.queue_view.setToolTip('查看待发送列表');self.queue_view.clicked.connect(lambda:self.set_queue_list_mode(not self._queue_list_mode))
+        self._queue_list_mode=False
+        send_heading.addWidget(self.queue_view)
         send_heading.addWidget(self.clear_queue);queue_box.addLayout(send_heading)
         self.queue_body=QFrame(queue_column);self.queue_body.setObjectName('lanQueueBody')
         self.queue_layout=QVBoxLayout(self.queue_body);self.queue_layout.setContentsMargins(0,0,0,0);self.queue_layout.setSpacing(6)
@@ -953,6 +1122,8 @@ class LanPanel(QFrame):
         self.queue_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff);self.queue_scroll.setWidget(self.queue_body)
         self.queue_scroll.verticalScrollBar().valueChanged.connect(self._queue_visible_info)
         self.queue_scroll.setMaximumHeight(QUEUE_MAX_HEIGHT_PX);queue_box.addWidget(self.queue_scroll)
+        self.queue_deck=_PendingFileDeck(self,queue_column);self.queue_deck.hide();queue_box.addWidget(self.queue_deck)
+        self.artwork_cache.ready.connect(lambda ref:self.queue_deck.update())
         payload.addWidget(queue_column);payload.addWidget(self.drop_zone);left.addWidget(self.queue_area)
         self.send_column=_TransferSurface(self,self,'workbench');self.send_column.setObjectName('lanSendColumn')
         send=QVBoxLayout(self.send_column);send.setContentsMargins(CARD_MARGIN_PX-1,CARD_MARGIN_PX-1,CARD_MARGIN_PX-1,CARD_MARGIN_PX-1);send.setSpacing(8)
@@ -1171,7 +1342,8 @@ class LanPanel(QFrame):
     def _fit_queue(self):
         queue=self.queue_column.layout();payload=self.queue_area.layout()
         heading=max(self.send_heading.sizeHint().height(),self.add_files.minimumHeight())
-        column=heading+(queue.spacing()+self.queue_scroll.height() if self._queued_paths else 0)
+        queue_view=self.queue_scroll if self._queue_list_mode else self.queue_deck
+        column=heading+(queue.spacing()+queue_view.height() if self._queued_paths else 0)
         margins=payload.contentsMargins();frame_margins=self.queue_area.contentsMargins()
         fixed=margins.top()+margins.bottom()+frame_margins.top()+frame_margins.bottom()+payload.spacing()+column
         drop=DROP_ZONE_COMPACT_HEIGHT_PX if self._queued_paths else max(DROP_ZONE_COMPACT_HEIGHT_PX,QUEUE_EMPTY_HEIGHT_PX-fixed)
@@ -1290,7 +1462,6 @@ class LanPanel(QFrame):
         if previous==self._queued_paths and getattr(self,'_queue_rendered',False):return
         self._queue_rendered=True
         count = len(self._queued_paths)
-        self.drop_zone.title.setText('拖入文件/文件夹，或点击添加')
         self.drop_zone.hint.hide()
         self.clear_queue.setEnabled(bool(count))
         self.send_button.setText(f'发送 {count} 项' if count else '发送文件')
@@ -1319,7 +1490,18 @@ class LanPanel(QFrame):
             for row in self.queue_rows:self.queue_layout.removeWidget(row)
             for row in self.queue_rows:self.queue_layout.addWidget(row)
         self.queue_scroll.setFixedHeight(min(QUEUE_MAX_HEIGHT_PX, count*(QUEUE_ROW_HEIGHT_PX+6)))
-        self.queue_scroll.setVisible(bool(count))
+        self.queue_deck.set_paths(self._queued_paths)
+        self.set_queue_list_mode(self._queue_list_mode)
+
+    def set_queue_list_mode(self,active):
+        self._queue_list_mode=bool(active)
+        count=len(self._queued_paths)
+        self.queue_view.setVisible(count>1)
+        self.queue_view.setIcon(ui_icon('grid' if active else 'list'))
+        title='查看待发送卡片' if active else '查看待发送列表'
+        self.queue_view.setAccessibleName(title);self.queue_view.setToolTip(title)
+        self.queue_scroll.setVisible(bool(count and active))
+        self.queue_deck.setVisible(bool(count and not active))
         self._fit_queue()
 
     def _queue_info_ready(self,ref):
@@ -1330,6 +1512,7 @@ class LanPanel(QFrame):
         label.setText('文件夹' if info['is_dir'] else _size(info['size']) if info['exists'] else '无法读取文件信息')
         row=self._queue_row_map[ref]
         if row.artwork.folder!=info['is_dir']:row.artwork.set_source(ref,folder=info['is_dir'])
+        self.queue_deck.update()
 
     def _queue_info_deferred(self,ref):
         label=self._queue_labels.get(ref)
@@ -1479,9 +1662,9 @@ class LanPanel(QFrame):
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{height:0;}}
             QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{background:transparent;}}
         '''
-        from native_ui_common import readable_qss
+        from native_ui_common import readable_qss, apply_widget_theme_style
         style=readable_qss(style)
-        self.setStyleSheet(style)
+        apply_widget_theme_style(self, style)
         self._fit_queue()
         for row in self._rows.values():
             row['cancel'].dark = self._dark; row['cancel'].update()
@@ -1898,13 +2081,17 @@ class _TransferDropRouter(QObject):
         zone=self.dialog.panel.drop_zone
         if kind==QEvent.Type.DragLeave:
             zone.dragLeaveEvent(event);return True
-        paths=zone._paths(event)
+        dropping=kind==QEvent.Drop
+        paths=zone._paths(event,validate=dropping)
         if not paths:
             zone.set_drag_active(False);event.ignore();return True
-        if kind==QEvent.Type.Drop:
-            zone.dragLeaveEvent(event);self.dialog.panel.queue_paths(paths)
+        if dropping:
+            zone.set_drag_active(False,accepted=True)
+            self.dialog.panel.queue_paths(paths)
         else:
-            zone.set_drag_active(True)
+            point=zone.mapFromGlobal(watched.mapToGlobal(event.position().toPoint()))
+            if not zone.rect().contains(point):point=zone.rect().center()
+            zone.set_drag_active(True,point)
         event.setDropAction(Qt.DropAction.CopyAction);event.accept();return True
 
 
@@ -1937,7 +2124,8 @@ class LanDialog(QDialog):
         self.setObjectName('lanDialog'); self.setWindowTitle('FlickDock · 文件互传')
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setModal(False); self.resize(980, 704); self.setMinimumSize(824, 660)
-        root = QVBoxLayout(self); root.setContentsMargins(22, 22, 22, 22)
+        _m = 22
+        root = QVBoxLayout(self); root.setContentsMargins(_m, _m, _m, _m)
         self.card = _TransferDialogSurface(self); self.card.setObjectName('lanDialogCard')
         from collections import OrderedDict
         self._shadow_cache=OrderedDict()
@@ -1950,8 +2138,12 @@ class LanDialog(QDialog):
             from native_ui_common import toggle_window_zoom
             controls=QHBoxLayout();controls.setSpacing(8)
             from window_chrome import minimize_utility
-            for value,callback in (('#FF5F56',self.close),('#FFBD2E',lambda:minimize_utility(self)),('#27C93F',lambda:toggle_window_zoom(self))):
+            for value,title,callback in (('#FF5F56','关闭窗口',self.close),
+                                         ('#FFBD2E','最小化',lambda:minimize_utility(self)),
+                                         ('#27C93F','最大化或还原',lambda:toggle_window_zoom(self))):
                 button=_button('',self.title_bar);button.setFixedSize(12,12)
+                button.setAccessibleName(title)
+                button.setProperty('flickdockIconOnly',True)
                 button.setProperty('trafficColor',value)
                 button.setStyleSheet('QPushButton{background:transparent;border:0;padding:0;min-height:0;}')
                 if callback:button.clicked.connect(callback)
@@ -1971,9 +2163,9 @@ class LanDialog(QDialog):
         title_row.addStretch(1)
         content.addWidget(self.title_bar)
         from ui_transitions import SelectionSurface
-        self.mode_segment=SelectionSurface(self.card,radius=RADIUS_CONTROL_PX);self.mode_segment.setObjectName('transferModeGroup')
-        self.mode_segment.set_surface_background('control','control',RADIUS_CARD_PX)
-        mode_row=QHBoxLayout(self.mode_segment);mode_row.setContentsMargins(4,4,4,4);mode_row.setSpacing(4)
+        self.mode_segment=SelectionSurface(self.card,radius=18);self.mode_segment.setObjectName('transferModeGroup')
+        self.mode_segment.set_surface_background('card','card',20,stroke_role='border')
+        mode_row=QHBoxLayout(self.mode_segment);mode_row.setContentsMargins(*(SEGMENT_INSET_PX,)*4);mode_row.setSpacing(4)
         self.mode_group=QButtonGroup(self);self.mode_group.setExclusive(True);self.mode_buttons={}
         for mode,label in (('lan','局域网传输'),('wan','远程传输')):
             current='wan' if self._wan else 'lan'
@@ -2070,7 +2262,8 @@ class LanDialog(QDialog):
             self.title_label.setText('文件互传');self.setWindowTitle('FlickDock · 文件互传')
             self.close_button.setAccessibleName('关闭'+title+'窗口')
             if self._wan and callable(getattr(service,'check_code',None)):
-                service.check_code();self.panel._code_identity_changed(service.code_identity())
+                self.panel._code_identity_changed(service.code_identity())
+                QTimer.singleShot(0, self, lambda s=service: s.check_code() if callable(getattr(s,'check_code',None)) else None)
         finally:
             self._update_ready()
             self.card.update();self.update()
@@ -2084,8 +2277,8 @@ class LanDialog(QDialog):
         p.fillRect(event.rect(),Qt.transparent)
         p.setCompositionMode(QPainter.CompositionMode_SourceOver)
         paint_surface_shadow(p,QRectF(self.card.geometry()),self._shadow_cache,
-            radius=TRANSFER_CORNER_RADIUS_PX,blur=18,offset=QPointF(0,4),
-            color=QColor(0,0,0,78) if self._theme=='dark' else QColor(15,23,42,32))
+            radius=TRANSFER_CORNER_RADIUS_PX,blur=28,offset=QPointF(0,4),
+            color=QColor(0,0,0,48) if self._theme=='dark' else QColor(0,0,0,36))
         p.end()
 
     def showEvent(self, event):
@@ -2107,7 +2300,8 @@ class LanDialog(QDialog):
         ink,hover=c['text'],c['hover']
         self.mode_segment.set_selection_theme(theme)
         self.back_button.setIcon(ui_icon('left',c['secondary']))
-        self.card.setStyleSheet(f'''
+        from native_ui_common import readable_qss, apply_widget_theme_style
+        _dialog_qss = readable_qss(f'''
             QFrame#lanDialogCard {{ background:transparent; border:0; }}
             QWidget#lanTitleBar {{ background:transparent; border:0; border-bottom:1px solid {c['divider']}; }}
             QLabel#lanDialogTitle {{ color:{ink}; font:700 15px {font_family}; background:transparent; border:0; }}
@@ -2117,13 +2311,12 @@ class LanDialog(QDialog):
             QPushButton#lanDialogBack {{ padding:4px 10px; }}
             QFrame#transferModeGroup {{background:transparent;border:0;}}
             QPushButton#transferModeSegment {{background:transparent;color:{c['secondary']};border:0;padding:7px 10px;font:12px {button_font_family};}}
-            QPushButton#transferModeSegment:checked,QPushButton#transferModeSegment:checked:hover,QPushButton#transferModeSegment:checked:pressed {{color:{ink};}}
+            QPushButton#transferModeSegment:checked,QPushButton#transferModeSegment:checked:hover,QPushButton#transferModeSegment:checked:pressed {{color:{c['segment_selected_ink']};font-weight:600;}}
             QPushButton#transferModeSegment:focus {{border:0;}}
             QPushButton#transferModeSegment[keyboardFocus="true"] {{border:0;}}
             QPushButton#lanDialogClose:hover {{ color:white; }}
             QPushButton#lanDialogBack:hover {{ color:{ink}; }}
         ''')
-        self.update()
+        apply_widget_theme_style(self.card, _dialog_qss)
         for panel in self._panels.values():panel.apply_theme(theme)
-        from native_ui_common import readable_qss
-        self.card.setStyleSheet(readable_qss(self.card.styleSheet()))
+        self.update()

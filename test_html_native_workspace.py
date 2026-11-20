@@ -343,9 +343,9 @@ class WorkspaceTests(unittest.TestCase):
                 self.assertTrue(label.isVisible(),name)
                 image=popup.grab().toImage();position=label.mapTo(popup,QPoint())
                 check(name,label.palette().color(QPalette.WindowText),image.pixelColor(position+QPoint(1,1)))
-            popup.set_category('uploading');flush();label=popup.transfer_eta
-            self.assertTrue(label.isVisible());image=popup.grab().toImage();position=label.mapTo(popup,QPoint())
-            check('transfer summary percent',label.palette().color(QPalette.WindowText),image.pixelColor(position+QPoint(1,1)))
+            popup.set_category('uploading');flush()
+            self.assertFalse(hasattr(popup,'transfer_summary'))
+            self.assertTrue(popup.transfer_strip.isVisible())
         if os.environ.get('FLICKDOCK_CAPTURE_WORKSPACE'):
             import json
             output=Path(__file__).resolve().parents[2]/'outputs/hig-redesign/component-contrast-QA.json'

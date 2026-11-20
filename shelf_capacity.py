@@ -202,7 +202,7 @@ class ShelfCapacityButton(QAbstractButton):
             from reference_widgets import ink
             palette=colors(ui_theme.current_theme())
             fill=ink(palette['control_pressed'] if self.isDown() else palette['control_hover'] if self.underMouse() else palette['control'])
-            paint_rounded_surface(p,QRectF(self.rect()).adjusted(.5,.5,-.5,-.5),RADIUS_CONTROL_PX,fill)
+            paint_rounded_surface(p,QRectF(self.rect()).adjusted(.5,.5,-.5,-.5),self.height()/2.0,fill,ink(palette['border']))
         if keyboard_focus_visible(self):
             paint_rounded_surface(p,QRectF(self.rect()).adjusted(1,1,-1,-1),RADIUS_CONTROL_PX,
                                   QColor(Qt.transparent),QColor(colors(ui_theme.current_theme())['ring']))
@@ -210,7 +210,9 @@ class ShelfCapacityButton(QAbstractButton):
         p.setBrush(Qt.NoBrush);p.setPen(QPen(QColor('#3A3A3A' if ui_theme.current_theme()=='dark' else '#D8D8D8'),2.5))
         p.drawEllipse(arc)
         fraction=self.storage['remaining_bytes']/CLOUD_SHELF_BYTES if self.storage else 0
-        pen=QPen(QColor(colors(ui_theme.current_theme())['action']),2.5);pen.setCapStyle(Qt.RoundCap);p.setPen(pen)
+        c_now=colors(ui_theme.current_theme())
+        ring_tint=c_now['red'] if (self.storage and fraction<0.15) else c_now['brand_accent']
+        pen=QPen(QColor(ring_tint),2.5);pen.setCapStyle(Qt.RoundCap);p.setPen(pen)
         if fraction:p.drawArc(arc,90*16,-round(fraction*360*16))
         if self.show_value:
             text=self._label_text();p.setFont(self._label_font())

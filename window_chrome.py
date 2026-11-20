@@ -84,6 +84,7 @@ class _WindowButton(QPushButton):
         self._keyboard_focus=False
         self.setFixedSize(44,32);self.setAutoDefault(False);self.setDefault(False)
         self.setAccessibleName({'min':'最小化','max':'最大化或还原','close':'关闭窗口'}[role])
+        self.setProperty('flickdockIconOnly',True)
         self.setStyleSheet('QPushButton{border:0;background:transparent;padding:0;}')
         self.clicked.connect(self._activate)
     @property

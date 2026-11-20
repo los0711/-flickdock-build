@@ -46,6 +46,7 @@ class FakePlayer(QObject):
     def stop(self):self.playing=False
     def duration(self):return 1000
     def position(self):return self.at
+    def setPosition(self,position):self.move(position)
     def move(self,position):self.at=position;self.positionChanged.emit(position)
     def finish(self):self.mediaStatusChanged.emit(QMediaPlayer.MediaStatus.EndOfMedia)
 

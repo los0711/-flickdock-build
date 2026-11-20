@@ -368,6 +368,8 @@ class TranslationNotice(CapsuleNotice):
         c = colors('dark')
         menu.setStyleSheet(f'QMenu{{background:transparent;color:{c["text"]};border:0;padding:7px;}}')
         languages = LanguageList(menu)
+        languages.setProperty('scrollEdgeBlur',False)
+        languages.setProperty('scrollBackdropColor',c['popup_surface'])
         languages.setAccessibleName('目标语言')
         languages.setFrameShape(QFrame.NoFrame)
         languages.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)

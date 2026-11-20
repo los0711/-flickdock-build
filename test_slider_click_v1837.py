@@ -62,5 +62,21 @@ class SliderClickTests(unittest.TestCase):
             slider.setEnabled(False);before=slider.value();QTest.mouseClick(slider,Qt.LeftButton,pos=QPoint(0,14));self.assertEqual(slider.value(),before)
         finally:slider.close();slider.deleteLater();w.flush()
 
+    def test_drag_lifts_the_badge_and_release_keeps_the_clamped_value(self):
+        from unittest.mock import patch
+        slider=app_settings.SettingsSlider(Qt.Horizontal)
+        slider.resize(240,60);slider.setValue(30);slider.show();w.flush()
+        try:
+            with patch('ui_transitions.motion_allowed',return_value=True),patch('native_ui_common.reduced_motion',return_value=False):
+                QTest.mousePress(slider,Qt.LeftButton,pos=QPoint(175,30))
+                w.until(lambda:slider._badge.isVisible())
+                self.assertGreater(slider._bubble.values['y'],0.)
+                slider._badge.grab()
+                QTest.mouseRelease(slider,Qt.LeftButton,pos=QPoint(245,30))
+                self.assertEqual(slider.value(),slider.maximum())
+                w.until(lambda:not slider._badge.isVisible() and not slider._handle._timer.isActive())
+        finally:
+            slider.close();slider.deleteLater();w.flush()
+
 
 if __name__=='__main__':unittest.main(verbosity=2)

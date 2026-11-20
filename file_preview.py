@@ -117,7 +117,14 @@ class MetadataLabel(ElidedLabel):
         painter.end()
 
 
-class PreviewPane(QFrame):
+from native_ui_common import RoundedSurfaceFrame as _PreviewSurfaceBase, RADIUS_PANEL_PX as _PREVIEW_PANEL_RADIUS
+
+
+class PreviewPane(_PreviewSurfaceBase):
+    def surface_style(self):
+        from reference_widgets import palette
+        c=palette();return c['card'],c['border'],_PREVIEW_PANEL_RADIUS
+
     def __init__(self,parent=None):
         super().__init__(parent)
         self.shelf=parent.shelf;self.popup=parent;self.current_path=None
@@ -477,6 +484,9 @@ class PreviewPane(QFrame):
         self.shelf.surface_effect.invalidate_source()
         self._group_refs=()
         self.group_view.hide()
+        from reference_widgets import InsetDivider
+        for w in (self.preview_head,self.content_scroll,self.action_footer,*self.findChildren(InsetDivider)):
+            w.show()
         self.media.stop()
         self.current_path=ref
         metadata=self.shelf.content.metadata.get(ref,{})
@@ -602,11 +612,14 @@ class PreviewPane(QFrame):
         self.stack.setCurrentWidget(self.icon);self.copy_button.setToolTip('复制所选内容')
         self.group_title.setText(f'已选择 {len(refs)} 项')
         self.group_art.setPixmap(stack_pixmap(self.shelf.content,refs,72,dpr=self.devicePixelRatioF(),preview_cache=self.shelf.preview_cache))
-        self.group_view.setGeometry(self.rect().adjusted(1,0,0,0));self.group_view.show();self.group_view.raise_()
+        from reference_widgets import InsetDivider
+        for w in (self.preview_head,self.content_scroll,self.action_footer,*self.findChildren(InsetDivider)):
+            w.hide()
+        self.group_view.setGeometry(self.rect());self.group_view.show();self.group_view.raise_()
 
     def resizeEvent(self,event):
         super().resizeEvent(event)
-        self.group_view.setGeometry(self.rect().adjusted(1,0,0,0))
+        self.group_view.setGeometry(self.rect())
 
     def resume_preview(self):
         if (not getattr(self,'_pending_preview',False) or self.shelf.content_transition_active()

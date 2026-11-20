@@ -84,16 +84,84 @@ class PanelTests(unittest.TestCase):
         view=self.fixture.view
         self.assertEqual(view.session.polish_scope,'target')
         self.assertTrue(view.session.polish('简洁一些',scope='source'))
-        self.assertTrue(view.source_progress.isVisible())
-        self.assertFalse(view.progress.isVisible())
+        self.assertTrue(view.source_task.isVisible())
+        self.assertFalse(view.output_task.isVisible())
         self.fixture.api.finish('Hello.')
-        self.assertFalse(view.source_progress.isVisible())
+        self.assertFalse(view.source_task.isVisible())
+        view.session.edit_source('Hello again.')
         view.session.set_language('target','ja')
         self.assertTrue(view.session.translate())
-        self.assertTrue(view.progress.isVisible())
-        self.assertIn('正在翻译',view.output_task_label.text())
+        self.assertTrue(view.output_task.isVisible())
+        self.assertEqual(view.output_task.accessibleName(),'正在翻译…')
+        self.assertEqual(len(view.output_task._phrases),2)
         view.session.cancel()
-        self.assertFalse(view.progress.isVisible())
+        self.assertFalse(view.output_task.isVisible())
+        self.assertFalse(view.output_task._frames.isActive())
+
+    def test_loading_text_follows_its_clock_and_stops_when_hidden(self):
+        view=self.fixture.view
+        view.session.set_language('target','ja')
+        with patch('translator_widgets.reduced_motion',return_value=False):
+            self.assertTrue(view.session.translate())
+            task=view.output_task
+            self.assertTrue(task._frames.isActive())
+            task._since=.01
+            start=task.grab().toImage()
+            task._since=.8
+            self.assertNotEqual(task.grab().toImage(),start)
+            task._since=task.PHRASE_INTERVAL+.06
+            self.assertNotEqual(task.grab().toImage(),start)
+            self.assertEqual(task.accessibleName(),'正在翻译…')
+            view.hide()
+            self.assertFalse(task._frames.isActive())
+
+    def test_loading_text_remains_readable_with_reduced_motion(self):
+        view=self.fixture.view
+        view.session.set_language('target','ja')
+        with patch('translator_widgets.reduced_motion',return_value=True):
+            self.assertTrue(view.session.translate())
+            self.assertTrue(view.output_task.isVisible())
+            self.assertFalse(view.output_task._frames.isActive())
+            self.assertEqual(view.output_task.text(),'正在翻译…')
+            self.fixture.api.finish('こんにちは。')
+        self.assertFalse(view.output_task.isVisible())
+
+    def test_streaming_reveal_moves_native_text_and_keeps_the_full_result(self):
+        view=self.fixture.view
+        view.session.set_language('target','en')
+        view.session.set_language('source','zh')
+        view.source_editor.setPlainText('原文测试。')
+        text='A different result with several words.\nAnd a second line.'
+        with patch('translator_widgets.reduced_motion',return_value=False):
+            self.assertTrue(view.session.translate())
+            self.fixture.api.finish(text)
+            editor=view.output_editor
+            self.assertEqual(editor.toPlainText(),text)
+            self.assertTrue(editor._reveal.isActive())
+            self.assertEqual(editor._delay,.07)
+            from PySide6.QtTest import QTest
+            first=editor.viewport().grab().toImage()
+            QTest.qWait(230)
+            stage=editor.viewport().grab().toImage()
+            self.assertNotEqual(first,stage)
+            QTest.mouseClick(editor.viewport(),Qt.LeftButton)
+            self.assertFalse(editor._reveal.isActive())
+            self.assertEqual(editor.toPlainText(),text)
+            self.assertNotEqual(editor.viewport().grab().toImage(),stage)
+
+    def test_translator_joined_speech_caps_and_pill_size(self):
+        view=self.fixture.view
+        self.assertEqual(view.polish_button.width(),76)
+        self.assertEqual(view.polish_button._surface_radius(),view.polish_button.height()/2)
+        for play,tune in view.speech_buttons.values():
+            joined=play.parentWidget()
+            self.assertIs(joined,tune.parentWidget())
+            self.assertEqual(joined.radius,joined.height()/2)
+        for side,(group,menu,row) in view._language_groups.items():
+            for i in range(row.count()):
+                chip=row.itemAt(i).widget()
+                chip.ensurePolished()
+                self.assertGreaterEqual(chip.sizeHint().width()-chip.fontMetrics().horizontalAdvance(chip.text()),22)
 
     def test_copy_actions_and_speech_controls_fit_in_both_footers(self):
         view=self.fixture.view

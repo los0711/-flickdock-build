@@ -6,8 +6,9 @@ import time
 from collections import Counter
 
 from PySide6.QtCore import QEvent
+from PySide6.QtCore import QObject
 from PySide6.QtCore import QPoint
-from PySide6.QtCore import QPointF
+from PySide6.QtCore import QPointF, QRectF
 from PySide6.QtCore import QTimer
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QPixmap, QColor
@@ -58,6 +59,98 @@ VIRTUAL_FILE_THRESHOLD=64
 
 FILE_ROW_LEFT_INSET_PX = 9
 FILE_ROW_ITEM_GAP_PX = 8
+
+
+class _SidebarCollapse(QObject):
+    RAIL_WIDTH=64
+
+    def __init__(self,view):
+        super().__init__(view)
+        self.view=view
+        self.open=True
+        self.expanded_width=210
+        self._toggle_alignment=None
+        self.rows=(*view.scope_buttons.values(),view.translator_nav,view.video_nav,
+                   view.lan_nav,view.settings_nav,view.account_nav)
+        self.labels=Spring(self,dict.fromkeys(range(len(self.rows)),1.),self._paint_labels)
+        self.width=Spring(self,{'width':210.},self._resize)
+        self.arrow=Spring(self,{'angle':0.},self._rotate)
+        self.delays=[]
+        for i,row in enumerate(self.rows):
+            row.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Fixed)
+            row.setMinimumWidth(0)
+            timer=QTimer(self);timer.setSingleShot(True)
+            timer.timeout.connect(lambda i=i:self.labels.animate_physical({i:1.},300,26))
+            self.delays.append(timer)
+            if row.text():row.setAccessibleName(row.text())
+        self.width.settled.connect(self._finish)
+        view.sidebar_toggle.clicked.connect(self.toggle)
+        view.sidebar.configure_vertical_spring(380,28)
+        self._announce()
+
+    def _announce(self):
+        control=self.view.sidebar_toggle
+        title='收起侧栏' if self.open else '展开侧栏'
+        control.setChecked(not self.open)
+        control.setAccessibleName(title);control.setToolTip(title)
+
+    def update_size(self,width,visible):
+        changed=width!=self.expanded_width
+        self.expanded_width=width
+        if not visible:self.finish_immediately()
+        elif self.width._timer.isActive():
+            if changed and self.open:self.width.animate_physical({'width':float(width)},260,24)
+        else:
+            self.width.jump({'width':float(width if self.open else self.RAIL_WIDTH)})
+
+    def toggle(self):
+        from ui_transitions import motion_allowed
+        self.open=not self.open
+        self._announce()
+        for row in self.rows:
+            if row.text():row.setToolTip('' if self.open else row.text())
+        if not self.view.shelf.manager.motion or not motion_allowed():
+            self.finish_immediately()
+            self._finish()
+            return
+        for timer in self.delays:timer.stop()
+        if self.open:
+            for i,timer in enumerate(self.delays):timer.start(60+40*i)
+        else:self.labels.animate_physical(dict.fromkeys(range(len(self.rows)),0.),300,26)
+        self.arrow.animate_physical({'angle':0. if self.open else 180.},300,22)
+        self.width.animate_physical({'width':float(self.expanded_width if self.open else self.RAIL_WIDTH)},260,24)
+
+    def finish_immediately(self):
+        for timer in self.delays:timer.stop()
+        self.width.jump({'width':float(self.expanded_width if self.open else self.RAIL_WIDTH)})
+        self.labels.jump(dict.fromkeys(range(len(self.rows)),float(self.open)))
+        self.arrow.jump({'angle':0. if self.open else 180.})
+
+    def _finish(self):
+        if self.view.isVisible():self.view._responsive_timer.start(0)
+
+    def _resize(self,values):
+        rail=self.view.sidebar
+        width=max(self.RAIL_WIDTH,round(values['width']))
+        if rail.width()!=width or rail.maximumWidth()!=width:rail.setFixedWidth(width)
+        alignment=Qt.AlignHCenter if width<=72 else Qt.AlignRight
+        if alignment!=self._toggle_alignment:
+            self._toggle_alignment=alignment
+            rail.layout().setAlignment(self.view.sidebar_toggle,alignment)
+        self._paint_labels(self.labels.values)
+
+    def _paint_labels(self,values):
+        width=self.view.sidebar.width()
+        compact=max(0.,min(1.,(108-width)/(108-self.RAIL_WIDTH)))
+        for i,row in enumerate(self.rows):
+            row._sidebar_label_alpha=max(0.,min(1.,values[i]))
+            row._sidebar_compact_progress=compact
+            row.update()
+        self.view._position_nav_counts()
+
+    def _rotate(self,values):
+        self.view.sidebar_toggle.angle=values['angle']
+        self.view.sidebar_toggle.update()
 
 
 class _RowPressEffect(QGraphicsEffect):
@@ -117,6 +210,7 @@ class FileRow(QFrame):
         self.detail_label.setAttribute(Qt.WA_TransparentForMouseEvents)
         title=QHBoxLayout();title.setContentsMargins(0,0,0,0);title.setSpacing(4)
         self.pin_button=ToolbarButton('star',self,motion=popup.shelf.manager.motion);self.pin_button.setFixedSize(20,20);self.pin_button.setProperty('glyphSize',14)
+        self.pin_button.setProperty('shelfPin',True)
         self.pin_button.clicked.connect(lambda:self.popup.toggle_pin(self.path));title.addWidget(self.pin_button);title.addWidget(self.name_label,1)
         names.addLayout(title);names.addWidget(self.detail_label);row.addLayout(names,1)
         self.remove_button=ToolbarButton('close',self,motion=popup.shelf.manager.motion);self.remove_button.setFixedSize(32,32);self.remove_button.setToolTip('从搁架移除');self.remove_button.setAccessibleName('从搁架移除 '+popup.shelf.content.title(path));self.remove_button.clicked.connect(lambda:popup.remove_path(self.path))
@@ -127,7 +221,7 @@ class FileRow(QFrame):
 
     def refresh_pin(self):
         pinned=getattr(self.popup,'is_pinned',lambda ref:False)(self.path)
-        self.pin_button.set_glyph('star-filled' if pinned else 'star');self.pin_button.set_glyph_tint('#E9AF20' if pinned else None)
+        self.pin_button.set_glyph('star-filled' if pinned else 'star')
         self.pin_button.setToolTip('取消星标置顶' if pinned else '星标置顶');self.pin_button.setAccessibleName(self.pin_button.toolTip()+' '+self.popup.shelf.content.title(self.path))
         self.icon_label.update()
 
@@ -178,10 +272,44 @@ class FileRow(QFrame):
         c=palette();chosen=self.path in self.popup.selected
         self.selection_check.blockSignals(True);self.selection_check.setChecked(chosen);self.selection_check.blockSignals(False)
         p=QPainter(self);p.setRenderHint(QPainter.Antialiasing)
-        focused=self.hasFocus() and self._keyboard_focus
-        fill=ink(c['file_card_selected_focus'] if chosen and focused else c['file_card_selected'] if chosen else c['file_card_hover'] if self.motion.values['highlight']>.3 or focused else c['file_card'])
+        fill=ink(self._fill_role(chosen,c))
         paint_rounded_surface(p,self.rect(),c['card_radius'],fill,ink(c['selected_border'] if chosen else c['border']))
         p.end()
+
+    def _fill_role(self,chosen,colors):
+        focused=self.hasFocus() and self._keyboard_focus
+        return colors['file_card_selected_focus' if chosen and focused else 'file_card_selected' if chosen
+                      else 'file_card_hover' if self.motion.values['highlight']>.3 or focused else 'file_card']
+
+    def transition_pose(self,viewport):
+        from PySide6.QtGui import QPalette
+        from item_transitions import FilePose, SharedText, control_decoration
+        from native_ui_common import technical_font
+        from reference_widgets import ink, palette, thumbnail
+
+        def bounds(widget):
+            return QRectF(widget.mapTo(viewport,QPoint()),widget.size())
+        c=palette();chosen=self.path in self.popup.selected
+        art_rect=bounds(self.icon_label);badge=QRectF(art_rect.right()-18,art_rect.bottom()-18,18,18)
+        detail=self.detail_label;metrics,_=detail._metrics()
+        prefix=detail._description+(' · ' if detail._timestamp else '')
+        meta=bounds(detail)
+        prefix_width=min(meta.width(),metrics.horizontalAdvance(prefix))
+        summary=QRectF(meta.left(),meta.top(),prefix_width,meta.height())
+        stamp=meta.adjusted(prefix_width,0,0,0)
+        title_ink=self.name_label.palette().color(QPalette.WindowText)
+        detail_ink=ink(c['file_description'])
+        decorations=tuple(decoration for control in (self.pin_button,self.remove_button)
+                          for decoration in control_decoration(control,viewport))
+        return FilePose(bounds(self),art_rect,badge,
+                        thumbnail(self.popup.shelf,self.path,40,self.devicePixelRatioF()),
+                        self.icon_label.cloud_status,self.popup.shelf.content.transfers.get(self.path),
+                        SharedText(bounds(self.name_label),self.name_label.full_text,self.name_label.font(),title_ink),
+                        SharedText(summary,prefix,detail.font(),detail_ink),
+                        SharedText(stamp,detail._timestamp,technical_font(detail.font()),detail_ink),
+                        ink(self._fill_role(chosen,c)),ink(c['selected_border' if chosen else 'border']),c['card_radius'],
+                        self.selection_check.selection_pose(QPointF(self.selection_check.mapTo(viewport,QPoint()))),
+                        decorations)
 
     def enterEvent(self, event):
         self.remove_button.show()
@@ -286,6 +414,8 @@ class ContentsPopup(QFrame):
         self._item_widgets={}
         self._content_dirty=False
         self._virtual_rows=False;self._virtual_ready=False;self._visible_queue=[]
+        self._positioned_rows=False
+        self._pending_view_mode=None;self._view_writer=None
         self.retirement=WidgetRetirementQueue(self)
         self._build_timer=QTimer(self);self._build_timer.setSingleShot(True)
         self._build_timer.timeout.connect(self._append_batch)
@@ -300,6 +430,13 @@ class ContentsPopup(QFrame):
         self.sidebar._selection_animation.setDuration(110)
         from ui_transitions import PreviewWidthTransition
         self.preview_width_motion=PreviewWidthTransition(self.preview,lambda:getattr(self.shelf.manager,'motion',True))
+        from display_frames import DisplayAnimation
+        from ui_transitions import exit_curve
+        self._grid_shift=DisplayAnimation(self);self._grid_shift.setDuration(185)
+        self._grid_shift.setEasingCurve(exit_curve())
+        self._grid_shift.valueChanged.connect(self._position_live_rows)
+        self._grid_shift.finished.connect(self._finish_grid_shift)
+        self._grid_origins={};self._grid_fraction=1.
         sync=getattr(self.shelf.manager,'sync',None)
         if sync is not None and hasattr(sync,'metadata_changed'):
             sync.metadata_changed.connect(self._upload_metadata_changed)
@@ -310,8 +447,11 @@ class ContentsPopup(QFrame):
         self.empty_entrance.settled.connect(self._resume_deferred_work)
         self.sidebar._selection_animation.finished.connect(self._resume_deferred_work)
         self.type_body._selection_animation.settled.connect(self._resume_deferred_work)
+        self.type_body._right_edge.settled.connect(self._resume_deferred_work)
         self._responsive_timer=QTimer(self);self._responsive_timer.setSingleShot(True)
         self._responsive_timer.timeout.connect(self._apply_responsive_layout)
+        self._sidebar_collapse=_SidebarCollapse(self)
+        for row in self.scope_buttons.values():row.installEventFilter(self)
         self.scroll.viewport().installEventFilter(self)
         self.rebuild();self.update_transfer_status()
         self.drop_router=OverviewDropRouter(self)
@@ -320,10 +460,16 @@ class ContentsPopup(QFrame):
         self.transfer_entry.active_changed.connect(self.empty_drop.set_transfer_choice_active)
 
     def eventFilter(self,watched,event):
-        if watched is self.scroll.viewport() and event.type()==QEvent.Resize and self._virtual_rows and self._virtual_ready:
-            QTimer.singleShot(0,self,self._queue_visible_rows)
+        if event.type()==QEvent.Resize and watched in self.scope_buttons.values():
+            self._position_nav_counts()
+        if watched is self.scroll.viewport() and event.type()==QEvent.Resize and self._virtual_ready:
+            if self._positioned_rows and event.size().width()!=event.oldSize().width():
+                self._resize_positioned_rows()
+            if self._virtual_rows:self._queue_visible_rows()
         if (watched is self.scroll.viewport() and event.type()==QEvent.Resize
                 and event.size().width()!=event.oldSize().width()):
+            sidebar=getattr(self,'_sidebar_collapse',None)
+            if sidebar is not None and sidebar.width._timer.isActive():return False
             transition=getattr(self,'preview_width_motion',None)
             if transition is not None and transition.active:
                 # The middle layout itself moves the search and controls.
@@ -369,14 +515,80 @@ class ContentsPopup(QFrame):
     def _grid_column_count(self):
         width=self._grid_available_width()
         available=max(GRID_CARD_MIN_WIDTH_PX,width)
-        return max(1,min(4,(available+8)//(GRID_COLUMN_WIDTH_PX+8)))
+        return max(1,min(3,(available+8)//(GRID_COLUMN_WIDTH_PX+8)))
 
     def _grid_card_width(self):
         width=self._grid_available_width()
         columns=self._grid_column_count()
         return max(1,(width-8*(columns-1))//columns)
 
-    def _apply_responsive_layout(self):
+    @property
+    def view_mode(self):
+        return self._pending_view_mode or self.shelf.manager.settings.view_mode
+
+    def _reserve_rows_height(self):
+        grid=self.view_mode=='icons'
+        columns=self._grid_columns if grid else 1
+        rows=(len(self._build_refs)+columns-1)//columns
+        height,gap=(GRID_CARD_HEIGHT_PX,8) if grid else (FILE_ROW_HEIGHT_PX,6)
+        margins=self.rows_layout.contentsMargins()
+        total=margins.top()+margins.bottom()+rows*height+max(0,rows-1)*gap
+        self.rows_body.setMinimumHeight(max(getattr(self,'_rows_minimum',0),total))
+
+    def _place_file(self,index,widget):
+        grid=isinstance(widget,IconItem)
+        columns=self._grid_columns if grid else 1
+        row,column=divmod(index,columns)
+        margins=self.rows_layout.contentsMargins()
+        x=margins.left()+column*(self._grid_cell_px+8)
+        y=margins.top()+row*(GRID_CARD_HEIGHT_PX+8 if grid else FILE_ROW_HEIGHT_PX+6)
+        origin=self._grid_origins.get(widget.path)
+        if origin is not None:
+            fraction=self._grid_fraction
+            x=round(origin.x()+(x-origin.x())*fraction)
+            y=round(origin.y()+(y-origin.y())*fraction)
+        if widget.width()!=self._grid_cell_px:widget.setFixedWidth(self._grid_cell_px)
+        if x!=widget.x() or y!=widget.y():widget.move(x,y)
+
+    def _position_live_rows(self,fraction):
+        self._grid_fraction=float(fraction)
+        for ref,widget in self._item_widgets.items():
+            self._place_file(self._virtual_index[ref],widget)
+
+    def _finish_grid_shift(self):
+        self._grid_shift.stop()
+        self._grid_origins.clear();self._grid_fraction=1.
+        if self._virtual_ready and self._positioned_rows:self._position_live_rows(1.)
+
+    def _resize_positioned_rows(self):
+        grid=self.view_mode=='icons'
+        columns=self._grid_column_count() if grid else 1
+        width=self._grid_card_width() if grid else self._grid_available_width()
+        if (self._grid_columns,self._grid_cell_px)==(columns,width):return
+        changed_columns=columns!=self._grid_columns
+        from ui_transitions import motion_allowed
+        animate=(changed_columns and self.isVisible() and self.shelf.manager.motion and motion_allowed()
+                 and not self.shelf.content_transition_active())
+        if animate:
+            self._grid_origins={ref:widget.pos() for ref,widget in self._item_widgets.items()}
+            self._grid_shift.stop();self._grid_fraction=0.
+        self._grid_columns=columns;self._grid_cell_px=width
+        if changed_columns:self._reserve_rows_height()
+        self._position_live_rows(self._grid_fraction)
+        if animate and self._grid_origins:
+            self._grid_shift.setStartValue(0.);self._grid_shift.setEndValue(1.);self._grid_shift.start()
+
+    def prepare_open_layout(self):
+        """Commit hidden-window breakpoints before taking the first snapshot."""
+        self._responsive_timer.stop()
+        self.layout().activate()
+        self._apply_responsive_layout(animate_items=False)
+        self.layout().activate()
+        self.middle_layout.activate()
+        self._apply_responsive_layout(animate_items=False)
+        self._responsive_timer.stop()
+
+    def _apply_responsive_layout(self, *, animate_items=True):
         narrow=self.width()<780
         previous=self._narrow_layout;self._narrow_layout=narrow
         condensed=self.width()<980
@@ -386,12 +598,13 @@ class ContentsPopup(QFrame):
         self.category_segments.hide();self.category_picker.setVisible(narrow);self.bulk_more.setVisible(not toolbar_full)
         self.select_all_button.show()
         self.sidebar.setVisible(not narrow)
-        self.sidebar.setFixedWidth(176 if condensed else 210)
+        if hasattr(self,'_sidebar_collapse'):self._sidebar_collapse.update_size(176 if condensed else 210,not narrow)
+        else:self.sidebar.setFixedWidth(176 if condensed else 210)
         self.header_brand.setFixedWidth(48 if self.width()<480 else 176 if condensed else 210)
         self.title.setVisible(self.width()>=480)
         self.count_label.setVisible(not condensed)
         self.header_status.setFixedWidth(238 if narrow else 280 if condensed else 340)
-        self.selection_navigation.setVisible(narrow);self.selection_bar.setFixedHeight(76 if narrow else 40)
+        self.selection_navigation.setVisible(narrow);self.selection_bar.setFixedHeight(92 if narrow else 56)
         self.search_edit.show();self.view_segment.show();self.sort_segment.setVisible(toolbar_width>=430)
         self.zip_all_button.setVisible(toolbar_full)
         self._position_nav_counts()
@@ -408,11 +621,9 @@ class ContentsPopup(QFrame):
         known=getattr(self,'_body_had_refs',None)
         self._sync_body_visibility(None if known is None else (True,) if known else ())
         if toolbar_changed or previous!=narrow:self.update_selection_actions()
-        columns=self._grid_column_count()
-        grid_changed=(self.shelf.manager.settings.view_mode=='icons' and bool(self._body_had_refs)
-                      and (getattr(self,'_grid_columns',None)!=columns or getattr(self,'_grid_cell_px',None)!=self._grid_card_width()))
-        if (previous!=narrow or grid_changed) and hasattr(self,'_render_signature'):
-            self._render_signature=None;self.rebuild()
+        if previous!=narrow and hasattr(self,'_render_signature'):
+            self._render_signature=None;self.rebuild(animate_items=animate_items)
+        elif self._positioned_rows and self._virtual_ready:self._resize_positioned_rows()
 
     def _sync_body_visibility(self,refs=None):
         has_refs=bool(self.visible_refs() if refs is None else refs)
@@ -440,8 +651,16 @@ class ContentsPopup(QFrame):
         for key,badge in self.nav_counts.items():
             control=self.scope_buttons[key]
             width=max(20,min(60,badge.fontMetrics().horizontalAdvance(badge.text())+12))
-            badge.setFixedSize(width,20);badge.setAlignment(Qt.AlignCenter)
-            badge.move(max(0,control.width()-width-12),(control.height()-20)//2)
+            left=control.width()-width-12
+            label_end=12+control.iconSize().width()+8+control.fontMetrics().horizontalAdvance(control.text())
+            visible=(self._sidebar_collapse.open and self.sidebar.width()>=124 and left>=label_end+4
+                     and getattr(control,'_sidebar_label_alpha',1.)>=.85)
+            if not visible:
+                if not badge.isHidden():badge.hide()
+                continue
+            if badge.width()!=width:badge.setFixedSize(width,20)
+            if badge.x()!=left:badge.move(left,(control.height()-20)//2)
+            if badge.isHidden():badge.show()
 
     def toggle_narrow_preview(self):
         if not self.visible_refs():return
@@ -474,6 +693,7 @@ class ContentsPopup(QFrame):
 
     def open_category_menu(self):
         menu=AnimatedMenu(self);style_menu(menu)
+        menu._dropdown_anchor=self.category_picker
         for key,label in self.SCOPES:
             action=menu.addAction(label,lambda key=key:self.set_scope(key))
             action.setCheckable(True);action.setChecked(key==self.scope)
@@ -488,6 +708,7 @@ class ContentsPopup(QFrame):
 
     def open_bulk_menu(self):
         menu=AnimatedMenu(self);style_menu(menu)
+        menu._dropdown_anchor=self.bulk_more
         if not self.sort_segment.isVisible():
             menu.addAction('按时间排序',lambda:self.cycle_sort('time'))
             menu.addAction('按大小排序',lambda:self.cycle_sort('size'))
@@ -520,6 +741,8 @@ class ContentsPopup(QFrame):
         for ref in tuple(self.chosen_refs()):self.shelf.remove_path('permanent',ref)
 
     def visible_refs(self):
+        active=getattr(self,'_render_refs',None)
+        if active is not None:return active
         transfers=self.shelf.content.transfers
         query=self.search_edit.text().strip().casefold() if hasattr(self,'search_edit') else ''
         snapshot=getattr(self,'_category_snapshot',None)
@@ -569,7 +792,8 @@ class ContentsPopup(QFrame):
         except OSError:return max(0,int(content.metadata.get(ref,{}).get('size') or 0))
 
     def reset_sort(self):
-        self.sort_key=None;self.sort_direction=0;self.rebuild();self.update_selection_actions();self.shelf.touch()
+        self.sort_key=None;self.sort_direction=0
+        self._rebuild_sorted()
 
     def cycle_sort(self,key):
         if key not in ('time','size'):return
@@ -578,37 +802,22 @@ class ContentsPopup(QFrame):
         if self.sort_key=='size' and hasattr(self.shelf,'file_metadata'):
             for ref in self.shelf.files['permanent']:
                 if not self.shelf.content.is_text(ref) and not self.shelf.content.is_pending(ref):self.shelf.file_metadata.refresh(ref)
-        self.rebuild();self.update_selection_actions();self.shelf.touch()
+        self._rebuild_sorted()
+
+    def _rebuild_sorted(self):
+        self._sort_change=True
+        try:self.rebuild()
+        finally:self._sort_change=False
+        self.update_selection_actions()
+        self.shelf.touch()
 
     def update_transfer_status(self):
         self.shelf.transfer_rates.observe(self.shelf.content.transfers)
-        states=list(self.shelf.content.transfers.values())
-        count=len(states)
+        count=len(self.shelf.content.transfers)
         self.transfer_badge.setText('99+' if count>99 else str(count))
         self._position_nav_counts()
-        self.transfer_badge.show()
         self.category_buttons['uploading'].setAccessibleName(f'传输中的项目，共 {count} 项')
-        self.transfer_summary.setVisible(bool(count) and self.category=='uploading')
         self._refresh_transfer_strip()
-        if count:
-            received=sum(v.get('received',0) for v in states);total=sum(v.get('total',0) for v in states)
-            copying=sum(v.get('phase')=='copying' for v in states)
-            downloading=sum(v.get('phase')=='downloading' for v in states)
-            verifying=sum(v.get('phase')=='verifying' for v in states)
-            retrying=sum(v.get('phase')=='retrying' for v in states)
-            validating=sum(v.get('phase')=='validating' for v in states)
-            uploading=count-copying-downloading-verifying-retrying-validating
-            self.transfer_count.setText(' · '.join(f'{label} {amount} 项' for label,amount in
-                (('正在复制',copying),('正在上传',uploading),('等待确认',verifying),
-                 ('正在下载',downloading),('校验中',validating),('等待重试',retrying)) if amount))
-            all_known=all(transfer_fraction(state) is not None for state in states)
-            self.transfer_bar.setRange(0,1000 if all_known else 0)
-            if all_known:self.transfer_bar.setValue(round(1000*min(1,received/total)))
-            overall_state=dict(received=received,total=total if all_known else 0,phase='uploading')
-            fraction=transfer_fraction(overall_state)
-            progress=f'{round(fraction*100)}% · ' if fraction is not None else ''
-            self.transfer_eta.setText(progress+self.shelf.transfer_rates.remaining_text('__aggregate__',overall_state))
-        else:self.transfer_count.clear();self.transfer_eta.clear()
         self.preview.update_transfer_status()
         if tuple(self.visible_refs()) != tuple(getattr(self,'_build_refs',())):self.rebuild()
 
@@ -697,10 +906,7 @@ class ContentsPopup(QFrame):
             for name,button in self.scope_buttons.items():button.setChecked(name==scope)
             for name,button in self.type_buttons.items():button.setChecked(name==kind)
             self.category_picker.setText(dict(self.TYPES)[kind] if kind!='all' else dict(self.SCOPES)[scope])
-            self.transfer_summary.setVisible(bool(self.shelf.content.transfers) and scope=='uploading')
             self.transfer_strip.setVisible(bool(self.shelf.content.transfers))
-            self.selected.intersection_update(self.visible_refs())
-            if self.primary_selection not in self.selected: self.primary_selection=None
             # One paint for the whole swap: rebuilding row by row with updates
             # enabled is what made large categories feel like a stall.
             self.setUpdatesEnabled(False)
@@ -715,7 +921,7 @@ class ContentsPopup(QFrame):
         """Give panel and navigation motion an uninterrupted frame budget."""
         from PySide6.QtCore import QAbstractAnimation
         return (self.preview_width_motion.active or self.empty_entrance.active
-                or self.type_body._selection_animation._timer.isActive()
+                or self.type_body._selection_animation._timer.isActive() or self.type_body._right_edge._timer.isActive()
                 or self.sidebar._selection_animation.state()==QAbstractAnimation.Running)
 
     def _blocking_file_load_motion(self):
@@ -747,11 +953,24 @@ class ContentsPopup(QFrame):
             elif item.layout(): self._clear_layout(item.layout()); item.layout().deleteLater()
 
     def rebuild(self, *, animate_items=True):
+        if getattr(self,'_render_refs',None) is not None:return
+        if getattr(self,'_category_snapshot',None) is None:
+            all_refs=self.shelf.display_refs()
+            self._category_snapshot=(all_refs,None)
+            temporary=True
+        else:temporary=False
+        try:
+            self._render_refs=self.visible_refs()
+            self._rebuild_files(self._render_refs,animate_items)
+        finally:
+            self._render_refs=None
+            if temporary:self._category_snapshot=None
+
+    def _rebuild_files(self,refs,animate_items):
         animate_items=animate_items and not self.shelf.content_transition_active()
-        refs=self.visible_refs()
         previous_signature=getattr(self,'_render_signature',None)
         content=self.shelf.content
-        signature=(tuple(refs),(self.scope,self.type_filter),self.shelf.manager.settings.view_mode,
+        signature=(tuple(refs),(self.scope,self.type_filter),self.view_mode,
                    self.shelf.manager.settings.theme,
                    tuple((ref,repr(content.metadata.get(ref,{})),
                           repr(content.pending.get(ref,{})),content.texts.get(ref),content.title(ref),self.is_pinned(ref)) for ref in refs))
@@ -770,15 +989,19 @@ class ContentsPopup(QFrame):
         category_counts=Counter(categories[ref] for ref in scope_refs)
         position=self.scroll.verticalScrollBar().value()
         old_widgets=self._item_widgets
-        row_type=IconItem if self.shelf.manager.settings.view_mode=='icons' else FileRow
+        row_type=IconItem if self.view_mode=='icons' else FileRow
         same_layout=bool(previous_signature and previous_signature[:4]==signature[:4]
                          and all(isinstance(w,row_type) for w in old_widgets.values()))
         previous_metadata={row[0]:row[1:] for row in previous_signature[4]} if previous_signature else {}
         changed={row[0] for row in signature[4] if previous_metadata.get(row[0])!=row[1:]}
         # Metadata/progress cannot retire the live tree or disturb a focused row.
         if not same_layout:
+            if (getattr(self,'_sort_change',False) and animate_items and previous_signature
+                    and previous_signature[0]!=signature[0] and previous_signature[1:4]==signature[1:4]):
+                if self._capture_file_motion('sort'):self._file_entry_requested=True
             self._build_timer.stop()
             self._virtual_ready=False
+            self._finish_grid_shift()
             self._build_epoch=getattr(self,'_build_epoch',0)+1
             self._rows_minimum=getattr(self,'_rows_minimum',self.rows_body.minimumHeight())
             self.rows_body.setMinimumHeight(max(self._rows_minimum,self.rows_body.height()))
@@ -788,13 +1011,14 @@ class ContentsPopup(QFrame):
                 self.item_transitions.duration=.17
                 self.item_transitions.settled.connect(self._resume_deferred_work)
             positions=self.item_transitions.capture(old_widgets)
-            removed={ref:w for ref,w in old_widgets.items() if ref not in refs}
+            wanted=set(refs)
+            removed={ref:w for ref,w in old_widgets.items() if ref not in wanted}
             animate=bool(animate_items and previous_signature and self.isVisible() and self.shelf.manager.motion
                          and previous_signature[1:4]==signature[1:4])
             present=set(all_refs)
             self.item_transitions.remove(removed.values(),enabled=animate and all(ref in present for ref in removed))
             self._detach_rows_layout(self.rows_layout)
-            self._item_widgets={ref:w for ref,w in old_widgets.items() if ref in refs and isinstance(w,row_type)}
+            self._item_widgets={ref:w for ref,w in old_widgets.items() if ref in wanted and isinstance(w,row_type)}
             for ref,w in old_widgets.items():
                 if self._item_widgets.get(ref) is not w:self.retirement.retire(w)
             self._layout_animation=(positions,animate)
@@ -812,13 +1036,14 @@ class ContentsPopup(QFrame):
             else:count=sum(self.is_pinned(ref) for ref in all_refs)
             button.setText(label)
             self.nav_counts[key].setText(str(count))
-            self.nav_counts[key].show()
             selected=key==self.scope
-            background='transparent' if selected else palette()['control'] if key=='uploading' and count else 'transparent'
+            from native_ui_common import colors as theme_colors
+            background='transparent' if selected else palette()['rail_item'] if key=='uploading' and count else 'transparent'
             self.nav_counts[key].set_background(background)
-            css(self.nav_counts[key],"background:transparent;border:0;font:10px 'FlickDock UI';color:"+(palette()['on_action'] if selected else palette()['link'] if key=='uploading' else palette()['muted'])+';')
+            css(self.nav_counts[key],*[f"background:transparent;border:0;font:500 10px 'FlickDock UI';color:{theme_colors(t)['rail_active_ink'] if selected else theme_colors(t)['brand_accent'] if (key=='uploading' and count) else theme_colors(t)['rail_item_ink']};" for t in ('dark','light')])
             glyph=button._reference_icon[0]
-            button._reference_icon=(glyph,'on_action' if selected else 'secondary');button.setIcon(icon(glyph,palette()['on_action'] if selected else palette()['secondary']))
+            icon_role='rail_active_ink' if selected else 'rail_item_ink'
+            button._reference_icon=(glyph,icon_role);button.setIcon(icon(glyph,palette()[icon_role]))
             button.setChecked(key==self.scope)
         for key,title in self.TYPES:
             control=self.type_buttons[key];count=len(scope_refs) if key=='all' else category_counts[key]
@@ -826,35 +1051,20 @@ class ContentsPopup(QFrame):
             control.setChecked(key==self.type_filter);control.setAccessibleName(f'{title}，{count} 项')
         self.clear_button.setEnabled(self.shelf.has_files())
         self._position_nav_counts()
+        virtual=len(refs)>=VIRTUAL_FILE_THRESHOLD
+        positioned=virtual or row_type is IconItem
         if same_layout:
             for ref in changed:
                 if ref in self._item_widgets:self._item_widgets[ref].refresh_content()
-        elif self.shelf.manager.settings.view_mode=='icons':
-            grid=QGridLayout(); grid.setAlignment(Qt.AlignTop|Qt.AlignLeft); grid.setContentsMargins(0,0,0,0); grid.setHorizontalSpacing(0); grid.setVerticalSpacing(8)
-            self.rows_layout.addLayout(grid)
-            columns=self._grid_column_count()
-            self._grid_columns=columns
-            cell=self._grid_cell_px=self._grid_card_width()
-            # QGridLayout collapses normal spacing next to QSpacerItems. Give
-            # gaps their own columns so incomplete/virtual rows never shift.
-            for column in range(columns):
-                grid.setColumnMinimumWidth(column*2,cell)
-                if column<columns-1:grid.setColumnMinimumWidth(column*2+1,8)
-            # Reserve the same fixed-width cells for incomplete rows.
-            for index in range(len(refs),((len(refs)+columns-1)//columns)*columns):
-                grid.addItem(QSpacerItem(cell,GRID_CARD_HEIGHT_PX,QSizePolicy.Fixed,QSizePolicy.Fixed),index//columns,(index%columns)*2)
+        elif positioned:
+            columns=self._grid_columns=self._grid_column_count() if row_type is IconItem else 1
+            self._grid_cell_px=self._grid_card_width() if row_type is IconItem else self._grid_available_width()
             def append(index,ref):
-                slot=self._build_slots.pop(index,None)
-                if slot is not None:grid.removeItem(slot)
-                widget=self._item_widget(ref,IconItem,changed)
-                widget.setFixedWidth(cell)
-                grid.addWidget(widget,index//columns,(index%columns)*2);widget.show()
+                widget=self._item_widget(ref,row_type,changed)
+                self._place_file(index,widget);widget.show()
             def remove(index,ref):
                 widget=self._item_widgets.pop(ref,None)
                 if widget is None:return
-                grid.removeWidget(widget)
-                slot=QSpacerItem(cell,GRID_CARD_HEIGHT_PX,QSizePolicy.Fixed,QSizePolicy.Fixed)
-                grid.addItem(slot,index//columns,(index%columns)*2);self._build_slots[index]=slot
                 self._build_installed.discard(ref);self.retirement.retire(widget)
         else:
             def append(index,ref):
@@ -872,36 +1082,37 @@ class ContentsPopup(QFrame):
         if not same_layout:
             self.rows_layout.addStretch()
             self._build_refs=refs;self._build_cursor=0;self._build_append=append;self._build_remove=remove
-            self._virtual_rows=len(refs)>=VIRTUAL_FILE_THRESHOLD
+            self._virtual_rows=virtual;self._positioned_rows=positioned
             self._virtual_index={ref:index for index,ref in enumerate(refs)}
             self._build_position=position
             self._build_installed=set()
             self._build_slots={}
-            # Move existing widgets in one layout transaction. Only new widget
-            # construction is batched; the viewport never sees a short list.
-            for index,ref in enumerate(refs):
-                if ref in self._item_widgets:
-                    append(index,ref);self._build_installed.add(ref)
-                elif row_type is IconItem:
-                    slot=QSpacerItem(cell,GRID_CARD_HEIGHT_PX,QSizePolicy.Fixed,QSizePolicy.Fixed)
-                    grid.addItem(slot,index//columns,(index%columns)*2);self._build_slots[index]=slot
-                else:
-                    slot=QSpacerItem(0,FILE_ROW_HEIGHT_PX,QSizePolicy.Minimum,QSizePolicy.Fixed)
-                    self.rows_layout.insertItem(index,slot);self._build_slots[index]=slot
+            # Positioned rows reserve the scrollbar range arithmetically.
+            # The only widgets we lay out are the ones actually materialized.
+            if positioned:
+                for ref in tuple(self._item_widgets):
+                    append(self._virtual_index[ref],ref);self._build_installed.add(ref)
+            else:
+                for index,ref in enumerate(refs):
+                    if ref in self._item_widgets:
+                        append(index,ref);self._build_installed.add(ref)
+                    else:
+                        slot=QSpacerItem(0,FILE_ROW_HEIGHT_PX,QSizePolicy.Minimum,QSizePolicy.Fixed)
+                        self.rows_layout.insertItem(index,slot);self._build_slots[index]=slot
             # A scroll widget cannot infer an accurate minimum from the
             # temporary spacers until all children exist. Reserve its final
             # height now; otherwise Qt overlaps hundreds of rows inside the
             # viewport and the compositor paints every thumbnail per slice.
-            rows=(len(refs)+columns-1)//columns if row_type is IconItem else len(refs)
-            margins=self.rows_layout.contentsMargins()
-            height=margins.top()+margins.bottom()+rows*(GRID_CARD_HEIGHT_PX if row_type is IconItem else FILE_ROW_HEIGHT_PX)+max(0,rows-1)*(8 if row_type is IconItem else 6)
-            self.rows_body.setMinimumHeight(max(getattr(self,'_rows_minimum',0),height))
+            self._reserve_rows_height()
             self.rows_layout.activate()
             positions,animate=self._layout_animation;self._layout_animation=None
             if self._file_entry_pending:
                 self.item_transitions.layout_pending=False;self.item_transitions.finish()
-                self._file_entry_pending=self.item_transitions.prepare_entrance(enabled=True)
+                self._file_entry_pending=self.item_transitions.prepare_entrance(
+                    enabled=True,mode_source=getattr(self,'_mode_source',None),
+                    mode=getattr(self,'_file_motion_kind','view'))
             else:self.item_transitions.reflow(self._item_widgets,positions,enabled=animate)
+            self._mode_source=None
             self._virtual_ready=True
             if self._virtual_rows:self._queue_visible_rows(schedule=False)
         # Four initial cards are enough to establish the endpoint. Remaining
@@ -920,7 +1131,7 @@ class ContentsPopup(QFrame):
                 if current in changed:
                     self.preview.name.setText(content.title(current))
         else:
-            self.empty_title.setText('搁架是空的' if not self.shelf.has_files() else '没有这类内容')
+            self.empty_drop.set_idle_title('搁架是空的' if not self.shelf.has_files() else '没有这类内容')
             self.empty_hint.setVisible(not self.shelf.has_files())
             self.empty_symbol.setPixmap(glyph_pixmap('shelf',42,ui_theme.color('secondary'),dpr=self.devicePixelRatioF()))
         self.restore_selected_preview()
@@ -950,8 +1161,9 @@ class ContentsPopup(QFrame):
             self._render_signature=(tuple(mapping.get(ref,ref) for ref in refs),category,mode,theme,
                 tuple((mapping.get(row[0],row[0]),*row[1:]) for row in metadata))
         self._build_refs=[mapping.get(ref,ref) for ref in self._build_refs]
+        self._build_installed={mapping.get(ref,ref) for ref in self._build_installed}
+        self._virtual_index={ref:index for index,ref in enumerate(self._build_refs)}
         if self._virtual_rows:
-            self._virtual_index={ref:index for index,ref in enumerate(self._build_refs)}
             self._queue_visible_rows()
 
     def _item_widget(self,ref,kind,changed):
@@ -986,16 +1198,16 @@ class ContentsPopup(QFrame):
             if count>=(4 if initial else 3 if building_visible else 6) or time.perf_counter()-start>=(.003 if initial or building_visible else .008): break
         if getattr(self,'_file_entry_pending',False):
             self.rows_layout.activate()
-            columns=getattr(self,'_grid_columns',1) if self.shelf.manager.settings.view_mode=='icons' else 1
-            row_height=(GRID_CARD_HEIGHT_PX+8 if self.shelf.manager.settings.view_mode=='icons' else FILE_ROW_HEIGHT_PX+6)
+            columns=getattr(self,'_grid_columns',1) if self.view_mode=='icons' else 1
+            row_height=(GRID_CARD_HEIGHT_PX+8 if self.view_mode=='icons' else FILE_ROW_HEIGHT_PX+6)
             visible=min(len(self._build_refs),(math.ceil(max(1,self.scroll.viewport().height())/row_height)+1)*columns)
             if self._build_cursor>=visible:
-                self.item_transitions.enter();self._file_entry_pending=False
+                self.item_transitions.enter(self._item_widgets);self._file_entry_pending=False
         if self._build_cursor<len(self._build_refs):
             if not self.shelf.content_transition_active() and not self._blocking_file_load_motion() and (getattr(self,'_file_entry_pending',False) or not self._interactive_motion_active()):
                 self._build_timer.start(1)
         else:
-            self.rows_body.setMinimumHeight(getattr(self,'_rows_minimum',0))
+            if not self._positioned_rows:self.rows_body.setMinimumHeight(getattr(self,'_rows_minimum',0))
             self.rows_layout.activate()
             # The user may have scrolled while new widgets were constructed.
             # The range was held stable; do not restore an obsolete position.
@@ -1006,8 +1218,8 @@ class ContentsPopup(QFrame):
                 self.item_transitions.reflow(self._item_widgets,positions,enabled=animate)
 
     def _visible_file_indices(self):
-        columns=getattr(self,'_grid_columns',1) if self.shelf.manager.settings.view_mode=='icons' else 1
-        row_height=(GRID_CARD_HEIGHT_PX+8 if self.shelf.manager.settings.view_mode=='icons' else FILE_ROW_HEIGHT_PX+6)
+        columns=getattr(self,'_grid_columns',1) if self.view_mode=='icons' else 1
+        row_height=(GRID_CARD_HEIGHT_PX+8 if self.view_mode=='icons' else FILE_ROW_HEIGHT_PX+6)
         top=max(0,self.scroll.verticalScrollBar().value()//row_height-1)
         rows=math.ceil(max(1,self.scroll.viewport().height())/row_height)+3
         end=min(len(self._build_refs),(top+rows)*columns)
@@ -1036,7 +1248,7 @@ class ContentsPopup(QFrame):
         if getattr(self,'_file_entry_pending',False):
             self.rows_layout.activate()
             if all(self._build_refs[i] in self._build_installed for i in range(start,end)):
-                self.item_transitions.enter();self._file_entry_pending=False
+                self.item_transitions.enter(self._item_widgets);self._file_entry_pending=False
         self._build_cursor=self._visible_queue[0] if self._visible_queue else len(self._build_refs)
         if self._visible_queue:
             if not self._blocking_file_load_motion() and (self._file_entry_pending or not self._interactive_motion_active()):self._build_timer.start(1)
@@ -1046,9 +1258,12 @@ class ContentsPopup(QFrame):
         limit=max(40,visible*3)
         if len(self._item_widgets)>limit:
             keep_start=max(0,start-visible);keep_end=min(len(self._build_refs),end+visible)
-            candidates=sorted(((abs(index-(start+end)//2),index,ref) for ref,index in self._virtual_index.items()
-                if (index<keep_start or index>=keep_end) and ref in self._item_widgets
-                and not self._item_widgets[ref].hasFocus()),reverse=True)
+            candidates=[]
+            for ref,widget in self._item_widgets.items():
+                index=self._virtual_index[ref]
+                if not keep_start<=index<keep_end and not widget.hasFocus():
+                    candidates.append((abs(index-(start+end)//2),index,ref))
+            candidates.sort(reverse=True)
             for _,index,ref in candidates[:min(3,len(self._item_widgets)-limit)]:self._build_remove(index,ref)
             if len(self._item_widgets)>limit and candidates:self._build_timer.start(8)
 
@@ -1066,8 +1281,8 @@ class ContentsPopup(QFrame):
         for section in (self,self.middle,self.scroll):
             layout=section.layout()
             if layout is not None:layout.activate()
-        columns=getattr(self,'_grid_columns',1) if self.shelf.manager.settings.view_mode=='icons' else 1
-        row_height=GRID_CARD_HEIGHT_PX+8 if columns>1 or self.shelf.manager.settings.view_mode=='icons' else FILE_ROW_HEIGHT_PX+6
+        columns=getattr(self,'_grid_columns',1) if self.view_mode=='icons' else 1
+        row_height=GRID_CARD_HEIGHT_PX+8 if self.view_mode=='icons' else FILE_ROW_HEIGHT_PX+6
         count=min(OVERVIEW_TRANSITION_MAX_ITEMS,(math.ceil(max(1,self.scroll.viewport().height())/row_height)+1)*columns,len(self._build_refs))
         self._build_timer.stop()
         for index in range(count):
@@ -1080,11 +1295,13 @@ class ContentsPopup(QFrame):
 
     def _finish_file_motion(self):
         self._file_entry_requested=self._file_entry_pending=False
+        self._finish_grid_shift()
         transitions=getattr(self,'item_transitions',None)
         if transitions is not None:transitions.finish()
 
     def hideEvent(self,event):
         self._build_timer.stop()
+        self._sidebar_collapse.finish_immediately()
         self.empty_entrance.finish()
         self._finish_file_motion()
         self.retirement.resume()
@@ -1117,15 +1334,37 @@ class ContentsPopup(QFrame):
         css(self.select_all_button,*[f"QPushButton{{background:transparent;border:0;padding:5px 7px;font:12px 'FlickDock UI';color:{colors(t)['red'] if deselect else colors(t)['secondary']};}}" for t in ('dark','light')])
 
     def change_view_mode(self,key):
-        if key not in ('list','icons'):return
-        if key!=self.shelf.manager.settings.view_mode:
-            self._file_entry_requested=True
-            if self.isVisible() and self.shelf.manager.motion:self.retirement.pause()
-        self.shelf.manager.settings.update(view_mode=key)
-        self.view_list.setChecked(key=='list')
-        self.view_grid.setChecked(key=='icons')
-        self.rebuild()
+        if key not in ('list','icons') or key==self.view_mode:return
+        self._file_entry_requested=True
+        self._capture_file_motion('view')
+        self._pending_view_mode=key
+        if self._view_writer is None:
+            self._view_writer=self.shelf.manager.settings.preference_writer()
+            self._view_writer.completed.connect(self._view_preferences_saved)
+        self._view_writer.request(view_mode=key)
+        self.sync_view_mode()
         QTimer.singleShot(0,self,self._resume_deferred_work)
+
+    def _capture_file_motion(self,kind):
+        from ui_transitions import motion_allowed
+        transitions=getattr(self,'item_transitions',None)
+        if (transitions is None or not self.isVisible() or not self.shelf.manager.motion
+                or self.shelf.content_transition_active() or not motion_allowed()):return False
+        self._mode_source=transitions.capture_view_mode(self._item_widgets)
+        self._file_motion_kind=kind
+        if self._mode_source:self.retirement.pause()
+        return bool(self._mode_source)
+
+    def _view_preferences_saved(self,keys,error):
+        if self._pending_view_mode is None or self._view_writer.busy:return
+        if 'view_mode' in keys and error:self._pin_error('视图设置未能保存：'+error)
+        self._pending_view_mode=None
+        self.sync_view_mode()
+
+    def sync_view_mode(self):
+        self.view_list.setChecked(self.view_mode=='list')
+        self.view_grid.setChecked(self.view_mode=='icons')
+        self.rebuild()
 
     def toggle_select_all_visible(self):
         refs=self.visible_refs()

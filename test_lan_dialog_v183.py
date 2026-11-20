@@ -45,6 +45,38 @@ class LanDialogTests(unittest.TestCase):
         self.dialog.close();self.dialog.deleteLater();APP.processEvents()
         self.profile.cleanup()
 
+    def test_pending_files_can_be_swiped_without_changing_the_send_queue(self):
+        paths=[]
+        for name in ('first.txt','second.txt','third.txt'):
+            path=self.root/name
+            path.write_text(name,encoding='utf-8')
+            paths.append(str(path))
+        panel=self.dialog.panel;panel.queue_paths(paths);APP.processEvents()
+        deck=panel.queue_deck
+        self.assertTrue(deck.isVisible())
+        self.assertFalse(panel.queue_scroll.isVisible())
+        self.assertEqual(deck.current,paths[0])
+        with patch('lan_panel.reduced_motion',return_value=False):
+            from PySide6.QtTest import QTest
+            from PySide6.QtCore import QPoint
+            start=deck._card().center().toPoint()
+            end=start-QPoint(125,0)
+            QTest.mousePress(deck,Qt.LeftButton,pos=start)
+            QTest.mouseMove(deck,end,delay=20)
+            QTest.mouseRelease(deck,Qt.LeftButton,pos=end)
+            self.assertEqual(deck.current,paths[1])
+            self.assertEqual(panel._queued_paths,paths)
+            self.assertIsNotNone(deck._flying)
+            from test_html_native_workspace import until
+            until(lambda:deck._flying is None)
+            self.assertEqual(deck._returning,paths[0])
+            self.assertLess(deck._reentry.values['amount'],1.)
+        deck.remove.click()
+        self.assertEqual(panel._queued_paths,[paths[0],paths[2]])
+        panel.queue_view.click()
+        self.assertTrue(panel.queue_scroll.isVisible())
+        self.assertFalse(deck.isVisible())
+
     def test_transfer_modes_only_offer_lan_and_remote(self):
         self.assertEqual(set(self.dialog.mode_buttons),{'lan','wan'})
         self.assertTrue(self.dialog.mode_buttons['lan'].isChecked())
@@ -124,6 +156,7 @@ class LanDialogTests(unittest.TestCase):
             enter=QDragEnterEvent(target.rect().center(),Qt.CopyAction,mime,Qt.LeftButton,Qt.NoModifier)
             APP.sendEvent(target,enter);self.assertTrue(enter.isAccepted())
             self.assertTrue(self.dialog.panel.drop_zone._active)
+            self.assertEqual(self.dialog.panel.drop_zone.title.text(),'松手添加')
             drop=QDropEvent(QPointF(12,12),Qt.CopyAction,mime,Qt.LeftButton,Qt.NoModifier)
             APP.sendEvent(target,drop);self.assertTrue(drop.isAccepted())
             self.assertEqual(self.dialog.panel._queued_paths.count(str(source)),1)

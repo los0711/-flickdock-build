@@ -15,7 +15,7 @@ from wan_transfer import WanTransferService
 
 
 class EntryTests(unittest.TestCase):
-    def test_transfer_dashes_stay_fixed_while_hover_colors_fade_and_then_stop(self):
+    def test_only_the_targeted_transfer_option_animates_and_stops(self):
         from transfer_entry import TransferDropSurface
         root=QWidget();root.resize(240,160);surface=TransferDropSurface(root);surface.resize(220,108)
         root.show();surface.show();flush()
@@ -24,7 +24,7 @@ class EntryTests(unittest.TestCase):
                 surface.set_target(None)
                 lan=surface.border_motions['lan'];wan=surface.border_motions['wan']
                 self.assertEqual(lan.animation.state(),lan.animation.Stopped)
-                surface.set_target('lan');self.assertEqual(lan.animation.state(),lan.animation.Running)
+                surface.set_target('lan',QPoint(60,24));self.assertEqual(lan.animation.state(),lan.animation.Running)
                 lan.animation.setCurrentTime(60);first=surface.grab().toImage()
                 lan.animation.setCurrentTime(lan.animation.duration());second=surface.grab().toImage()
                 from PySide6.QtCore import QRect
@@ -32,7 +32,7 @@ class EntryTests(unittest.TestCase):
                 self.assertEqual(first.copy(QRect(0,55,220,52)),second.copy(QRect(0,55,220,52)))
                 self.assertEqual(lan.animation.state(),lan.animation.Stopped)
                 QTest.qWait(40);self.assertEqual(second,surface.grab().toImage())
-                surface.set_target('wan')
+                surface.set_target('wan',QPoint(60,77))
                 for motion in (lan,wan):motion.animation.setCurrentTime(90)
                 self.assertTrue(0<lan.progress<1);self.assertTrue(0<wan.progress<1)
                 surface.set_target(None)
@@ -205,6 +205,29 @@ class DropFeedbackOwnershipTests(unittest.TestCase):
         APP.sendEvent(self.shelf,QDragMoveEvent(QPointF(point),Qt.CopyAction,mime,Qt.LeftButton,Qt.NoModifier))
         self.assertFalse(router.surface.isVisible());self.assertTrue(zone.icon.border_motion.active)
         self.assertFalse(self.events)
+
+    def test_populated_overview_tracks_a_file_without_covering_input_or_queuing_twice(self):
+        popup=self.overview()
+        area=popup.drop_router.file_area
+        viewport=popup.scroll.viewport()
+        source=self.base/'A new file.txt';source.write_text('test')
+        mime=QMimeData();mime.setUrls([QUrl.fromLocalFile(str(source))])
+        first=QPointF(24,28);second=QPointF(140,62)
+        def make(event_type,point):
+            return event_type(point,Qt.CopyAction,mime,Qt.LeftButton,Qt.NoModifier)
+        enter=make(QDragEnterEvent,first)
+        APP.sendEvent(viewport,enter)
+        self.assertTrue(enter.isAccepted())
+        self.assertTrue(area.isVisible())
+        self.assertTrue(area.testAttribute(Qt.WA_TransparentForMouseEvents))
+        move=make(QDragMoveEvent,second)
+        APP.sendEvent(viewport,move)
+        self.assertEqual(area.motion.pointer._targets,{'x':140.,'y':62.})
+        drop=make(QDropEvent,second)
+        APP.sendEvent(viewport,drop)
+        self.assertTrue(drop.isAccepted())
+        self.assertEqual(self.shelf.files['permanent'].count(str(source)),1)
+        until(lambda:area.isHidden())
 
     def test_overview_chooser_owns_feedback_until_drag_returns_to_the_shelf(self):
         self.shelf.files['permanent'].clear();self.shelf.refresh();popup=self.overview()

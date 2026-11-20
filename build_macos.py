@@ -186,6 +186,8 @@ def main(arguments=None):
     parser.add_argument('--use-current-python', action='store_true')
     parser.add_argument('--skip-public-update-check',action='store_true',
                         help='Build an unpublished test package without downloading an older public installer')
+    parser.add_argument('--desktop-checks',action='store_true',
+                        help='Run the desktop redesign regression set, with full native package checks')
     parser.add_argument('--icon-only', type=Path, help=argparse.SUPPRESS)
     options = parser.parse_args(arguments)
     if sys.platform != 'darwin':
@@ -247,7 +249,17 @@ def main(arguments=None):
     # Preserve every assertion, with a fresh Qt process for each suite.
     run([python,'-m','unittest','test_crash_diagnostics_v1838','-v'],env=env)
     run([python,'-m','unittest','test_display_frames','-v'],env=env)
-    run([python, '-m', 'unittest', 'test_accent_theme_v1838','test_live_settings_v1838','test_text_preview_v1838','test_translation','test_architecture','test_video_tls','test_startup_resources','test_sync_scheduler','test_cloud_events_v1825','test_cloud_only_v1825','test_window_zoom_v1824', 'test_surface_source_cache', 'test_surface_elements', 'test_mac_install', 'test_preview_continuity', 'test_overview_controls_v1823', 'test_video_matrix', 'test_receive_notice', 'test_copy_notice_v1824', 'test_virtual_clipboard', 'test_platform_startup', 'test_platform_native', 'test_mac_window_order_v1810', 'test_mac_updates',
+    if options.desktop_checks:
+        settings='test_live_settings_v1838.LiveSettingsTests.'
+        run([python,'-m','unittest','-v','test_architecture','test_dropdown_fan_v1839',
+             'test_glass_ui_v1839.OverviewMotionTests','test_mac_install',
+             'test_mac_window_order_v1810','test_mac_updates',
+             settings+'test_theme_button_slides_before_recoloring_and_rapid_reversal_keeps_latest',
+             settings+'test_theme_button_under_reduced_motion_recolors_immediately',
+             settings+'test_closing_settings_persists_the_selected_theme',
+             settings+'test_theme_change_has_no_snapshot_and_does_not_resize_window'],env=env)
+    else:
+        run([python, '-m', 'unittest', 'test_accent_theme_v1838','test_live_settings_v1838','test_text_preview_v1838','test_translation','test_architecture','test_video_tls','test_startup_resources','test_sync_scheduler','test_cloud_events_v1825','test_cloud_only_v1825','test_window_zoom_v1824', 'test_surface_source_cache', 'test_surface_elements', 'test_mac_install', 'test_preview_continuity', 'test_overview_controls_v1823', 'test_video_matrix', 'test_receive_notice', 'test_copy_notice_v1824', 'test_virtual_clipboard', 'test_platform_startup', 'test_platform_native', 'test_mac_window_order_v1810', 'test_mac_updates',
          'test_macos_native_entry', 'test_update_macos_controller', 'test_mac_build',
          'test_shelf_sync_v180', 'test_sync_review_v180', 'test_account_security_v180',
          'test_lan_transfer_v181', 'test_lan_dialog_v183', 'test_lan_account_v1825', 'test_shelf_transfers_v181',

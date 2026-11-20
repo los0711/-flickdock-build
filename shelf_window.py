@@ -69,7 +69,6 @@ from shelf_ui_common import CARD_W
 from shelf_ui_common import EXPANDED_H
 from shelf_ui_common import EXPANDED_W
 from shelf_ui_common import MODES
-from shelf_ui_common import OVERVIEW_SECTION_OFFSETS_PX
 from shelf_ui_common import SHAKE_DISMISS_SECONDS
 from shelf_ui_common import set_ui_style
 from shelf_ui_common import style_menu
@@ -98,12 +97,11 @@ class _ShelfSurface(RoundedSurfaceFrame):
     """The existing shelf host. MotionShadow paints its final outline."""
     def surface_style(self):
         c=ui_colors(ui_theme.current_theme())
-        return c['surface'],None,c['radius']
+        return c['window_backdrop'],c['glass_border'],c['radius']
 
     def surface_outline(self):
-        overview=self.parentWidget().expanded
-        if ui_theme.current_theme()=='dark':return QColor(255,255,255,38 if overview else 20)
-        return QColor(0,0,0,32 if overview else 23)
+        from native_ui_common import qss_color
+        return qss_color(ui_colors(ui_theme.current_theme())['glass_border'])
 
 
 class ShelfWindow(QWidget):
@@ -208,7 +206,7 @@ class ShelfWindow(QWidget):
         # shadow, confined to the reserved animation surface margins.
         self.surface_effect = MotionShadow(self.card, alpha=42,
             cache_while=lambda:self.expanded and self.presentation._timer.isActive() and not self.incoming_drop and not self.preview_playing)
-        self.surface_effect.setBlurRadius(13)
+        self.surface_effect.setBlurRadius(20)
         self.surface_effect.setOffset(0, 4)
         self.card.setGraphicsEffect(self.surface_effect)
         self.presentation = Spring(self, {"sx": 1, "sy": 1, "alpha": 1, "dx": 0, "dy": 0}, self._apply_presentation, motion=self.manager.motion)
@@ -458,10 +456,12 @@ class ShelfWindow(QWidget):
         source=getattr(self,'_morph_from_image',None)
         if source is None: source=snapshot.capture_current(self.card,controls)
         self._morph_from_image=None
+        reversing=self._morph_host_active and snapshot.active
         self._morph_host_active=True
         # A single compositor owns both the moving and resting surface. Align
         # the host rebase to its physical pixel phase and keep it at completion.
-        required=origin.united(target).adjusted(-16,-12,16,12)
+        required=(origin.united(target.adjusted(-16,-12,16,12)) if reversing else
+                  origin.united(target).adjusted(-16,-12,16,12))
         if sys.platform=='darwin':
             screen=QGuiApplication.screenAt(origin.center()) or QGuiApplication.primaryScreen()
             required=required.intersected(screen.availableGeometry())
@@ -483,11 +483,6 @@ class ShelfWindow(QWidget):
         # The transfer button is a sibling of the card. Its cached layer is
         # animated with the footer and the live button returns on settlement.
         self.lan_button.hide()
-        if self.expanded:
-            for name,offset in OVERVIEW_SECTION_OFFSETS_PX:
-                widget=getattr(self.popup,name)
-                if widget.isVisible():
-                    snapshot.target_sections.append((QRectF(widget.mapTo(self.card,QPoint()),widget.size()),QPoint(*offset)))
         self.surface_effect.begin_surface_morph(snapshot)
         self._apply_geometry(origin)
 
@@ -1223,27 +1218,27 @@ class ShelfWindow(QWidget):
             return False
         return is_content_mime(event.mimeData())
 
-    def _highlight_content_drop(self, active):
-        zone = self.zones["permanent"]
-        zone.drop_highlight = bool(active) and not zone._transfer_choice_active
-        zone._set_card_hover(active)
-        zone._apply_style()
+    def _highlight_content_drop(self,active,point=None,*,accepted=False):
+        if self.expanded:return
+        zone=self.zones["permanent"]
+        position=zone.mapFromGlobal(point) if point is not None else None
+        zone.set_incoming_drag(active,position,accepted=accepted)
 
-    def dragEnterEvent(self, event):
+    def dragEnterEvent(self,event,*,origin=None):
         if self.accepts_content_drop(event):
-            self.observe_edge_file_move(event,entering=True)
+            self.observe_edge_file_move(event,entering=True,origin=origin)
             self.active_mode = "permanent"
-            self._highlight_content_drop(True)
+            self._highlight_content_drop(True,(origin or self).mapToGlobal(event.position().toPoint()))
             self.touch()
             event.setDropAction(Qt.DropAction.CopyAction)
             event.accept()
         else:
             event.ignore()
 
-    def dragMoveEvent(self, event):
+    def dragMoveEvent(self,event,*,origin=None):
         if self.accepts_content_drop(event):
-            self.observe_edge_file_move(event)
-            self._highlight_content_drop(True)
+            self.observe_edge_file_move(event,origin=origin)
+            self._highlight_content_drop(True,(origin or self).mapToGlobal(event.position().toPoint()))
             self.touch()
             event.setDropAction(Qt.DropAction.CopyAction)
             event.accept()
@@ -1254,9 +1249,10 @@ class ShelfWindow(QWidget):
         self._highlight_content_drop(False)
         event.accept()
 
-    def dropEvent(self, event):
-        self._highlight_content_drop(False)
-        if self.accepts_content_drop(event) and self.receive_drop_event(event,"permanent"):
+    def dropEvent(self,event,*,origin=None):
+        accepted=self.accepts_content_drop(event) and self.receive_drop_event(event,"permanent",origin=origin)
+        self._highlight_content_drop(False,accepted=accepted)
+        if accepted:
             event.setDropAction(Qt.DropAction.CopyAction)
             event.accept()
         else:
@@ -1363,8 +1359,11 @@ class ShelfWindow(QWidget):
         elif self.geometry_morph.current != rect:
             self.geometry_morph.animate(rect)
         if not was_visible:
-            self.presentation.jump({"sx": .95 if self.manager.motion else 1, "sy": .91 if self.manager.motion else 1,
-                                    "alpha": 0, "dx": offset.x() if self.manager.motion else 0, "dy": offset.y() if self.manager.motion else 0})
+            from ui_transitions import SHELF_REVEAL_SCALE, motion_allowed
+            animate=self.manager.motion and motion_allowed()
+            sx,sy=SHELF_REVEAL_SCALE if animate else (1.,1.)
+            self.presentation.jump({"sx":sx,"sy":sy,"alpha":0,
+                                    "dx":offset.x() if animate else 0,"dy":offset.y() if animate else 0})
         # A visible surface may still be morphing from a different width.
         # Keep controls on its current bounds until each geometry frame lands.
         if self._morph_host_active:
@@ -1568,22 +1567,23 @@ class ShelfWindow(QWidget):
         if self.popup is None:
             self.popup = ContentsPopup(self)
         self.refresh_account_identity()
-        self.popup.reset_for_open()
         self.expanded = True
         self.zones["permanent"].hide()
         self.status_label.hide()
         self.expand_button.set_glyph("collapse")
-        current=self.visual_geometry()
-        default_target=self._expansion_rect(current)
+        anchor=self.geometry_morph._to if self.geometry_morph.active else self.visual_geometry()
+        default_target=self._expansion_rect(anchor)
         destination=default_target if target is None else QRect(target)
         width,height=destination.width()-28,destination.height()-27
         self._expanded_size = (width, height)
         self.popup.setGeometry(0, 0, width, height)
+        self.popup.prepare_open_layout()
+        self.popup.reset_for_open()
         self.popup.show()
         presentation={"sx": 1, "sy": 1, "alpha": 1, "dx": 0, "dy": 0}
         if animate:
-            from ui_transitions import OVERVIEW_OPEN_DURATION_MS
-            self.geometry_morph.animate(destination,duration=OVERVIEW_OPEN_DURATION_MS,elastic=True)
+            from ui_transitions import OVERVIEW_MORPH_DURATION_MS
+            self.geometry_morph.animate(destination,duration=OVERVIEW_MORPH_DURATION_MS,elastic=True)
             self.presentation.animate(presentation,response=.19,damping=1)
         else:
             self.geometry_morph.jump(destination)
@@ -1611,11 +1611,12 @@ class ShelfWindow(QWidget):
         self.zones["permanent"].show()
         self.status_label.show()
         self.expand_button.set_glyph("expand")
-        right = self.geometry_morph.current.x() + self.geometry_morph.current.width()
-        x = right - CARD_W - 28
+        anchor=self.geometry_morph._to if self.geometry_morph.active else self.visual_geometry()
+        x=anchor.right()+1-CARD_W-28
         self._dock_target.setX(x)
-        destination=QRect(x,self.visual_geometry().y(),CARD_W+28,CARD_H+27) if target is None else QRect(target)
-        self.geometry_morph.animate(destination,finished=finished,elastic=True)
+        destination=QRect(x,anchor.y(),CARD_W+28,CARD_H+27) if target is None else QRect(target)
+        from ui_transitions import OVERVIEW_MORPH_DURATION_MS
+        self.geometry_morph.animate(destination,finished=finished,duration=OVERVIEW_MORPH_DURATION_MS,elastic=True)
         self.touch()
 
     def picker_hold_active(self,now=None):
@@ -1667,9 +1668,12 @@ class ShelfWindow(QWidget):
         self.touch()
         menu = AnimatedMenu(self)
         style_menu(menu)
+        if button_menu:menu._dropdown_anchor=self.menu_button
         # The shared rounded-popup style suppresses the platform shadow;
         # this menu intentionally uses the native neutral popup shadow.
         menu.setWindowFlag(Qt.WindowType.NoDropShadowWindowHint,False)
+        menu.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint,True)
+        menu.setProperty('flickdockOwnedShelfMenu',True)
         self._more_menu=menu
         if button_menu:self.menu_button.setDown(True)
         from qt_lifetime import guard
@@ -1687,7 +1691,10 @@ class ShelfWindow(QWidget):
         menu.addAction("云端同步…", self.show_cloud_menu)
         menu.addAction("设置…", self.manager.show_settings)
         menu.addAction("收起到屏幕边缘", lambda: self.hide_animated(explicit=True))
-        menu.popup(pos or self.menu_button.mapToGlobal(QPoint(0,39)))
+        menu.popup(self.menu_button.mapToGlobal(QPoint(0,39)) if button_menu else pos)
+        if menu.isVisible():
+            from platform_native import raise_owned_popup
+            raise_owned_popup(menu,self)
 
     def _add_mode_actions(self, menu, mode="permanent"):
         refs = self.files["permanent"]

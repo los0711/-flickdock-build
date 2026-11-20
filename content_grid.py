@@ -25,7 +25,7 @@ except ImportError:
 
 
 GRID_CARD_HEIGHT_PX=136
-GRID_COLUMN_WIDTH_PX=174
+GRID_COLUMN_WIDTH_PX=132
 GRID_CARD_MIN_WIDTH_PX=GRID_COLUMN_WIDTH_PX
 
 
@@ -68,13 +68,14 @@ class IconItem(QWidget):
         self.remove_button.clicked.connect(lambda: self.popup.remove_path(self.ref))
         self.remove_button.hide()
         self.pin_button=ToolbarButton('star',self,motion=popup.shelf.manager.motion);self.pin_button.setFixedSize(24,24);self.pin_button.setProperty('glyphSize',14)
+        self.pin_button.setProperty('shelfPin',True)
         self.pin_button.clicked.connect(lambda:self.popup.toggle_pin(self.ref));self.pin_button.hide()
         self.refresh_pin()
         self.refresh_upload_time()
 
     def refresh_pin(self):
         pinned=getattr(self.popup,'is_pinned',lambda ref:False)(self.ref)
-        self.pin_button.set_glyph('star-filled' if pinned else 'star');self.pin_button.set_glyph_tint('#E9AF20' if pinned else None)
+        self.pin_button.set_glyph('star-filled' if pinned else 'star')
         self.pin_button.setToolTip('取消星标置顶' if pinned else '星标置顶');self.pin_button.setAccessibleName(self.pin_button.toolTip()+' '+self.title)
         self._refresh_actions();self.update()
 
@@ -275,15 +276,9 @@ class IconItem(QWidget):
         painter.translate(center.x(), center.y())
         painter.scale(scale, scale)
         painter.translate(-center.x(), -center.y())
-        focused=self.hasFocus() and self._keyboard_focus
-        fill=ink(c['grid_selected'] if actual else c['file_card_hover'] if v['hover']>.3 or focused else c['file_card'])
+        fill=ink(self._fill_role(actual,c))
         paint_rounded_surface(painter,self.rect(),c['card_radius'],fill,ink(c['grid_selected_border'] if actual else c['border']))
-        checkbox_border=c['grid_unchecked_hover_border'] if v['hover']>.3 or v['down']>.1 else c['grid_unchecked_border']
-        paint_rounded_surface(painter,QRectF(12.5,12.5,14,14),4,
-                              QColor(c['action']) if actual else QColor(Qt.transparent),
-                              None if actual else ink(checkbox_border))
-        if actual:
-            painter.setPen(QPen(QColor(c['on_action']),1.8,Qt.SolidLine,Qt.RoundCap,Qt.RoundJoin));painter.drawLine(QPointF(16,19),QPointF(18,22));painter.drawLine(QPointF(18,22),QPointF(23,16))
+        self._paint_check(painter,actual,c)
         art=thumbnail(self.popup.shelf,self.ref,52,self.devicePixelRatioF());x=(self.width()-52)//2
         lift=2*getattr(getattr(self,'_dwell_hint',None),'value',0.)
         state=getattr(self.popup.shelf.content,'transfers',{}).get(self.ref)
@@ -298,3 +293,42 @@ class IconItem(QWidget):
         painter.setFont(technical_font(font))
         painter.drawText(QRectF(10,108,self.width()-20,16),Qt.AlignCenter,painter.fontMetrics().elidedText(self._upload_text,Qt.ElideRight,self.width()-20))
         painter.end()
+
+    def _fill_role(self,selected,colors):
+        focused=self.hasFocus() and self._keyboard_focus
+        return colors['grid_selected' if selected else 'file_card_hover' if self.motion.values['hover']>.3 or focused else 'file_card']
+
+    def _selection_pose(self,actual,c,origin=QPointF()):
+        from item_transitions import FileSelection
+        v=self.motion.values
+        checkbox_border=c['grid_unchecked_hover_border'] if v['hover']>.3 or v['down']>.1 else c['grid_unchecked_border']
+        return FileSelection(QRectF(12.5,12.5,14,14).translated(origin),
+                             QColor(c['action']) if actual else QColor(Qt.transparent),
+                             QColor(Qt.transparent) if actual else QColor(checkbox_border),
+                             QColor(c['on_action']) if actual else QColor(Qt.transparent))
+
+    def _paint_check(self,painter,actual,c):
+        self._selection_pose(actual,c).paint(painter)
+
+    def transition_pose(self,viewport):
+        from item_transitions import FilePose, SharedText, control_decoration
+        from native_ui_common import technical_font
+        from reference_widgets import ink, palette, thumbnail
+
+        c=palette();selected=self.ref in self.popup.selected
+        origin=QPointF(self.mapTo(viewport,QPoint()))
+        def rect(x,y,w,h):return QRectF(x,y,w,h).translated(origin)
+        decorations=control_decoration(self.pin_button,viewport)+control_decoration(self.remove_button,viewport)
+        x=(self.width()-52)//2
+        title=QFont(self.font());title.setPixelSize(12);set_ui_weight(title,600)
+        detail=QFont(self.font());detail.setPixelSize(10);set_ui_weight(detail,400)
+        meta=ink(c['file_description'])
+        return FilePose(rect(0,0,self.width(),self.height()),rect(x,11,52,52),rect(x+34,45,18,18),
+                        thumbnail(self.popup.shelf,self.ref,52,self.devicePixelRatioF()),self.cloud_status,
+                        self.popup.shelf.content.transfers.get(self.ref),
+                        SharedText(rect(12,68,self.width()-24,18),self.title.replace('\n',' '),title,
+                                   ink(c['grid_selected_text' if selected else 'text']),.5),
+                        SharedText(rect(10,90,self.width()-20,16),self._detail_text,detail,meta,.5),
+                        SharedText(rect(10,108,self.width()-20,16),self._upload_text,technical_font(detail),meta,.5),
+                        ink(self._fill_role(selected,c)),ink(c['grid_selected_border' if selected else 'border']),c['card_radius'],
+                        self._selection_pose(selected,c,origin),decorations)

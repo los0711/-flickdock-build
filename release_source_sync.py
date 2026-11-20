@@ -127,6 +127,14 @@ def _commit_github(token, expected, files):
     return result['sha']
 
 
+def _checkout_baseline(parent, selected, env):
+    root = Path(parent)/'source'
+    _git(['clone','--quiet','--branch','master',GITEE_URL,str(root)],cwd=parent,env=env)
+    baseline = json.loads((ROOT/'SOURCE_MANIFEST.json').read_text(encoding='utf-8'))
+    verify_new_source_paths(root,verify_baseline(root,baseline),selected)
+    return root
+
+
 def synchronize():
     expected = context()
     github_token = os.environ.get('GITHUB_TOKEN','')
@@ -134,13 +142,9 @@ def synchronize():
         raise RuntimeError('The GitHub main branch changed; start a fresh release.')
     selected = collect_source_files(ROOT)
     _,manifest = source_archive(ROOT,APP_VERSION)
-    baseline = json.loads((ROOT/'SOURCE_MANIFEST.json').read_text(encoding='utf-8'))
     env = _git_environment(os.environ.get('GITEE_RELEASE_TOKEN',''))
     with tempfile.TemporaryDirectory(prefix='flickdock-source-',dir=os.environ['RUNNER_TEMP']) as parent:
-        root = Path(parent)/'source'
-        _git(['clone','--quiet','--branch','master',GITEE_URL,str(root)],cwd=parent,env=env)
-        baseline_paths = verify_baseline(root,baseline)
-        verify_new_source_paths(root,baseline_paths,selected)
+        root = _checkout_baseline(parent,selected,env)
         tag = 'v' + APP_VERSION
         existing = _git(['ls-remote','--exit-code','--tags','origin','refs/tags/' + tag],
                         cwd=root,env=env,allow_absent=True)
@@ -171,4 +175,18 @@ def synchronize():
 
 
 if __name__ == '__main__':
-    synchronize()
+    import argparse
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--verify-baseline',action='store_true')
+    if parser.parse_args().verify_baseline:
+        context()
+        selected=collect_source_files(ROOT)
+        env=_git_environment(os.environ.get('GITEE_RELEASE_TOKEN',''))
+        with tempfile.TemporaryDirectory(prefix='flickdock-source-preflight-',dir=os.environ['RUNNER_TEMP']) as parent:
+            root=_checkout_baseline(parent,selected,env)
+            tag='refs/tags/v'+APP_VERSION
+            if _git(['ls-remote','--exit-code','--tags','origin',tag],cwd=root,env=env,allow_absent=True).returncode==0:
+                raise ValueError('The private release version tag already exists.')
+        print('Verified the private source baseline and unused release tag.',flush=True)
+    else:
+        synchronize()

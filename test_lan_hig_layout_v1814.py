@@ -146,6 +146,7 @@ class LanHigLayoutTests(unittest.TestCase):
     def test_every_queued_file_and_all_twelve_records_are_scrollable_and_delete_persists(self):
         self.load_busy_state()
         panel=self.panel
+        panel.queue_view.click();self.settle()
         self.assertEqual(len(panel.queue_rows),10)
         self.assertTrue(all(row.height()==44 for row in panel.queue_rows))
         self.assertGreater(panel.queue_scroll.verticalScrollBar().maximum(),0)
@@ -259,7 +260,7 @@ class LanHigLayoutTests(unittest.TestCase):
             for theme in ('dark','light'):
                 with self.subTest(size=size,theme=theme):
                     self.dialog.resize(*size);self.dialog.apply_theme(theme);self.settle()
-                    for name in ('drop_zone','queue_scroll','devices','send_code',
+                    for name in ('drop_zone','queue_deck','devices','send_code',
                             'send_button','history_scroll','receive_path','choose_destination'):
                         widget=getattr(panel,name)
                         self.assertTrue(widget.isVisible())

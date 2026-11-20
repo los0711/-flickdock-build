@@ -32,7 +32,7 @@ class SettingsEdgeHint(QWidget):
     def _apply_theme(self):
         from reference_widgets import palette
         c=palette()
-        style=f"QFrame{{background:{c['dialog_surface']};border:1px solid {c['border']};border-radius:12px;}} QLabel{{border:0;color:{c['secondary']};font-size:12px;}} QPushButton{{background:{c['action']};color:{c['on_action']};border:0;border-radius:7px;padding:5px 12px;font-size:12px;}} QPushButton:hover{{background:{c['action_hover']};}} QPushButton:pressed{{background:{c['action_pressed']};}}"
+        style=f"QFrame{{background:{c['card']};border:1px solid {c['input_border']};border-radius:18px;}} QLabel{{border:0;color:{c['text']};font-size:12px;}} QPushButton{{background:{c['action']};color:{c['on_action']};border:0;border-radius:10px;padding:5px 12px;font-size:12px;}} QPushButton:hover{{background:{c['action_hover']};}} QPushButton:pressed{{background:{c['action_pressed']};}}"
         if self.card.styleSheet()!=style:self.card.setStyleSheet(style)
 
     def show_hint(self):

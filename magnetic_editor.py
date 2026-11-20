@@ -13,27 +13,34 @@ class MagneticEditor(QWidget):
     changed=Signal()
     def __init__(self,store,parent=None):
         super().__init__(parent);self.store=store;self._draft=store.magnetic_edges;self._loading=False;self.selected='left'
-        from app_settings import SettingsToggleSwitch,SettingsComboBox,SettingsSlider,SettingsSpinBox
-        box=QVBoxLayout(self);box.setContentsMargins(12,12,12,12);box.setSpacing(10)
+        from app_settings import SettingsToggleSwitch,SettingsComboBox,SettingsSlider,SettingsSpinBox,_SettingsDivider,_SettingsParamCell
+        box=QVBoxLayout(self);box.setContentsMargins(14,12,14,14);box.setSpacing(12)
         header=QHBoxLayout();title=QLabel('文件边缘磁吸',self);title.setObjectName('settingsSection');header.addWidget(title,1)
-        self.toggle=SettingsToggleSwitch('',self);self.toggle.setAccessibleName('开启文件边缘磁吸');header.addWidget(self.toggle);box.addLayout(header)
-        line=QHBoxLayout();line.addWidget(QLabel('显示器',self));self.screen_combo=SettingsComboBox(self);line.addWidget(self.screen_combo,1);box.addLayout(line)
+        self.toggle=SettingsToggleSwitch('',self);self.toggle.setMinimumSize(44,32);self.toggle.setMaximumSize(44,32);self.toggle.setAccessibleName('开启文件边缘磁吸');header.addWidget(self.toggle);box.addLayout(header)
+        box.addWidget(_SettingsDivider(self))
+        screen_cell=_SettingsParamCell(self,role='card',radius=14);line=QHBoxLayout(screen_cell);line.setContentsMargins(12,8,12,8);line.setSpacing(10)
+        screen_lbl=QLabel('显示器',screen_cell);screen_lbl.setObjectName('settingsDetail');line.addWidget(screen_lbl,1)
+        self.screen_combo=SettingsComboBox(screen_cell);self.screen_combo.setMinimumWidth(190);line.addWidget(self.screen_combo);box.addWidget(screen_cell)
         self.diagram=MonitorDiagram(self);box.addWidget(self.diagram)
-        directions=QHBoxLayout();directions.setSpacing(6);self.edge_buttons={}
+        box.addWidget(_SettingsDivider(self))
+        ctrl_row=QHBoxLayout();ctrl_row.setSpacing(10)
+        directions=QHBoxLayout();directions.setSpacing(4);self.edge_buttons={}
         for edge in EDGES:
             button=QPushButton(LABELS[edge],self);button.setCheckable(True);button.setAutoExclusive(True)
             button.setObjectName('settingsLink');button.clicked.connect(lambda _,edge=edge:self.select(edge));directions.addWidget(button)
             self.edge_buttons[edge]=button
-        box.addLayout(directions)
-        line=QHBoxLayout();self.edge_label=QLabel(self);line.addWidget(self.edge_label,1)
-        self.edge_toggle=SettingsToggleSwitch('',self);self.edge_toggle.setAccessibleName('启用当前磁吸边缘');line.addWidget(self.edge_toggle);box.addLayout(line)
+        ctrl_row.addLayout(directions);ctrl_row.addStretch(1)
+        self.edge_label=QLabel(self);ctrl_row.addWidget(self.edge_label)
+        self.edge_toggle=SettingsToggleSwitch('',self);self.edge_toggle.setMinimumSize(44,32);self.edge_toggle.setMaximumSize(44,32);self.edge_toggle.setAccessibleName('启用当前磁吸边缘');ctrl_row.addWidget(self.edge_toggle)
+        box.addLayout(ctrl_row)
         self.controls={};self.sliders={};self.labels={}
-        grid=QGridLayout();grid.setHorizontalSpacing(14);grid.setVerticalSpacing(10)
+        grid=QGridLayout();grid.setHorizontalSpacing(10);grid.setVerticalSpacing(10)
         for index,(key,label,low,high,suffix) in enumerate((('width','触发宽度',8,240,' px'),('length','区域长度',5,100,' %'),('position','上下位置',0,100,' %'))):
-            panel=QWidget(self);layout=QVBoxLayout(panel);layout.setContentsMargins(0,0,0,0);layout.setSpacing(6)
+            panel=_SettingsParamCell(self,role='card',radius=14);layout=QVBoxLayout(panel);layout.setContentsMargins(12,10,12,10);layout.setSpacing(6)
             row=QHBoxLayout();text=QLabel(label,panel);row.addWidget(text,1);self.labels[key]=text
             spin=SettingsSpinBox(panel);spin.setRange(low,high);spin.setSuffix(suffix);spin.setFixedSize(84,28);spin.setAccessibleName('磁吸'+label);row.addWidget(spin);layout.addLayout(row)
             slider=SettingsSlider(Qt.Horizontal,panel);slider.setRange(low,high);slider.setFixedHeight(22);slider.setAccessibleName('磁吸'+label);layout.addWidget(slider)
+            slider.valueCaption=lambda value,unit=suffix:f'{value}{unit}'
             spin.valueChanged.connect(slider.setValue);slider.valueChanged.connect(spin.setValue)
             spin.valueChanged.connect(self.edit_current);self.controls[key]=spin;self.sliders[key]=slider
             grid.addWidget(panel,index//2,0 if index==2 else index%2,1,2 if index==2 else 1)
@@ -97,14 +104,20 @@ class MagneticEditor(QWidget):
         if self._loading:return
         self._draft['enabled']=bool(value);self.diagram.set_values(self.rows(),value,self.selected);self.changed.emit()
 
+    def paintEvent(self,event):
+        from native_ui_common import colors as ui_colors,paint_rounded_surface,qss_color
+        theme=getattr(self.window(),'_applied_settings_theme','light')
+        c=ui_colors(theme);p=QPainter(self)
+        paint_rounded_surface(p,self.rect(),18,qss_color(c['subcard']),qss_color(c['border']));p.end()
+
     def apply_theme(self,theme):
-        from theme_accent import action_tokens
-        tokens=action_tokens(theme);border='#34373b' if theme=='dark' else '#dedfe2'
+        from native_ui_common import colors as ui_colors
+        c=ui_colors(theme)
         for button in self.edge_buttons.values():
-            button.setFixedHeight(30)
-            button.setStyleSheet(f'QPushButton{{border:1px solid {border};border-radius:6px;padding:4px 8px;}}'
-                f'QPushButton:checked{{background:{tokens["action"]};color:{tokens["on_action"]};border-color:{tokens["action"]};}}'
-                f'QPushButton:hover{{border-color:{tokens["action_hover"]};}}')
+            button.setFixedHeight(28)
+            button.setStyleSheet(f'QPushButton{{background:{c["card"]};color:{c["secondary"]};border:1px solid {c["border"]};border-radius:14px;padding:3px 12px;font-size:12px;}}'
+                f'QPushButton:checked{{background:{c["segment_selected"]};color:{c["segment_selected_ink"]};border-color:{c["segment_selected"]};font-weight:600;}}'
+                f'QPushButton:hover:!checked{{background:{c["control_hover"]};color:{c["text"]};}}')
         self.diagram.dark=theme=='dark';self.diagram.update()
         for control in (self.toggle,self.edge_toggle,self.screen_combo,*self.controls.values(),*self.sliders.values()):
             control.dark=theme=='dark';control.update()

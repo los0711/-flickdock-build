@@ -278,6 +278,36 @@ def lower_shelf_after_reveal(widget, *, platform=None):
     return True
 
 
+def raise_owned_popup(popup,owner,*,above=None,platform=None):
+    """Keep a shelf menu and its presentation above their native owner."""
+    platform=sys.platform if platform is None else platform
+    if not native_input_available(platform=platform):return False
+    if platform!='win32':return raise_edge_target(popup,platform=platform,above=above or owner)
+    try:
+        from ctypes import wintypes
+
+        handle=int(popup.winId())
+        owner_handle=int(owner.winId())
+        if not handle or not owner_handle or handle==owner_handle:return False
+        user32=ctypes.WinDLL('user32',use_last_error=True)
+        get_owner=user32.GetWindow
+        get_owner.argtypes=[wintypes.HWND,wintypes.UINT]
+        get_owner.restype=wintypes.HWND
+        gw_owner=4
+        gwlp_hwndparent=-8
+        # Qt 6.12 deliberately skips native ownership for Qt.Popup. Bind the
+        # HWND before raising it so a later raise of the shelf cannot cover it.
+        if get_owner(handle,gw_owner)!=owner_handle:
+            set_owner=getattr(user32,'SetWindowLongPtrW',None) or user32.SetWindowLongW
+            set_owner.argtypes=[wintypes.HWND,ctypes.c_int,ctypes.c_ssize_t]
+            set_owner.restype=ctypes.c_ssize_t
+            set_owner(handle,gwlp_hwndparent,owner_handle)
+        bound=get_owner(handle,gw_owner)==owner_handle
+    except (AttributeError,OSError,RuntimeError,TypeError,ValueError):
+        bound=False
+    return raise_edge_target(popup,platform=platform) and bound
+
+
 def raise_edge_target(widget, *, platform=None, above=None):
     """Keep the nonactivating edge sensor reachable in full-screen spaces."""
     platform = sys.platform if platform is None else platform

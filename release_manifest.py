@@ -49,7 +49,7 @@ RUNTIME_SOURCES=(
     'image_preview.py','instance_guard.py','media_preview.py','offscreen_verify.py','mac_install.py',
     'runtime_media.py','selection_archive.py','shake_detector.py','shelf_content.py',
     'surface_morph.py','surface_elements.py','ui_theme.py','widget_retirement.py','item_transitions.py','ui_transitions.py','app_version.py',
-    'native_ui_common.py','reference_widgets.py','pointer_paste.py','settings_edge_hint.py','clipboard_sync.py','clipboard_inbox.py','clipboard_identity.py','clipboard_preview.py','verify_clipboard.py','transfer_priority.py','upload_lanes.py','runtime_cleanup.py','window_chrome.py','intake_notice.py','display_triggers.py','shelf_intake_limit.py','shelf_capacity.py',
+    'native_ui_common.py','reference_widgets.py','pointer_paste.py','settings_edge_hint.py','clipboard_sync.py','clipboard_inbox.py','clipboard_identity.py','clipboard_preview.py','verify_clipboard.py','transfer_priority.py','upload_lanes.py','runtime_cleanup.py','window_chrome.py','dropdown_motion.py','intake_notice.py','display_triggers.py','shelf_intake_limit.py','shelf_capacity.py',
     'update_client.py','update_download.py','update_signatures.py','update_dialog.py','update_controller.py','update_notice.py','release_history.py','network_environment.py','network_diagnostics.py','ci_mac_update_runtime.py','ci_utility_windows.py',
     'platform_startup.py','platform_native.py','mac_updates.py','mac_entry.py','runtime_macos.py','mac_permissions.py','mac_permissions_ui.py',
     'account_store.py','cloud_api.py','cloud_config.py','cloud_events.py','account_service.py','account_panel.py',
@@ -60,6 +60,8 @@ RUNTIME_SOURCES=(
     
 )
 MAINTAINED_TESTS=(
+    'test_glass_ui_v1839.py',
+    'test_dropdown_fan_v1839.py',
     'test_edge_magnetic_v1842.py','test_edge_magnetic_v1841.py','test_edge_magnetic_v1840.py','test_edge_magnetic_v1839.py','test_edge_absorb_v1840.py',
     'test_release_signing_ci.py','test_release_archives.py','test_release_pipeline.py','test_release_source_sync.py',
     'test_bulk_cloud_v1837.py','test_virtual_files_v1837.py','test_slider_click_v1837.py','test_neutral_shadows_v1837.py',
@@ -151,7 +153,7 @@ SOURCE_FILES=RUNTIME_SOURCES+MAINTAINED_TESTS+(
     'bench_cloud_latency_v183.py','bench_cloud_events_v183.py','bench_cloud_transfer_v188.py',
     'bench_lan_throughput_v183.py','bench_lan_smallfiles_v1837.py','bench_resources_v1822.py','bench_ui_resources_v1822.py','bench_idle_resources_v1822.py','performance_metrics.py',
     'assets/ui/qtbase_zh_CN.qm',
-    'licenses/Python-LICENSE.txt',
+    'licenses/Python-LICENSE.txt','licenses/KokonutUI-MIT.txt',
     'licenses/FFmpeg-LICENSE.txt','licenses/LGPL-3.0.txt','licenses/GPL-3.0.txt','licenses/PyInstaller-COPYING.txt',
     'licenses/OpenSSL-LICENSE.txt','licenses/Cloud-Client-LICENSES.txt','licenses/Lucide-LICENSE.txt','licenses/Release-Crypto-LICENSES.txt','licenses/Video-LICENSES.txt',
     'FlickDock-mac.spec','build_macos.py','MAC_BUILD.md','CLOUD_SYNC.md','FEATURE_V180.md','FEATURE_V181.md','FEATURE_V183.md',

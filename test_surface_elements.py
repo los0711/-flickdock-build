@@ -164,17 +164,54 @@ class SharedElementTests(unittest.TestCase):
         self.assertEqual(widths[-1],target.width());morph.complete()
 
     def test_open_and_collapse_ease_out_with_subtle_rebound(self):
-        from PySide6.QtCore import QEasingCurve
         self.expand();morph=self.shelf.geometry_morph
         for direction in ('open','collapse'):
-            self.assertEqual(morph._geometry_curve.type(),QEasingCurve.OutBack)
+            native=self.shelf.geometry()
             start=morph._from.width();end=morph._to.width();distance=abs(end-start)
             morph._frame(.25);early=abs(morph.current.width()-start)
+            morph._frame(.73);peak=(morph.current.width()-end) if end>start else (end-morph.current.width())
             morph._frame(.9);remaining=abs(morph.current.width()-end)
             self.assertGreater(early,distance*.5)
-            self.assertLess(remaining,distance*.02)
+            self.assertGreaterEqual(peak,8)
+            self.assertLess(remaining,peak)
+            self.assertEqual(self.shelf.geometry(),native)
             morph.complete()
             if direction=='open':self.shelf.collapse_contents();morph.pause();self.shelf.presentation.stop()
+
+    def test_reversal_reuses_the_current_rebound_frame(self):
+        self.expand();morph=self.shelf.geometry_morph
+        morph._frame(.73)
+        shown=morph.current
+        host=self.shelf.geometry()
+        self.shelf.collapse_contents();morph.pause()
+        self.assertEqual(morph._from,shown)
+        self.assertEqual(self.shelf.geometry(),host)
+        morph._frame(.5)
+        shown=morph.current
+        self.shelf.show_contents();morph.pause()
+        self.assertEqual(morph._from,shown)
+        morph.complete()
+        self.assertFalse(self.shelf._surface_snapshot.active)
+
+    def test_triggered_preview_rebounds_inside_the_reserved_window(self):
+        from PySide6.QtCore import QPoint
+        from ui_transitions import SHELF_REVEAL_SCALE
+
+        self.shelf.hide_immediately()
+        presentation=self.shelf.presentation
+        presentation.motion=True
+        self.shelf._show_at(QPoint(60,60),'manual',QPoint())
+        self.assertEqual((presentation.values['sx'],presentation.values['sy']),SHELF_REVEAL_SCALE)
+        geometry=self.shelf.geometry()
+        start=presentation._started_at;heights=[]
+        for tick in range(1,61):
+            with patch('flickdock_motion.time.perf_counter',return_value=start+tick*.01):
+                presentation._tick()
+            self.assertEqual(self.shelf.geometry(),geometry)
+            heights.append(presentation.values['sy'])
+        self.assertGreater(max(heights),1.014)
+        presentation._expire()
+        self.assertEqual(presentation.values['sy'],1.)
 
     def test_light_and_dark_endpoint_pixels_match_the_live_layout_without_preview_ghosts(self):
         import ui_theme

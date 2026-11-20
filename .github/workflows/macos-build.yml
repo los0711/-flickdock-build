@@ -6,10 +6,17 @@ on:
       test_build:
         type: boolean
         default: true
+      desktop_checks:
+        type: boolean
+        default: false
   workflow_dispatch:
     inputs:
       test_build:
         description: Unpublished test package; leave current public installer download unverified
+        type: boolean
+        default: false
+      desktop_checks:
+        description: Validate the desktop redesign alongside the native packaging checks
         type: boolean
         default: false
   push:
@@ -63,11 +70,24 @@ jobs:
         run: |
           npm ci --prefix cloud --no-audit --no-fund
           python ci_assets.py
+          args=(--target-arch '${{ matrix.arch }}')
           if [ '${{ inputs.test_build }}' = 'true' ] || [ '${{ github.event_name }}' = 'push' ]; then
-            python build_macos.py --target-arch '${{ matrix.arch }}' --skip-public-update-check
-          else
-            python build_macos.py --target-arch '${{ matrix.arch }}'
+            args+=(--skip-public-update-check)
           fi
+          if [ '${{ inputs.desktop_checks }}' = 'true' ]; then args+=(--desktop-checks); fi
+          python build_macos.py "${args[@]}"
+      - name: Verify frozen desktop widgets in Cocoa
+        if: inputs.desktop_checks
+        run: |
+          sandbox="$(mktemp -d)"
+          HOME="$sandbox" APPDATA="$sandbox" XDG_CONFIG_HOME="$sandbox" QT_QPA_PLATFORM=cocoa FLICKDOCK_VERIFY_NATIVE_UI=1 dist/FlickDock.app/Contents/MacOS/FlickDock --verify-overview --verify-output "$sandbox/overview.json"
+          python - "$sandbox/overview.json" <<'PY'
+          import json,sys
+          from pathlib import Path
+          from app_version import APP_VERSION
+          report=json.loads(Path(sys.argv[1]).read_bytes())
+          assert report['ok'] and report['frozen'] and report['version']==APP_VERSION,report
+          PY
       - name: Verify Keychain startup, automatic update, cached retry and completed notice
         run: build/macos-venv/bin/python -m unittest test_account_security_v180 test_mac_updates test_update_macos_controller test_update_macos test_update_resume_v1821 test_update_notice_v1813 test_shelf_live_v1821 test_utility_feedback_v1828 -q
       - name: Inspect packaged network permission identity without changing macOS security

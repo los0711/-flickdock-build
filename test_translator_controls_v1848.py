@@ -149,6 +149,20 @@ class TranslatorControlsTests(unittest.TestCase):
         for control in (view.glossary_button,view.presets_button,view.history_button):
             self.assertEqual(control.font().pixelSize(),12)
 
+    def test_search_focus_ring_and_selection_use_the_current_accent(self):
+        import theme_accent
+        view=self.view
+        original=theme_accent.current()
+        try:
+            for theme in ('dark','light'):
+                view.manager.settings.update(theme=theme)
+                for accent in ('#000000','#0066D6','#9D36C8'):
+                    theme_accent.set_color(accent);view.refresh()
+                    palette=colors(theme)
+                    self.assertEqual(palette['ring'],palette['action'])
+                    self.assertIn('QLineEdit:focus{border-color:'+palette['action']+';}',view.styleSheet())
+        finally:theme_accent.set_color(original)
+
     def test_pointer_release_starts_alignment_and_switching_panes_clears_the_old_selection(self):
         view=self.view;api=translator.UnitsApi()
         view.alignment.cancel();view.alignment.deleteLater()
@@ -166,6 +180,15 @@ class TranslatorControlsTests(unittest.TestCase):
         api.aligned.emit(view.alignment.epoch,{'certain':True,'quote':'世界'},'')
         matches=view.output_editor.extraSelections()
         self.assertEqual(matches[0].cursor.selectedText(),'世界')
+        c=colors(view.manager.settings.theme)
+        self.assertEqual(matches[0].format.background().color(),QColor(c['action']))
+        self.assertEqual(matches[0].format.foreground().color(),QColor(c['on_action']))
+        view.manager.settings.update(theme='light' if view.manager.settings.theme=='dark' else 'dark')
+        view.refresh()
+        matches=view.output_editor.extraSelections()
+        c=colors(view.manager.settings.theme)
+        self.assertEqual(matches[0].format.background().color(),QColor(c['action']))
+        self.assertEqual(matches[0].format.foreground().color(),QColor(c['on_action']))
         drag(view.output_editor,3,5)
         self.assertEqual(view.output_editor.textCursor().selectedText(),'世界')
         self.assertFalse(view.source_editor.textCursor().hasSelection())

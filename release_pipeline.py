@@ -32,7 +32,17 @@ REPO = 'los0711/-flickdock-build'
 ACCOUNT = '59153da0809ff3d18297d943e1ef5b56'
 INDEX_NAMES = ('latest.json','macos-arm64.json','macos-arm64-auto.json','macos-arm64-auto-v2.json',
                'macos-x86_64.json','macos-x86_64-auto.json','macos-x86_64-auto-v2.json')
+MAC_ARM_INDICES = INDEX_NAMES[1:4]
 RELEASE_HOSTS = set(DEFAULT_ALLOWED_HOSTS)
+
+
+def release_indices():
+    target = os.environ.get('FLICKDOCK_RELEASE_TARGET','both')
+    if target == 'mac-arm64':
+        return MAC_ARM_INDICES
+    if target == 'both':
+        return ('latest.json',*MAC_ARM_INDICES)
+    raise ValueError('Unknown release target.')
 
 
 def context():
@@ -99,7 +109,7 @@ def preflight(*, publish):
         raise RuntimeError('The main branch changed; start a fresh release.')
     version_tuple(APP_VERSION)
     old,raw = baselines()
-    for name in ('latest.json','macos-arm64.json','macos-arm64-auto.json','macos-arm64-auto-v2.json'):
+    for name in release_indices():
         current = old[name]['version']
         if version_tuple(APP_VERSION) < version_tuple(current) or (publish and version_tuple(APP_VERSION) <= version_tuple(current)):
             raise ValueError('The source version must be newer than every published update channel.')
@@ -154,12 +164,15 @@ def _verified_builds():
     mac = ROOT/'ci-macos-release'
     setup = windows/('FlickDock-Setup-' + APP_VERSION + '.exe')
     win_report = windows/('windows-build-' + APP_VERSION + '.json')
-    qa = json.loads((windows/'windows-installer-qa.json').read_text(encoding='utf-8'))
-    if qa.get('ok') is not True:
-        raise ValueError('Windows installer behavior verification did not pass.')
-    win = file_metadata(setup)
-    validate_verification(win_report,setup,APP_VERSION,win['sha256'],win['bytes'])
-    validate_versions(ROOT,setup,APP_VERSION)
+    if 'latest.json' in release_indices():
+        qa = json.loads((windows/'windows-installer-qa.json').read_text(encoding='utf-8'))
+        if qa.get('ok') is not True:
+            raise ValueError('Windows installer behavior verification did not pass.')
+        win = file_metadata(setup)
+        validate_verification(win_report,setup,APP_VERSION,win['sha256'],win['bytes'])
+        validate_versions(ROOT,setup,APP_VERSION)
+    else:
+        setup=win_report=None
     build = mac/('mac-build-' + APP_VERSION + '-arm64.json')
     cloud = mac/'mac-cloud-arm64.json'
     report = json.loads(build.read_text(encoding='utf-8'))
@@ -202,32 +215,29 @@ def _upload_origin(path, asset):
         cwd=ROOT,env=_cloud_env(),check=True,timeout=600)
 
 
-def _next_html(old_version):
+def _next_html(previous):
     html = (ROOT/'website'/'public'/'index.html').read_text(encoding='utf-8')
-    replacements = [
-        ('v' + old_version + '/FlickDock-Setup-' + old_version + '.exe',
-         'v' + APP_VERSION + '/FlickDock-Setup-' + APP_VERSION + '.exe'),
-        ('v' + old_version + '/FlickDock-' + old_version + '-macOS-arm64.pkg',
-         'v' + APP_VERSION + '/FlickDock-' + APP_VERSION + '-macOS-arm64.pkg'),
-        ('Windows x64 · ' + old_version, 'Windows x64 · ' + APP_VERSION),
-        ('Mac Apple 芯片 · ' + old_version, 'Mac Apple 芯片 · ' + APP_VERSION),
-    ]
-    for old,new in replacements:
-        if html.count(old) != 1:
-            raise ValueError('The existing website release link does not match the published version.')
-        html = html.replace(old,new)
+    for index,label,filename in (
+            ('latest.json','Windows x64','FlickDock-Setup-{version}.exe'),
+            ('macos-arm64.json','Mac Apple 芯片','FlickDock-{version}-macOS-arm64.pkg')):
+        old_version=previous[index]['version']
+        new_version=APP_VERSION if index in release_indices() else old_version
+        for template in ('v{version}/'+filename,label+' · {version}'):
+            old=template.format(version=old_version)
+            if html.count(old) != 1:
+                raise ValueError('The existing website release link does not match the published version.')
+            html=html.replace(old,template.format(version=new_version))
     return html
 
 
 def stage():
     previous,raw = preflight(publish=True)
-    if len({previous[name]['version'] for name in ('latest.json','macos-arm64.json','macos-arm64-auto-v2.json')}) != 1:
-        raise ValueError('Windows and Mac published versions differ; resolve the baseline before release.')
     setup,win_report,mac_files,build,cloud = _verified_builds()
+    packages = [setup,*mac_files] if setup else mac_files
     notes = os.environ['FLICKDOCK_RELEASE_NOTES'].strip()
-    assets = publish_archives([setup,*mac_files],APP_VERSION,context(),notes,
+    assets = publish_archives(packages,APP_VERSION,context(),notes,
         gitee_token=os.environ.get('GITEE_RELEASE_TOKEN',''),github_token=os.environ.get('GITHUB_TOKEN',''))
-    for path,asset in zip([setup,*mac_files],assets,strict=True):
+    for path,asset in zip(packages,assets,strict=True):
         _upload_origin(path,asset)
     folder = work()
     target = ROOT/'website'/'public'/'updates'
@@ -237,15 +247,16 @@ def stage():
         (target/name).write_bytes(raw[name])
     catalog = ROOT/'website'/'download-catalog.json'
     write_catalog(catalog,register(read_catalog(catalog),[dict(assets=assets)]))
-    (folder/'next-index.html').write_text(_next_html(previous['latest.json']['version']),encoding='utf-8')
-    state = dict(version=APP_VERSION,source_sha=context(),notes=notes,assets=assets)
+    (folder/'next-index.html').write_text(_next_html(previous),encoding='utf-8')
+    state = dict(version=APP_VERSION,source_sha=context(),notes=notes,assets=assets,indices=list(release_indices()))
     (folder/'state.json').write_text(json.dumps(state,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
     print('Verified builds and archived assets; update indices remain unchanged.',flush=True)
 
 
 def _state():
     value = json.loads((work()/'state.json').read_text(encoding='utf-8'))
-    if value.get('version') != APP_VERSION or value.get('source_sha') != context():
+    if (value.get('version') != APP_VERSION or value.get('source_sha') != context()
+            or value.get('indices') != list(release_indices())):
         raise ValueError('Release state does not match this source commit.')
     return value
 
@@ -260,10 +271,11 @@ def sign():
         sub.mkdir(parents=True,exist_ok=True)
     signer = publisher_signer()
     previous = lambda name: json.loads((folder/name).read_text(encoding='utf-8'))
-    create_release(root=ROOT,installer=setup,version=APP_VERSION,notes=state['notes'],
-        download_url=BASE+'/downloads/'+setup.name,verification=win_report,output=indices/'latest.json',
-        artifacts=folder.parent/'flickdock-private-release-artifacts',
-        previous=previous('latest.json'),allowed_hosts=RELEASE_HOSTS,signer=signer)
+    if setup:
+        create_release(root=ROOT,installer=setup,version=APP_VERSION,notes=state['notes'],
+            download_url=BASE+'/downloads/'+setup.name,verification=win_report,output=indices/'latest.json',
+            artifacts=folder.parent/'flickdock-private-release-artifacts',
+            previous=previous('latest.json'),allowed_hosts=RELEASE_HOSTS,signer=signer)
     archive,dmg,pkg = mac_files
     pkg_info = file_metadata(pkg)
     verify_public_file(BASE+'/downloads/'+pkg.name,pkg_info['sha256'],pkg_info['bytes'],
@@ -281,6 +293,7 @@ def sign():
                'macos-arm64-auto-v2.json':indices/'auto'/'macos-arm64-auto.json'}
     destination = ROOT/'website'/'public'/'updates'
     for name,path in targets.items():
+        if name not in release_indices():continue
         value = json.loads(path.read_text(encoding='utf-8'))
         verify_manifest_signature(value,required=True)
         shutil.copyfile(path,destination/name)
@@ -289,20 +302,25 @@ def sign():
 
 def verify():
     state = _state()
-    for name in ('latest.json','macos-arm64.json','macos-arm64-auto.json','macos-arm64-auto-v2.json'):
+    versions={}
+    for name in INDEX_NAMES:
         value,raw = _public_document(BASE + '/updates/' + name)
-        if raw != (ROOT/'website'/'public'/'updates'/name).read_bytes():
+        expected=(ROOT/'website'/'public'/'updates'/name) if name in release_indices() else work()/name
+        if raw != expected.read_bytes():
             raise ValueError('The published update index differs from the signed index: ' + name)
         platform = 'win32' if name == 'latest.json' else 'darwin'
-        validate_manifest(value,RELEASE_HOSTS,platform=platform,machine='arm64')
-        if value.get('version') != state['version']:
+        machine='x86_64' if 'x86_64' in name else 'arm64'
+        validate_manifest(value,RELEASE_HOSTS,platform=platform,machine=machine)
+        versions[name]=value['version']
+        if name in release_indices() and value['version'] != state['version']:
             raise ValueError('The public update index is not the released version: ' + name)
     response = requests.get(BASE+'/',headers={'User-Agent':'FlickDock-Release/1','Cache-Control':'no-cache'},timeout=30)
     if response.status_code != 200:
         raise RuntimeError('The public website is unavailable.')
-    for suffix in ('FlickDock-Setup-' + APP_VERSION + '.exe',
-                   'FlickDock-' + APP_VERSION + '-macOS-arm64.pkg'):
-        if '/v' + APP_VERSION + '/' + suffix not in response.text:
+    for index,filename in (('latest.json','FlickDock-Setup-{version}.exe'),
+                           ('macos-arm64.json','FlickDock-{version}-macOS-arm64.pkg')):
+        version=versions[index];suffix=filename.format(version=version)
+        if '/v' + version + '/' + suffix not in response.text:
             raise ValueError('The website does not show the new download: ' + suffix)
     print('Verified signed public indices and website release links.',flush=True)
 

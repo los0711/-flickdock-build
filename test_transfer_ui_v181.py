@@ -296,19 +296,19 @@ class TransferUITests(unittest.TestCase):
         self.shelf.transfers_updated();popup=self.overview();popup.set_category('uploading');flush()
         self.assertEqual(set(popup.visible_refs()),{str(path),pending})
         self.assertEqual(popup.transfer_badge.text(),'2');self.assertTrue(popup.transfer_badge.isVisible())
-        self.assertIn('2',popup.transfer_count.text())
-        self.assertTrue(popup.transfer_summary.isVisible());self.assertEqual(popup.transfer_bar.value(),300)
+        self.assertFalse(hasattr(popup,'transfer_summary'))
+        self.assertEqual(popup.strip_rows[0][2].text(),'40%')
         epoch=popup._build_epoch
         self.shelf.content.transfers[str(path)]['received']=80
         self.shelf.transfers_updated();flush()
-        until(lambda:popup.transfer_bar.value()==500)
-        self.assertEqual(popup.transfer_bar.value(),500)
+        until(lambda:popup.strip_rows[0][2].text()=='80%')
+        self.assertEqual(popup.strip_rows[0][2].text(),'80%')
         self.assertEqual(popup._build_epoch,epoch,'chunk progress must repaint without layout rebuild')
         self.shelf.content.transfers.pop(str(path));self.shelf.content.pending.pop(pending);self.shelf.content.transfers.pop(pending)
         self.shelf.transfers_updated();flush()
-        self.assertEqual(popup.visible_refs(),[]);self.assertFalse(popup.transfer_summary.isVisible())
+        self.assertEqual(popup.visible_refs(),[]);self.assertFalse(popup.transfer_strip.isVisible())
         self.assertEqual(popup.category_buttons['uploading'].text(),'传输中')
-        self.assertFalse(popup.transfer_badge.isVisible())
+        self.assertEqual(popup.transfer_badge.text(),'0')
         popup.set_category('all');self.assertFalse(popup.transfer_strip.isVisible())
 
     def test_upload_count_lives_in_transfer_tab_and_footer_not_cloud_header(self):
@@ -383,7 +383,7 @@ class TransferUITests(unittest.TestCase):
         self.assertFalse(popup.strip_more.isVisible())
         self.assertEqual(sum(row.isVisible() for row,*_ in popup.strip_rows),1)
 
-    def test_percent_and_estimated_time_update_in_footer_category_and_preview(self):
+    def test_percent_and_estimated_time_update_in_footer_and_preview(self):
         clock=[0.0]
         self.shelf.transfer_rates=TransferRateTracker(clock=lambda:clock[0])
         ref=self.pending('正在上传的大文件.mov',received=0,total=16*1024*1024)
@@ -391,14 +391,13 @@ class TransferUITests(unittest.TestCase):
         self.assertIn('0%',popup.strip_rows[0][2].text())
         self.assertIn('计算中',popup.strip_rows[0][2].toolTip())
         popup.set_category('uploading');popup.preview.show_path(ref,force=True)
-        self.assertIn('0%',popup.transfer_eta.text())
+        self.assertFalse(hasattr(popup,'transfer_summary'))
         self.assertIn('计算中',popup.preview.transfer_meta.text())
         epoch=popup._build_epoch
         clock[0]=1.0;self.shelf.content.transfers[ref]['received']=4*1024*1024
         self.shelf.transfers_updated();flush()
-        until(lambda:'25%' in popup.transfer_eta.text())
+        until(lambda:'25%' in popup.preview.transfer_meta.text())
         self.assertEqual(popup._build_epoch,epoch)
-        self.assertIn('25% · 剩余约 3 秒',popup.transfer_eta.text())
         self.assertIn('25% · 剩余约 3 秒',popup.preview.transfer_meta.text())
         popup.set_category('all')
         self.assertEqual(popup.strip_rows[0][2].text(),'25%')
@@ -544,18 +543,19 @@ class TransferUITests(unittest.TestCase):
         for widget in (popup.title,popup.bulk_more,popup.category_picker,popup.narrow_view_button,popup.scroll):
             self.assertGreaterEqual(widget.mapTo(popup,QPoint(0,0)).x(),0)
             self.assertLessEqual(widget.mapTo(popup,QPoint(widget.width(),0)).x(),popup.width())
-    def test_transfer_summary_reports_copy_upload_download_without_mislabeling(self):
+    def test_transfer_scope_counts_jobs_and_keeps_download_status_in_footer(self):
         for index,phase in enumerate(('copying','uploading','downloading','queued','remote','verifying','retrying','validating')):
             ref=self.pending(f'项目{index}.bin',remote=phase in ('remote','downloading'))
             self.shelf.content.transfers[ref]['phase']=phase
         popup=self.overview();popup.update_transfer_status()
         self.assertEqual(popup.transfer_badge.text(),'8')
-        self.assertEqual(popup.transfer_count.text(),
-                         '正在复制 1 项 · 正在上传 3 项 · 等待确认 1 项 · 正在下载 1 项 · 校验中 1 项 · 等待重试 1 项')
+        popup.set_category('uploading')
+        self.assertEqual(len(popup.visible_refs()),8)
+        self.assertFalse(hasattr(popup,'transfer_summary'))
         self.shelf.content.transfers={ref:state for ref,state in self.shelf.content.transfers.items() if state['phase']=='downloading'}
         popup.update_transfer_status()
-        self.assertEqual(popup.transfer_count.text(),'正在下载 1 项')
-        self.assertNotIn('上传',popup.transfer_count.text())
+        self.assertEqual(popup.strip_rows[0][1].phase,'正在下载')
+        self.assertEqual(popup.transfer_badge.text(),'1')
     def test_pending_only_clear_all_opens_confirmation_and_respects_cancel(self):
         self.pending('尚未接收完成.mp4',remote=True)
         self.assertEqual(self.shelf.files['permanent'],[])

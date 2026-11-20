@@ -38,7 +38,7 @@ def validate(value):
         key=row['version'];version(key)
         if key in seen or type(row.get('r2Removed')) is not bool:raise ValueError('Invalid release identity')
         seen.add(key);names=expected_names(key)
-        if not isinstance(row['assets'],list) or len(row['assets'])!=len(names):raise ValueError('A release needs all four verified installers')
+        if not isinstance(row['assets'],list):raise ValueError('Invalid release installers')
         for asset in row['assets']:
             name=asset['name']
             if name not in names:raise ValueError('Invalid installer name')
@@ -49,6 +49,8 @@ def validate(value):
                 raise ValueError('Installer archive must be an exact approved public release URL')
             if type(asset['bytes']) is not int or not 0<asset['bytes']<2*1024**3 or not re.fullmatch('[a-f0-9]{64}',asset['sha256']):raise ValueError('Invalid installer integrity metadata')
             if 'originKey' in asset and asset['originKey']!='v'+key+'/sha256-'+asset['sha256']+'/'+name:raise ValueError('Invalid immutable installer origin')
+        if names and names!={'FlickDock-Setup-'+key+'.exe'}:
+            raise ValueError('A release needs all three Apple Silicon packages')
     return value
 
 

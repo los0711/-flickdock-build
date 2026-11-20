@@ -130,6 +130,36 @@ class NativeFixTests(unittest.TestCase):
         self.voice.completed.emit(self.voice.calls[-1]['epoch'],value,'');settle(timeout=.02)
         self.speech.player.move(500);self.assertEqual(self.speech.subtitle(),('Hello world.',5))
         self.speech.player.move(900);self.assertEqual(self.speech.subtitle(),('Hello world.',11))
+        self.assertEqual(self.speech.caption(),('Hello world.',6,11))
+        self.assertEqual(self.view.speech_bars['source'][1].text(),'正在朗读 · 1/1 段')
+        self.assertTrue(self.speech.seek_word(1))
+        self.assertEqual(self.speech.caption(),('Hello world.',0,5))
+    def test_read_along_scrolls_to_the_timed_word_and_seeks_on_click(self):
+        from PySide6.QtTest import QTest
+        from PySide6.QtWidgets import QWidget
+        from translator_widgets import ReadAlongCaption
+
+        host=QWidget();host.resize(220,100)
+        caption=ReadAlongCaption(host);caption.resize(188,0);host.show()
+        text=' '.join(f'caption{index}' for index in range(20))
+        try:
+            caption.set_caption(text,0,8)
+            self.assertGreater(len(caption._line_starts),3)
+            offset=text.index('caption19')
+            caption.set_caption(text,offset,len(text))
+            self.assertGreater(caption._scroll._targets['y'],0.)
+            self.assertTrue(settle(lambda:caption._scroll.values['y']>0.,.8))
+            caption._scroll.jump(dict(caption._scroll._targets))
+            QTest.qWait(20)
+            self.assertFalse(caption.grab().isNull())
+            chosen=[]
+            caption.seek_requested.connect(chosen.append)
+            left,top,right,height=caption._word_box
+            QTest.mouseClick(caption,Qt.LeftButton,pos=QPoint(round((left+right)/2),
+                round(top-caption._scroll.values['y']+height/2)))
+            self.assertTrue(offset<=chosen[0]<len(text))
+        finally:host.close()
+
     def test_export_during_playback_uses_a_distinct_request_lane(self):
         download=FakeSpeechApi();self.voice.fork=lambda parent:download
         self.view._speak(True);self.voice.finish_voice();self.voice.finish_audio();settle(timeout=.02)
@@ -142,7 +172,12 @@ class NativeFixTests(unittest.TestCase):
         self.view._speak(True);self.voice.finish_voice();self.voice.finish_audio('Synthetic failure');settle(timeout=.02)
         self.assertFalse(self.speech.finished);self.assertFalse(self.view.speech_bars['target'][0].isVisible())
         self.view._speak(True);self.voice.finish_audio();settle(timeout=.02);self.speech.player.finish()
-        self.assertTrue(self.speech.finished);self.assertTrue(self.view.speech_bars['target'][0].isVisible())
+        self.assertEqual(self.speech.phase,'ending')
+        self.assertFalse(self.speech.finished)
+        self.assertEqual(self.speech._end_hold.interval(),1000)
+        self.assertTrue(self.view.speech_bars['target'][0].isVisible())
+        self.assertTrue(settle(lambda:self.speech.finished,1.4))
+        self.assertTrue(self.view.speech_bars['target'][0].isVisible())
     def test_notice_entry_populates_real_translator_without_morphing_the_capsule(self):
         from flickdock import ShelfManager
         manager=self.view.manager;manager.translator_dialog=self.view;manager._note_ui=lambda event:None

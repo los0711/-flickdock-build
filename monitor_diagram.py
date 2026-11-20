@@ -46,11 +46,13 @@ class MonitorDiagram(QWidget):
     def paintEvent(self,event):
         # This preview represents the blue magnetic field, independently from
         # the theme-coloured controls. It never owns a native animation host.
-        accent=QColor('#739cff' if self.dark else '#3976df')
+        from native_ui_common import colors as ui_colors
+        c=ui_colors('dark' if self.dark else 'light')
+        accent=QColor(c['brand_accent'])
         p=QPainter(self);p.setRenderHint(QPainter.Antialiasing);r=self.frame()
-        border=QColor('#505259' if self.dark else '#b7bdc7')
-        p.setPen(QPen(border,1.2));p.setBrush(QColor('#15191f' if self.dark else '#f5f7fa'))
-        p.drawRoundedRect(r,9,9)
+        border=QColor('#4A4E59' if self.dark else '#C2C6D1')
+        p.setPen(QPen(border,1.5));p.setBrush(QColor(c['card']))
+        p.drawRoundedRect(r,14,14)
         p.setPen(QPen(border,2));p.drawLine(r.center().x(),r.bottom()+2,r.center().x(),r.bottom()+14)
         p.drawLine(r.center().x()-27,r.bottom()+15,r.center().x()+27,r.bottom()+15)
         virtual=r.adjusted(4,4,-4,-4).toRect()

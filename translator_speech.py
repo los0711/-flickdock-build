@@ -7,7 +7,7 @@ from bisect import bisect_right
 from pathlib import Path
 import re
 
-from PySide6.QtCore import QByteArray, QBuffer, QIODevice, QObject, QTimer, QUrl, Signal
+from PySide6.QtCore import QByteArray, QBuffer, QIODevice, QObject, Qt, QTimer, QUrl, Signal
 
 
 def split_speech_text(text,maximum=300):
@@ -25,6 +25,7 @@ def split_speech_text(text,maximum=300):
 
 
 class TranslatorSpeech(QObject):
+    END_HOLD_MS=1000
     error=Signal(str)
     changed=Signal()
     voices_changed=Signal()
@@ -43,6 +44,13 @@ class TranslatorSpeech(QObject):
         self.audition_key='';self._durations={};self._seek_fraction=None
         self.finished=False;self.completed_side=None;self.completed_text='';self.completed_duration=0.
         self._pump=QTimer(self);self._pump.setSingleShot(True);self._pump.timeout.connect(self._play_ready)
+        self._end_hold=QTimer(self);self._end_hold.setSingleShot(True)
+        self._end_hold.setTimerType(Qt.PreciseTimer)
+        self._end_hold.timeout.connect(lambda:self.stop(completed=True))
+        self._tail_remaining=0
+        self._caption_spans=()
+        self._caption_starts=()
+        self._caption_word=-1
         api.voices_ready.connect(self._voices);api.completed.connect(self._generated);api.reset.connect(self._account_reset)
     @staticmethod
     def _qt():
@@ -155,6 +163,7 @@ class TranslatorSpeech(QObject):
     def _play_ready(self):
         if not self.active or self.paused or self.current is not None or self.index not in self.ready:return
         self._ensure_player();self.current=self.ready.pop(self.index);self._switching=True
+        self._prepare_caption()
         try:
             self._detach_device();self._device=QBuffer(self);self._device.setData(QByteArray(self.current['audio']));self._device.open(QIODevice.ReadOnly)
             self.player.setSourceDevice(self._device,QUrl('breeze-speech.mp3'));self.phase='playing'
@@ -173,12 +182,19 @@ class TranslatorSpeech(QObject):
         media=self._qt()
         if status in (media.MediaStatus.NoMedia,media.MediaStatus.LoadedMedia):self._drain_retired()
         if self._switching or not self.active:return
-        if status==media.MediaStatus.EndOfMedia:
+        if status==media.MediaStatus.EndOfMedia and self.phase=='playing':
+            if self.index+1==len(self.parts):
+                if self.side=='audition':self.stop(completed=True);return
+                self.phase='ending';self.progress=self.segment_progress=1.
+                self._caption_word=len(self._caption_spans)-1
+                self._tail_remaining=self.END_HOLD_MS
+                if not self.paused:self._end_hold.start(self._tail_remaining)
+                self.changed.emit()
+                return
             self.current=None;self.index+=1
-            if self.index>=len(self.parts):self.stop(completed=True);return
             self.phase='generating';self.word='';self.changed.emit();self._pump.start(0);self._request_next()
     def _position(self,position):
-        if not self.active or self.current is None or self.player is None:return
+        if not self.active or self.current is None or self.player is None or self.phase=='ending':return
         duration=self.player.duration()
         if duration>0:
             self.segment_progress=min(1.,max(0.,position/duration))
@@ -186,6 +202,7 @@ class TranslatorSpeech(QObject):
             self.progress=min(1.,(prefix+len(self.parts[self.index])*self.segment_progress)/max(1,total))
         timing=self.current['timing'];index=bisect_right(self.current['starts'],position/1000)-1
         self.word=timing[index]['word'] if 0<=index<len(timing) and timing[index]['end']>=position/1000 else ''
+        self._caption_word=bisect_right(self._caption_starts,position/1000)-1
         self.changed.emit()
     def audition(self,voice):
         """Use the voice's native preview; fallback never reads editor content."""
@@ -219,7 +236,12 @@ class TranslatorSpeech(QObject):
         if index==self.index and self.current is not None and self.player is not None:
             duration=self.player.duration()
             if duration>0:
-                self.player.setPosition(round(duration*offset));self.progress=fraction;self.changed.emit();return True
+                was_ending=self.phase=='ending'
+                self._end_hold.stop();self._tail_remaining=0;self.phase='playing'
+                self.player.setPosition(round(duration*offset))
+                if was_ending and not self.paused:self.player.play()
+                self.progress=fraction;self.changed.emit();return True
+        self._end_hold.stop();self._tail_remaining=0
         self.index=index;self.ready={key:value for key,value in self.ready.items() if key>=index}
         self.current=None;self.phase='generating';self.progress=fraction;self.paused=False;self._seek_fraction=offset
         self._switching=True
@@ -232,31 +254,59 @@ class TranslatorSpeech(QObject):
         """Seconds of every segment already synthesized (a running total)."""
         return sum(self._durations.values())
 
-    def subtitle(self):
-        """Return (current segment text, characters already spoken)."""
-        if not self.active or self.index>=len(self.parts):return ('',0)
+    def _prepare_caption(self):
+        """Map provider timings to the exact supplied text once per segment."""
+        spans=[]
         part=self.parts[self.index]
-        if self.current is None or self.phase!='playing':
-            return (part,0)
-        # Use actual word timestamps, not a percentage of character count.
-        position=self.player.position()/1000 if self.player is not None else 0.
-        search=0;read=0
+        search=0
         for row in self.current.get('timing',[]):
             word=row['word'].strip()
             if not word:continue
-            match=re.search(re.escape(word),part[search:],re.IGNORECASE)
+            match=re.compile(re.escape(word),re.IGNORECASE).search(part,search)
             if match is None:
                 word=word.strip('.,!?。！？；;:："“”')
-                match=re.search(re.escape(word),part[search:],re.IGNORECASE) if word else None
+                match=re.compile(re.escape(word),re.IGNORECASE).search(part,search) if word else None
             if match is None:continue
-            end=search+match.end();search=end
-            if position>=row['start']:read=end
-        return (part,read)
+            spans.append((match.start(),match.end(),row['start']))
+            search=match.end()
+        self._caption_spans=tuple(spans)
+        self._caption_starts=tuple(span[2] for span in spans)
+        self._caption_word=bisect_right(self._caption_starts,0.)-1
+
+    def caption(self):
+        """Return current segment text and the active word's original offsets."""
+        if not self.active or self.index>=len(self.parts):return '',0,0
+        part=self.parts[self.index]
+        if self.phase not in ('playing','ending') or self._caption_word<0:return part,0,0
+        start,end,_=self._caption_spans[self._caption_word]
+        return part,start,end
+
+    def subtitle(self):
+        """Return current segment text and the count of characters reached."""
+        part,_,end=self.caption()
+        return part,len(part) if self.phase=='ending' else end
+
+    def seek_word(self,offset):
+        """Seek using the provider's timestamp for the clicked caption word."""
+        if not self.active or self.phase not in ('playing','ending') or self.player is None:return False
+        for start,end,seconds in self._caption_spans:
+            if start<=offset<end:
+                was_ending=self.phase=='ending'
+                self._end_hold.stop();self._tail_remaining=0;self.phase='playing'
+                self.player.setPosition(round(seconds*1000))
+                if was_ending and not self.paused:self.player.play()
+                return True
+        return False
 
     def toggle_pause(self):
         if not self.active:return
         self.paused=not self.paused
-        if self.player is not None and self.current is not None:
+        if self.phase=='ending':
+            if self.paused:
+                self._tail_remaining=max(1,self._end_hold.remainingTime())
+                self._end_hold.stop()
+            else:self._end_hold.start(self._tail_remaining)
+        elif self.player is not None and self.current is not None:
             if self.paused:self.player.pause()
             else:self.player.play()
         elif not self.paused:self._pump.start(0)
@@ -269,6 +319,7 @@ class TranslatorSpeech(QObject):
     def stop(self,*,completed=False):
         self.finished=completed
         if completed:self.completed_side=self.side;self.completed_text=self.text;self.completed_duration=self.total_duration
+        self._end_hold.stop();self._tail_remaining=0
         self.epoch+=1;self.api.cancel_audio();self._pump.stop();self.active=False;self.paused=False;self.progress=None;self.word='';self.side=None;self.phase='idle';self._seek_fraction=None
         for token,(purpose,language) in tuple(self._voice_jobs.items()):
             if purpose=='play':self.api.cancel_voice(token);self._voice_jobs.pop(token,None)

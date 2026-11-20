@@ -1,12 +1,9 @@
 """A child-surface drop chooser; never a second native popup or shelf import."""
-from PySide6.QtCore import QObject,QEvent,QPoint,QRect,QRectF,Qt,QTimer,QEasingCurve,Signal
-from PySide6.QtGui import QColor,QPainter,QPainterPath
+from PySide6.QtCore import QObject,QEvent,QPoint,QRect,QRectF,Qt,QTimer,Signal
+from PySide6.QtGui import QPainter,QPainterPath
 from PySide6.QtWidgets import QApplication,QWidget
 from shiboken6 import isValid
-from native_ui_common import reduced_motion,icon,paint_rounded_surface,RADIUS_CONTROL_PX
-from display_frames import DisplayAnimation
-
-TRANSFER_DROP_FEEDBACK_MS=160
+from native_ui_common import DropBorderMotion, reduced_motion, icon, RADIUS_CONTROL_PX
 
 
 def original_paths(mime):
@@ -19,14 +16,16 @@ def original_paths(mime):
 
 class TransferDropSurface(QWidget):
     def __init__(self,parent):
-        super().__init__(parent);self.active=None;self.press=0.;self.setAcceptDrops(True)
+        super().__init__(parent);self.active=None;self.setAcceptDrops(True)
         self.setAttribute(Qt.WA_ShowWithoutActivating);self.hide()
-        from native_ui_common import DropBorderMotion
         self.border_motions={mode:DropBorderMotion(self) for mode in ('lan','wan')}
 
-    def set_target(self,target):
+    def set_target(self,target,point=None,*,accepted=False):
+        previous=self.active
         self.active=target
-        for mode,motion in self.border_motions.items():motion.set_active(mode==target)
+        for mode,motion in self.border_motions.items():
+            if mode==target and point is not None:motion.move_drag(point)
+            else:motion.end_drag(accepted=accepted and mode==previous)
 
     def target(self,point):
         if not self.rect().contains(point):return None
@@ -36,13 +35,10 @@ class TransferDropSurface(QWidget):
         from reference_widgets import palette
         c=palette();p=QPainter(self);p.setRenderHint(QPainter.Antialiasing)
         for i,(mode,label,glyph) in enumerate((('lan','局域网传输','nearby'),('wan','远程传输','web'))):
-            selected=self.active==mode
             rect=QRectF(3,3+i*52,self.width()-6,48)
-            if selected and self.press:rect=rect.adjusted(self.press*3,self.press*2,-self.press*3,-self.press*2)
-            paint_rounded_surface(p,rect,RADIUS_CONTROL_PX,QColor(c['surface']))
-            path=QPainterPath();path.addRoundedRect(rect.adjusted(1,1,-1,-1),7,7)
+            path=QPainterPath();path.addRoundedRect(rect,RADIUS_CONTROL_PX,RADIUS_CONTROL_PX)
             from ui_theme import current_theme
-            self.border_motions[mode].paint(p,path,dark=current_theme()=='dark',radius=7)
+            self.border_motions[mode].paint(p,path,dark=current_theme()=='dark',radius=RADIUS_CONTROL_PX)
             motion=self.border_motions[mode]
             icon(glyph,motion.color(c['secondary'],c['link']).name()).paint(p,QRect(16,19+i*52,16,16))
             p.setPen(motion.color(c['secondary'],c['text']))
@@ -56,22 +52,19 @@ class TransferEntryRouter(QObject):
         super().__init__(root);self.root=root;self.button=button;self.deliver=deliver
         self.surface=TransferDropSurface(root);self._dropping=False
         self.leave=QTimer(self);self.leave.setSingleShot(True);self.leave.timeout.connect(self.reset)
-        self.feedback=DisplayAnimation(self);self.feedback.setDuration(TRANSFER_DROP_FEEDBACK_MS)
-        self.feedback.setStartValue(1.);self.feedback.setEndValue(0.)
-        self.feedback.setEasingCurve(QEasingCurve.OutCubic)
-        self.feedback.valueChanged.connect(self._press);self.feedback.finished.connect(self.reset)
+        self.feedback=QTimer(self);self.feedback.setSingleShot(True)
+        self.feedback.setInterval(DropBorderMotion.LANDING_MS)
+        self.feedback.timeout.connect(self.reset)
         button.setAcceptDrops(True)
         # Do not install another application-wide Python event filter. The
         # overview's existing drop router delegates only drag events here.
         for target in {root,button,self.surface,button.parentWidget()}:
             if target is not None:target.installEventFilter(self)
 
-    def _press(self,value):self.surface.press=float(value);self.surface.update()
-
     def reset(self):
         was_visible=self.surface.isVisible()
         self.leave.stop();self.feedback.stop();self.surface.hide();self.surface.set_target(None)
-        self.surface.press=0.;self._dropping=False
+        self._dropping=False
         if was_visible:self.active_changed.emit(False)
 
     def _show(self):
@@ -100,12 +93,15 @@ class TransferEntryRouter(QObject):
             return False
         self.leave.stop()
         if not self.surface.isVisible():self._show()
-        self.surface.set_target(self.surface.target(self.surface.mapFrom(self.root,point)))
+        local=self.surface.mapFrom(self.root,point)
+        self.surface.set_target(self.surface.target(local),local)
         if kind==QEvent.Drop:
             mode=self.surface.active
             if mode is None:self.reset();event.ignore();return True
             paths=original_paths(event.mimeData());self._dropping=True
-            if not reduced_motion():self.feedback.start()
+            if not reduced_motion():
+                self.surface.set_target(None,accepted=True)
+                self.feedback.start()
             else:self.reset()
             event.acceptProposedAction();self.deliver(mode,paths);return True
         event.acceptProposedAction();return True

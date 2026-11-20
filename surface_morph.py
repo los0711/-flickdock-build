@@ -8,7 +8,8 @@ from PySide6.QtGui import QColor, QPainter, QPainterPath, QPixmap, QTransform, Q
 from PySide6.QtWidgets import QWidget
 from display_frames import FramePulse
 from frame_diagnostics import for_window as frame_trace_for
-from native_ui_common import RADIUS_WINDOW_PX
+from native_ui_common import RADIUS_WINDOW_PX, qss_color
+from ui_transitions import CARD_REBOUND_SPRING, OVERVIEW_MORPH_REBOUND_PX, spring_progress
 
 
 def neutral_shadow_color(color):
@@ -44,6 +45,12 @@ def paint_surface_shadow(painter,rect,cache,blur=28.0,offset=None,color=None,*,r
             pad=spread*i/18; ink=QColor(color)
             ink.setAlpha(round(color.alpha()*.11*math.exp(-2.4*(i/18)**2)))
             p.setBrush(ink); p.drawRoundedRect(bounds.adjusted(-pad,-pad,pad,pad),radius+pad,radius+pad)
+        # Keep the interior clear so a translucent window does not pick up its
+        # own shadow. The same antialiased radius meets the painted window rim.
+        p.setCompositionMode(QPainter.CompositionMode_DestinationOut)
+        p.setBrush(Qt.black)
+        opening=bounds.translated(-offset.x(),-offset.y())
+        p.drawRoundedRect(opening,radius,radius)
         p.end()
         texture=(image,margin,round((margin+inset_x)*dpr),round((margin+inset_y)*dpr))
         cache[key]=texture
@@ -109,7 +116,6 @@ class SurfaceSnapshot(QWidget):
         self.rect_global=QRect(); self.transition_bounds=QRect(); self.mix=0;self.choreography=0
         self._shadows=OrderedDict()
         self.capture_count=0
-        self.target_sections=[]
         self.elements=None
         self.hide()
 
@@ -166,7 +172,6 @@ class SurfaceSnapshot(QWidget):
     def begin(self,source,target,origin,present=True,target_rect=None,*,source_elements=(),target_elements=()):
         from surface_elements import SharedElements
         self.elements=SharedElements(source_elements,target_elements,source_size=source.deviceIndependentSize(),target_size=target.deviceIndependentSize())
-        self.target_sections=[]
         self.source,self.target=source,target
         self.active=True; self.mix=0;self.choreography=0; self.rect_global=QRect(origin)
         self.transition_bounds=origin.united(target_rect) if target_rect is not None else QRect(origin)
@@ -183,7 +188,6 @@ class SurfaceSnapshot(QWidget):
 
     def finish(self):
         self.active=False; self.hide();self.lower()
-        self.target_sections=[]
         self.source=QPixmap(); self.target=QPixmap()
         self.elements=None
 
@@ -243,24 +247,9 @@ class SurfaceSnapshot(QWidget):
                              effect.color() if effect else None)
 
     def draw_target(self,painter,rect):
-        if not self.target_sections:
-            painter.drawPixmap(rect,self.target,QRectF(self.target.rect()));return
-        size=self.target.deviceIndependentSize();ratio=self.target.devicePixelRatioF()
-        painter.save();painter.translate(rect.topLeft())
-        painter.scale(rect.width()/size.width(),rect.height()/size.height())
-        for section,offset in self.target_sections:
-            painter.save();painter.setClipRect(section,Qt.ClipOperation.IntersectClip)
-            dx=offset.x()*(1-self.mix);dy=offset.y()*(1-self.mix)
-            # The overview's sections slide independently. Mask the chrome at
-            # its displaced position, otherwise a faint duplicate can leak
-            # out from behind the delayed entrance layer.
-            if self.elements is not None:
-                visible=QPainterPath();visible.addRect(section)
-                painter.setClipPath(visible.subtracted(self.elements.mask(False,QPointF(dx,dy))),Qt.ClipOperation.IntersectClip)
-            destination=section.translated(dx,dy)
-            source=QRectF(section.x()*ratio,section.y()*ratio,section.width()*ratio,section.height()*ratio)
-            painter.drawPixmap(destination,self.target,source);painter.restore()
-        painter.restore()
+        # The canvas and its gutters move with the overview. Cropping and
+        # moving panels independently exposed the backing between pieces.
+        painter.drawPixmap(rect,self.target,QRectF(self.target.rect()))
 
     def paint_frame(self,painter,rect,live_draw=None,target_size=None):
         """Move identity-matched layers above the two natural-size layouts.
@@ -287,21 +276,20 @@ class SurfaceSnapshot(QWidget):
         painter.setClipPath(surface_clip(rect))
         # One stationary-radius backing owns opacity for the entire transition.
         import ui_theme
-        painter.fillRect(rect,QColor(ui_theme.color('surface')))
+        painter.save()
+        painter.setCompositionMode(QPainter.CompositionMode_Source)
+        painter.fillRect(rect,qss_color(ui_theme.color('window_backdrop')))
+        painter.restore()
         source_offset,target_offset=self._element_offsets(rect)
         if self.mix>0:
             logical=target_size if target_size is not None else self.target.deviceIndependentSize()
             target_rect=QRectF(rect.right()-logical.width(),rect.top(),logical.width(),logical.height())
             painter.save()
-            if not self.target_sections or (self.elements and self.elements.keys):
-                self._clip_endpoint(painter,rect,False,target_offset)
             painter.setOpacity(min(1,self.mix/SURFACE_TARGET_FADE_END))
             if self.mix>=1 and live_draw is not None:
                 painter.translate(target_rect.topLeft());live_draw(painter)
             elif not self.target.isNull():
-                if self.elements and self.elements.keys:
-                    painter.drawPixmap(target_rect,self.target,QRectF(self.target.rect()))
-                else:self.draw_target(painter,target_rect)
+                self.draw_target(painter,target_rect)
             painter.restore()
         if self.mix<SURFACE_SOURCE_FADE_END and not self.source.isNull():
             logical=self.source.deviceIndependentSize()
@@ -350,9 +338,8 @@ class SurfaceMorph(QObject):
         self._completion=QTimer(self);self._completion.setSingleShot(True)
         self._completion.setTimerType(Qt.PreciseTimer);self._completion.timeout.connect(self._finish)
         self._started_at = 0.0
-        # One shared clock drives geometry and content. Only an explicit
-        # overview open opts into a small, preallocated elastic overshoot.
-        self._geometry_curve=QEasingCurve(QEasingCurve.Type.OutCubic)
+        # One clock drives the spring geometry and the bounded content mix.
+        self._elastic_limit=0.
         self._content_curve=QEasingCurve(QEasingCurve.Type.OutCubic)
         self.animation.setEasingCurve(QEasingCurve.Linear)
         self.animation.valueChanged.connect(self._frame)
@@ -396,11 +383,14 @@ class SurfaceMorph(QObject):
             return
         if self.prepare:
             self.prepare(QRect(self._from), QRect(self._to))
-        curve=QEasingCurve(QEasingCurve.OutBack if elastic else QEasingCurve.OutCubic)
+        self._elastic_limit=0.
         if elastic:
-            from ui_transitions import OVERVIEW_OPEN_OVERSHOOT
-            curve.setOvershoot(OVERVIEW_OPEN_OVERSHOOT)
-        self._geometry_curve=curve
+            first,last=self._from,self._to
+            travel=max(abs(last.left()-first.left()),abs(last.right()-first.right()),
+                       abs(last.top()-first.top()),abs(last.bottom()-first.bottom()))
+            # Fit the more pronounced shape rebound inside the existing host
+            # envelope, even on a short or interrupted transition.
+            self._elastic_limit=min(.075,OVERVIEW_MORPH_REBOUND_PX/max(1,travel))
         self.animation.setDuration(duration)
         self.animation.setStartValue(0.0)
         self.animation.setEndValue(1.0)
@@ -428,10 +418,21 @@ class SurfaceMorph(QObject):
         if elapsed >= self.animation.duration():
             self._finish()
 
+    def _geometry_progress(self,fraction):
+        limit=self._elastic_limit
+        if not limit:return self._content_curve.valueForProgress(fraction)
+        seconds=fraction*self.animation.duration()/1000
+        t=spring_progress(seconds,*CARD_REBOUND_SPRING)
+        if t>1.:t=1.+limit*math.tanh((t-1.)/limit)
+        if fraction>.77:
+            settle=(fraction-.77)/.23
+            t+=(1.-t)*settle**2*(3.-2.*settle)
+        return t
+
     def _frame(self, progress):
         clock=max(0.,min(1.,float(progress)))
         self.clock=clock
-        t=self._geometry_curve.valueForProgress(clock)
+        t=self._geometry_progress(clock)
         self.progress=self._content_curve.valueForProgress(clock)
         a, b = self._from, self._to
         def blend(x, y): return round(x + (y - x) * t)

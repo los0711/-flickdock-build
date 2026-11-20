@@ -20,8 +20,8 @@ from translation_languages import SPEECH_LANGUAGES, TARGETS
 from translator_session import TranslatorSession
 from translator_store import TranslatorStore
 from translator_widgets import (ComparisonEditor, LanguageButton, LanguagePopup, PolishPane, PresetButton, RoundSwapButton, TranslatorPopup,
-                                TranslatorSplitAction, TranslatorSurface, TranslatorToolButton, VoiceListPopup,
-                                HoverTip, translator_action, ACTION_SIZE)
+                                PolishArrival, ReadAlongCaption, StreamingResultEditor, ThinkingText, TranslatorSplitAction, TranslatorSurface, TranslatorToolButton, VoiceListPopup,
+                                translator_action, ACTION_SIZE)
 from window_chrome import WindowChrome
 import ui_theme
 
@@ -38,6 +38,10 @@ class TranslatorDialog(ReferenceModalDialog):
         self.manager=manager;self._theme=None;self._theme_key=None;self._closing=False;self._pinning=False;self._transport=None
         self._preset_key=None;self._shown_result=None;self._shown_source=None;self._active_preset=''
         self._compact_footer=None;self._notice='';self._notice_role='secondary';self._shown_notice_role='red'
+        self._was_translating=False
+        self._was_polishing=False
+        self._last_polish_revision={}
+        self._polish_arrival=PolishArrival(self)
         self._popups=[];self._managers={}
         self.setFont(manager.shelf.font());self.setWindowTitle('FlickDock · 翻译器');self.setMinimumSize(800,570)
         if api is None:
@@ -56,8 +60,9 @@ class TranslatorDialog(ReferenceModalDialog):
         self.body.removeEventFilter(self);self._fit_timer.stop()
         self.title_bar=QWidget(self.surface);self.title_bar.setFixedHeight(50)
         head=QHBoxLayout(self.title_bar);head.setContentsMargins(16,0,8,0);head.setSpacing(7)
-        logo=QLabel(self.title_bar);logo.setFixedSize(22,22);logo.setPixmap(app_icon().pixmap(22,22));head.addWidget(logo)
-        head.addWidget(label('翻译器',13,600,parent=self.title_bar));head.addStretch(1)
+        from reference_widgets import overview_back_button
+        head.addWidget(label('翻译器',16,600,parent=self.title_bar))
+        self.back_button=overview_back_button(self.title_bar,lambda:manager.return_to_overview(self));head.addWidget(self.back_button);head.addStretch(1)
         self.glossary_button=button('术语保护','shield',variant='secondary',parent=self.title_bar);self.glossary_button.clicked.connect(lambda:self.show_manager('glossary'));head.addWidget(self.glossary_button)
         self.presets_button=button('润色预设','tag',variant='secondary',parent=self.title_bar);self.presets_button.clicked.connect(lambda:self.show_manager('presets'));head.addWidget(self.presets_button)
         self.history_button=button('历史','status-clock',variant='secondary',parent=self.title_bar);self.history_button.clicked.connect(self.toggle_history);head.addWidget(self.history_button)
@@ -86,7 +91,7 @@ class TranslatorDialog(ReferenceModalDialog):
         self.swap_button=RoundSwapButton(self.workspace);self.swap_button.setToolTip('交换语言和文本');self.swap_button.clicked.connect(self.session.swap)
         self.source_card=PolishPane(self.workspace);source=QVBoxLayout(self.source_card);source.setContentsMargins(14,12,14,10);source.setSpacing(8)
         self.source_card.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Expanding)
-        self.source_task,self.source_task_label,self.source_progress=self._task_indicator(self.source_card)
+        self.source_task=ThinkingText(self.source_card)
         source.addWidget(self.source_task)
         self.source_version_row=QHBoxLayout();self.source_version_label=label('原始原文',10,400,'secondary',self.source_card)
         self.source_version_row.addWidget(self.source_version_label);self.source_version_row.addStretch(1)
@@ -108,7 +113,7 @@ class TranslatorDialog(ReferenceModalDialog):
         self.source_baseline_view=self._editor(self.source_comparison,'',comparison=True)
         comparison.addWidget(self.source_baseline_view)
         self.source_comparison.hide();source.addWidget(self.source_comparison)
-        self.source_editor=self._editor(self.source_card,'输入或粘贴需要翻译的文字…');source.addWidget(self.source_editor,1)
+        self.source_editor=self._editor(self.source_card,'输入或粘贴需要翻译的文字…',result=True);source.addWidget(self.source_editor,1)
         self.source_baseline_view.set_reveal_column(self.source_editor)
         source.addWidget(self._speech_bar('source',self.source_card))
         self.source_editor.textChanged.connect(lambda:self.session.edit_source(self.source_editor.toPlainText()))
@@ -126,7 +131,7 @@ class TranslatorDialog(ReferenceModalDialog):
         source.addLayout(foot);panes.addWidget(self.source_card,1,0)
         self.output_card=PolishPane(self.workspace);output=QVBoxLayout(self.output_card);output.setContentsMargins(14,12,14,10);output.setSpacing(8)
         self.output_card.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Expanding)
-        self.output_task,self.output_task_label,self.progress=self._task_indicator(self.output_card)
+        self.output_task=ThinkingText(self.output_card)
         output.addWidget(self.output_task)
         version=QHBoxLayout();self.version_label=label('原始译文',10,400,'secondary',self.output_card);version.addWidget(self.version_label);version.addStretch(1)
         self.compare_button=translator_action('对比原译文','compare',self.output_card);self.compare_button.setCheckable(True);self.compare_button.toggled.connect(lambda _checked:self.refresh());version.addWidget(self.compare_button)
@@ -139,7 +144,7 @@ class TranslatorDialog(ReferenceModalDialog):
         self.close_target_comparison=self._tool('close','关闭译文对照',lambda:self.compare_button.setChecked(False),self.comparison)
         compare_head.addWidget(self.close_target_comparison);comparison.addLayout(compare_head)
         self.original_view=self._editor(self.comparison,'',comparison=True);self.original_view.setObjectName('translatorResult');comparison.addWidget(self.original_view);self.comparison.hide();output.addWidget(self.comparison)
-        self.output_editor=self._editor(self.output_card,'译文将在这里显示，也可以直接修改…');self.output_editor.setObjectName('translatorResult');self.output_editor.textChanged.connect(lambda:self.session.edit_result(self.output_editor.toPlainText()));output.addWidget(self.output_editor,1)
+        self.output_editor=self._editor(self.output_card,'译文将在这里显示，也可以直接修改…',result=True);self.output_editor.setObjectName('translatorResult');self.output_editor.textChanged.connect(lambda:self.session.edit_result(self.output_editor.toPlainText()));output.addWidget(self.output_editor,1)
         self.original_view.set_reveal_column(self.output_editor)
         output.addWidget(self._speech_bar('target',self.output_card))
         target_footer=QHBoxLayout();target_footer.setSpacing(4);self.status=label('就绪',10,400,'muted',self.output_card);target_footer.addWidget(self.status,1)
@@ -156,10 +161,10 @@ class TranslatorDialog(ReferenceModalDialog):
         self.preset_body=QWidget(self.preset_scroll);self.preset_layout=QHBoxLayout(self.preset_body);self.preset_layout.setContentsMargins(0,0,0,0);self.preset_layout.setSpacing(7);self.preset_scroll.setWidget(self.preset_body);preset_line.addWidget(self.preset_scroll,1)
         self.preset_body.setAutoFillBackground(False);self.preset_scroll.viewport().setAutoFillBackground(False)
         body.addLayout(preset_line)
-        composer=QHBoxLayout();composer.setSpacing(8);self.composer_surface=TranslatorSurface(self.workspace,role='input',radius=8);self.composer_surface.setFixedHeight(40)
-        edit_row=QHBoxLayout(self.composer_surface);edit_row.setContentsMargins(5,4,8,4);edit_row.setSpacing(4)
+        composer=QHBoxLayout();composer.setSpacing(8);self.composer_surface=TranslatorSurface(self.workspace,role='card',radius=20);self.composer_surface.setFixedHeight(40)
+        edit_row=QHBoxLayout(self.composer_surface);edit_row.setContentsMargins(4,4,8,4);edit_row.setSpacing(6)
         self.polish_scope_segment=SegmentedControl(self.composer_surface);self.polish_scope_group=QButtonGroup(self);self.polish_scope_group.setExclusive(True);self.polish_scope_buttons={}
-        self.polish_scope_segment.set_surface_background('rgba(255,255,255,34)','rgba(0,0,0,26)',8)
+        self.polish_scope_segment.set_surface_background('subcard','subcard',16,stroke_role='border')
         self.polish_scope_segment.setToolTip('选择润色文字的范围')
         for scope,title in (('source','原文'),('target','译文')):
             control=button(title,parent=self.polish_scope_segment);self.polish_scope_segment.add_button(control,48);self.polish_scope_group.addButton(control)
@@ -170,7 +175,9 @@ class TranslatorDialog(ReferenceModalDialog):
         self.clear_instruction=self._tool('close','清空润色要求',self.instruction.clear,self.composer_surface)
         edit_row.addWidget(self.clear_instruction);composer.addWidget(self.composer_surface,1)
         self.save_prompt_button=button('存为预设',parent=self.workspace);self.save_prompt_button.clicked.connect(self.save_prompt);composer.addWidget(self.save_prompt_button)
-        self.polish_button=button('润色',variant='primary',parent=self.workspace);self.polish_button.setFixedHeight(40);self.polish_button.clicked.connect(self._polish);composer.addWidget(self.polish_button);body.addLayout(composer)
+        self.polish_button=button('润色',variant='primary',parent=self.workspace)
+        self.polish_button.setFixedSize(76,40);self.polish_button.setProperty('pillShape',True)
+        self.polish_button.clicked.connect(self._polish);composer.addWidget(self.polish_button);body.addLayout(composer)
         self.instruction.textChanged.connect(lambda value:self.save_prompt_button.setVisible(bool(value.strip())))
         self.instruction.textChanged.connect(lambda value:self.clear_instruction.setVisible(bool(value)))
         self.instruction.returnPressed.connect(self.polish_button.click)
@@ -180,6 +187,7 @@ class TranslatorDialog(ReferenceModalDialog):
         self.live_toggle=SettingsToggleSwitch('',self.delay_popup.surface);self.live_toggle.setToolTip('自动翻译');self.live_toggle.toggled.connect(self.session.set_live);delay_row.addWidget(self.live_toggle);self.delay_popup.body.addLayout(delay_row)
         self.delay_value=label('',11,400,'secondary',self.delay_popup.surface);self.delay_popup.body.addWidget(self.delay_value)
         self.delay_slider=SettingsSlider(Qt.Horizontal,self.delay_popup.surface);self.delay_slider.setToolTip('自动翻译延迟');self.delay_slider.setRange(1,50);self.delay_slider.valueChanged.connect(lambda value:self.session.set_delay(value*100));self.delay_popup.body.addWidget(self.delay_slider)
+        self.delay_slider.valueCaption=lambda value:f'{value/10:g} 秒'
         self.translate_now_button=button('翻译一次',variant='secondary',parent=self.delay_popup.surface);self.translate_now_button.clicked.connect(lambda:(self.delay_popup.hide(),self.session.translate()));self.delay_popup.body.addWidget(self.translate_now_button)
         self._build_tts_popup()
         self.language_popups={}
@@ -209,7 +217,7 @@ class TranslatorDialog(ReferenceModalDialog):
         self.alignment=SelectionAlignment(self.session.document,TranslationApi(self._transport,self) if self._transport else None,self)
         self.alignment.presentation.connect(self._present_alignment);self._alignment_pair=None
         self._alignment_side=None;self._alignment_status=''
-        self._favorite_key=None;self.hover_tips=HoverTip(self)
+        self._favorite_key=None
         self.source_editor.selectionChanged.connect(lambda:self._mirror_selection('source'))
         self.output_editor.selectionChanged.connect(lambda:self._mirror_selection('target'))
         for editor in (self.source_editor,self.output_editor):editor.viewport().installEventFilter(self)
@@ -230,7 +238,8 @@ class TranslatorDialog(ReferenceModalDialog):
                 if widget is not None:widget.hide();widget.deleteLater()
             for code in key[side]:
                 title=TARGETS[code][0]
-                chip=translator_action(title,'',self._language_groups[side][0])
+                chip=translator_action(title,'',self._language_groups[side][0],padding=11)
+                chip.setProperty('pillShape',True)
                 chip.setToolTip(('常用原文语言' if side=='source' else '常用译文语言')+' · '+title)
                 chip.setAccessibleName(chip.toolTip())
                 chip.clicked.connect(lambda checked=False,code=code,side=side:self.session.set_language(side,code))
@@ -266,7 +275,8 @@ class TranslatorDialog(ReferenceModalDialog):
         self._selection_highlight(side,exact,context)
         self._alignment_status=status;self._refresh_output_status()
 
-    def _selection_highlight(self,side,ranges,context=()):
+    def _selection_highlight(self,side,ranges,context=(),*,scroll=True):
+        self._alignment_highlights=(side,ranges,context) if ranges or context else None
         from translation_document import text_to_editor_position
         other=self.source_editor if side=='source' else self.output_editor
         text=self.session.source_text if side=='source' else self.session.result
@@ -274,14 +284,18 @@ class TranslatorDialog(ReferenceModalDialog):
         selected=self.output_editor if side=='source' else self.source_editor
         if selected.extraSelections():selected.setExtraSelections([])
         theme=colors(self.manager.settings.theme)
-        for spans,opacity in ((context,33),(ranges,94)):
-            colour=QColor(theme['action']);colour.setAlpha(opacity)
+        for spans,exact in ((context,False),(ranges,True)):
+            colour=QColor(theme['action'])
+            if not exact:colour.setAlpha(33)
             for begin,end in spans:
-                selection=QTextEdit.ExtraSelection();selection.format.setBackground(colour);cursor=other.textCursor()
+                selection=QTextEdit.ExtraSelection();selection.format.setBackground(colour)
+                if exact:selection.format.setForeground(QColor(theme['on_action']))
+                cursor=other.textCursor()
                 cursor.setPosition(text_to_editor_position(text,begin));cursor.setPosition(text_to_editor_position(text,end),QTextCursor.KeepAnchor)
                 selection.cursor=cursor;highlights.append(selection)
+        if highlights:other.finish_reveal()
         other.setExtraSelections(highlights)
-        if highlights:
+        if highlights and scroll:
             cursor=QTextCursor(highlights[-1 if ranges else 0].cursor)
             cursor.clearSelection()
             rect=other.cursorRect(cursor)
@@ -310,8 +324,8 @@ class TranslatorDialog(ReferenceModalDialog):
     def _speech_exported(self,path):
         self._message('语音已保存：'+str(path),role='green')
 
-    def _editor(self,parent,placeholder,*,comparison=False):
-        edit=ComparisonEditor(parent) if comparison else QPlainTextEdit(parent)
+    def _editor(self,parent,placeholder,*,comparison=False,result=False):
+        edit=ComparisonEditor(parent) if comparison else StreamingResultEditor(parent) if result else QPlainTextEdit(parent)
         edit.setPlaceholderText(placeholder);edit.setFrameShape(QFrame.NoFrame)
         if not comparison:edit.setMinimumSize(0,80)
         edit.setVerticalScrollBar(RoundedScrollBar(Qt.Vertical,edit))
@@ -320,15 +334,6 @@ class TranslatorDialog(ReferenceModalDialog):
 
     def _tool(self,glyph,title,callback,parent):
         control=TranslatorToolButton(glyph,parent);control.setToolTip(title);control.setAccessibleName(title);control.clicked.connect(callback);return control
-
-    def _task_indicator(self,parent):
-        indicator=QWidget(parent)
-        layout=QVBoxLayout(indicator);layout.setContentsMargins(0,0,0,0);layout.setSpacing(5)
-        title=label('',11,500,'secondary',indicator);layout.addWidget(title)
-        progress=RoundedProgressBar(indicator);progress.setFixedHeight(2)
-        progress.setTextVisible(False);progress.setRange(0,0);layout.addWidget(progress)
-        indicator.hide()
-        return indicator,title,progress
 
     def eventFilter(self,watched,event):
         if event.type()==QEvent.Resize and self._layout_ready:
@@ -372,8 +377,8 @@ class TranslatorDialog(ReferenceModalDialog):
         self.speech_playback[side]=play
         download=self._tool('download','下载语音文件',lambda:self._download_speech(side),surface);row.addWidget(download)
         stop=self._tool('close','停止并关闭朗读卡片',lambda checked=False,side=side:self._dismiss_speech(side),surface);row.addWidget(stop);box.addLayout(row)
-        subtitle=QLabel(surface);subtitle.setWordWrap(True);subtitle.setTextFormat(Qt.TextFormat.RichText)
-        subtitle.setMaximumHeight(64);subtitle.setStyleSheet('QLabel{background:transparent;border:0;}')
+        subtitle=ReadAlongCaption(surface)
+        subtitle.seek_requested.connect(self.speech.seek_word)
         box.addWidget(subtitle)
         progress=RoundedProgressBar(surface);progress.setTextVisible(False);progress.setFixedHeight(4)
         progress.setCursor(Qt.PointingHandCursor);progress.setToolTip('拖动调整朗读位置');progress.installEventFilter(self)
@@ -387,12 +392,14 @@ class TranslatorDialog(ReferenceModalDialog):
         heading=QHBoxLayout();heading.addWidget(label('文本转语音',12,600,parent=surface),1);heading.addWidget(label('BreezeBlue',10,400,'secondary',surface));body.addLayout(heading)
         self.tts_rate_value=label('语速 1×',11,400,parent=surface);body.addWidget(self.tts_rate_value)
         self.tts_rate=SettingsSlider(Qt.Horizontal,surface);self.tts_rate.setToolTip('朗读语速');self.tts_rate.setRange(50,200);self.tts_rate.setSingleStep(5);self.tts_rate.valueChanged.connect(lambda value:self._tts_preference(tts_rate=value/100));body.addWidget(self.tts_rate)
+        self.tts_rate.valueCaption=lambda value:f'{value/100:g}×'
         presets=QHBoxLayout();presets.setSpacing(5)
         for rate in (.75,1.,1.25,1.5):
             control=button(f'{rate:g}×',parent=surface);control.clicked.connect(lambda checked=False,rate=rate:self.tts_rate.setValue(round(rate*100)));presets.addWidget(control)
         body.addLayout(presets)
         self.tts_pitch_value=label('音调偏好 · 标准',11,400,parent=surface);body.addWidget(self.tts_pitch_value)
         self.tts_pitch=SettingsSlider(Qt.Horizontal,surface);self.tts_pitch.setToolTip('朗读音调');self.tts_pitch.setRange(80,120);self.tts_pitch.setSingleStep(5);self.tts_pitch.valueChanged.connect(lambda value:self._tts_preference(tts_pitch=value/100));body.addWidget(self.tts_pitch)
+        self.tts_pitch.valueCaption=lambda value:f'{value/100:g}×'
         voices=QHBoxLayout();voices.addWidget(label('音色',11,400,parent=surface),1);self.tts_audition=button('试听音色',parent=surface);self.tts_audition.clicked.connect(lambda:self._audition(self._voice_selection().get('id','')));voices.addWidget(self.tts_audition);body.addLayout(voices)
         self.voice_popup=VoiceListPopup(self);self._popups.append(self.voice_popup)
         self.voice_popup.chosen.connect(self._choose_voice)
@@ -494,7 +501,7 @@ class TranslatorDialog(ReferenceModalDialog):
             replay.setEnabled(has_text);download.setEnabled(has_text)
             if not active and finished:
                 status.setText('朗读完成 · '+self._clock(speech.completed_duration))
-                subtitle.setText('')
+                subtitle.finish_caption()
                 progress.setRange(0,1000);progress.setValue(1000)
                 duration.setText(self._clock(speech.completed_duration))
             if active:
@@ -505,19 +512,11 @@ class TranslatorDialog(ReferenceModalDialog):
                 elif busy:
                     dots='.'*(self._speech_dots%4)
                     status.setText('正在生成语音 · %d/%d 段%s'%(speech.index+1,max(1,len(speech.parts)),dots))
-                elif speech.word:
-                    status.setText('朗读：'+speech.word)
+                elif speech.phase=='ending':
+                    status.setText('朗读完成')
                 else:
                     status.setText('正在朗读 · %d/%d 段'%(speech.index+1,max(1,len(speech.parts))))
-                text,read=speech.subtitle()
-                if text:
-                    read=max(0,min(len(text),read))
-                    head=text[:read].replace('&','&amp;').replace('<','&lt;').replace('>','&gt;')
-                    rest=text[read:].replace('&','&amp;').replace('<','&lt;').replace('>','&gt;')
-                else:
-                    head=rest=''
-                c=colors(ui_theme.current_theme())
-                subtitle.setText('<span style="color:%s;">%s</span><span style="color:%s;">%s</span>'%(c['text'],head,c['muted'],rest))
+                subtitle.set_caption(*speech.caption(),complete=speech.phase=='ending')
                 if busy:progress.setRange(0,0)
                 else:progress.setRange(0,1000);progress.setValue(round((speech.progress or 0)*1000))
                 duration.setText(self._clock(speech.total_duration)+' · '+str(len(speech.parts))+' 段')
@@ -593,10 +592,11 @@ class TranslatorDialog(ReferenceModalDialog):
         if hasattr(self,'session') and not self._pinning:self.session.suspend(False)
         self.refresh()
     def hideEvent(self,event):
+        if hasattr(self,'_polish_arrival'):self._polish_arrival.stop()
         if hasattr(self,'session') and not self._pinning:self.session.suspend()
         if hasattr(self,'speech'):self.speech.stop()
         if hasattr(self,'alignment'):
-            self.alignment.cancel();self._alignment_status=''
+            self.alignment.cancel();self._alignment_status='';self._alignment_highlights=None
             self.source_editor.setExtraSelections([]);self.output_editor.setExtraSelections([])
         for popup in getattr(self,'_popups',()):popup.hide()
         for dialog in getattr(self,'_managers',{}).values():dialog.hide()
@@ -762,7 +762,8 @@ class TranslatorDialog(ReferenceModalDialog):
             self._theme_key=key;self._theme=theme;self.set_surface_theme(theme);self.close_button.dark=theme=='dark';c=colors(theme)
             self._applied_settings_theme=theme
             for popup in self._popups:popup._applied_settings_theme=theme
-            self.setStyleSheet(
+            from native_ui_common import apply_widget_theme_style
+            apply_widget_theme_style(self,
                 f'QPlainTextEdit{{background:transparent;border:0;color:{c["text"]};font:400 15px {font_css_stack()};selection-background-color:{c["action"]};selection-color:{c["on_action"]};}}'
                 f'QPlainTextEdit#translatorResult{{color:{TRANSLATED_INK[theme]};}}'
                 f'QLineEdit{{background:{c["input"]};color:{c["text"]};border:1px solid {c["input_border"]};border-radius:8px;padding:8px 11px;font:400 12px {font_css_stack()};}} QLineEdit:focus{{border-color:{c["ring"]};}}'
@@ -771,8 +772,21 @@ class TranslatorDialog(ReferenceModalDialog):
                 'QSlider::groove:horizontal{height:4px;background:transparent;border:0;} QSlider::sub-page:horizontal{background:transparent;} QSlider::handle:horizontal{width:16px;margin:-6px 0;background:transparent;border:0;}'
             )
             refresh_tree(self,theme)
+            if alignment:=getattr(self,'_alignment_highlights',None):
+                self._selection_highlight(*alignment,scroll=False)
+            self.source_task.set_theme(theme);self.output_task.set_theme(theme)
             for control in (self.live_toggle,self.delay_slider,self.tts_rate,self.tts_pitch,self.tts_auto):control.dark=theme=='dark';control.update()
+            for dialog in self._managers.values():dialog.refresh()
+            if hasattr(self,'history'):self.history.refresh()
         state=self.session
+        reveal_result=self._was_translating and state.phase=='ready' and not state.error
+        finished_polish=self._was_polishing and state.phase in ('idle','ready') and not state.error
+        self._was_polishing=state.phase=='polishing'
+        self._was_translating=state.phase=='translating'
+        if state.busy:
+            self.source_editor.finish_reveal()
+            self.output_editor.finish_reveal()
+            self._polish_arrival.stop()
         source_scope=state.polish_scope=='source'
         self.source_card.set_polish_active(source_scope)
         self.output_card.set_polish_active(not source_scope)
@@ -783,6 +797,7 @@ class TranslatorDialog(ReferenceModalDialog):
         self.alignment.document=state.document
         pair_changed=self._alignment_pair!=pair
         if pair_changed:
+            self._alignment_highlights=None
             self._alignment_pair=pair;self.alignment.cancel();self.source_editor.setExtraSelections([]);self.output_editor.setExtraSelections([])
             self._alignment_status=''
         target_scope=not source_scope and not state.source_unconfirmed
@@ -801,9 +816,28 @@ class TranslatorDialog(ReferenceModalDialog):
             source_baseline,len(source_revisions),in_scope=source_scope or state.source_unconfirmed)
         self._refresh_comparison(self.comparison,self.compare_button,self.original_view,
             target_baseline,len(revisions),in_scope=target_scope)
-        for editor,value in ((self.source_editor,state.source_text),(self.output_editor,state.result)):
-            if editor.toPlainText()!=value:
+        polish_arrivals=[]
+        for editor,value,versions,side,controls in (
+            (self.source_editor,state.source_text,source_revisions,'source',
+             (self.source_version_label,self.source_compare_button,self.source_undo_button,
+              self.source_regenerate_button,self.source_replace_button,self.source_comparison)),
+            (self.output_editor,state.result,revisions,'target',
+             (self.version_label,self.compare_button,self.undo_button,self.regenerate_button,
+              self.replace_button,self.comparison)),
+        ):
+            updated=editor.toPlainText()!=value
+            if updated:
+                editor.finish_reveal()
                 blocker=QSignalBlocker(editor);editor.setPlainText(value);del blocker
+            version=versions[-1] if versions else None
+            polished=(finished_polish and version is not None and version is not self._last_polish_revision.get(side)
+                      and version['after']==value)
+            self._last_polish_revision[side]=version
+            if polished:
+                editor.start_reveal(value)
+                polish_arrivals.extend(controls)
+            elif updated and side=='target' and reveal_result:editor.start_reveal(value)
+        if polish_arrivals:self._polish_arrival.start(polish_arrivals)
         if pair_changed and self._alignment_side is not None:self._mirror_selection(self._alignment_side)
         self.source_editor.setEnabled(self.store.ready)
         self._refresh_language_caption()
@@ -827,10 +861,11 @@ class TranslatorDialog(ReferenceModalDialog):
         if revisions:self.version_label.setText('AI 润色 · 第 '+str(len(revisions))+' 版')
         else:self.version_label.setText('原始译文')
         busy_side=state.busy_side
-        self.source_task_label.setText('正在润色原文…')
-        self.output_task_label.setText('正在翻译…' if state.phase=='translating' else '正在润色译文…')
-        self.source_task.setVisible(busy_side=='source')
-        self.output_task.setVisible(busy_side=='target')
+        self.source_task.set_task('正在润色原文…' if busy_side=='source' else '')
+        if state.phase=='translating':
+            self.output_task.set_task('正在翻译…','正在生成译文…')
+        else:
+            self.output_task.set_task('正在润色译文…' if busy_side=='target' else '')
         self._refresh_output_status()
         self._refresh_notice()
         self.copy_button.setEnabled(bool(state.result));self.favorite_button.setEnabled(bool(state.result));self.favorite_button.set_glyph('star-filled' if state.favorite else 'star');self.favorite_button.set_glyph_tint('#E5AA17' if state.favorite else None)
@@ -879,7 +914,6 @@ class TranslatorDialog(ReferenceModalDialog):
     def shutdown(self):
         if self._closing:return
         self._closing=True
-        if hasattr(self,'hover_tips'):self.hover_tips.close()
         self.speech.close();self.history.set_open(False,animate=False)
         for popup in self._popups:popup.hide()
         for dialog in self._managers.values():dialog.hide()

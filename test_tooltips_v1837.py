@@ -13,28 +13,34 @@ APP=QApplication.instance() or QApplication([]);APP.setQuitOnLastWindowClosed(Fa
 native_ui_common.configure_reference_font(APP)
 
 class TooltipTests(unittest.TestCase):
-    def test_system_buttons_have_accessible_names_without_hover_hints(self):
+    def test_drawn_system_buttons_use_accessible_names_for_hover_hints(self):
         from window_chrome import _WindowButton
         window=QWidget()
         try:
             for role in ('min','max','close'):
                 control=_WindowButton(window,role)
-                self.assertTrue(control.accessibleName());self.assertFalse(control.toolTip())
+                self.assertTrue(control.accessibleName())
+                self.assertEqual(ui_theme._TooltipCorners._text(control),control.accessibleName())
         finally:window.deleteLater();APP.processEvents()
 
-    def test_button_hint_waits_one_second_and_leaving_cancels_it(self):
+    def test_icon_hint_waits_half_a_second_without_a_native_tooltip_event(self):
         ui_theme.apply_application(APP,'Microsoft YaHei')
-        control=QPushButton('下载');control.setToolTip('下载文件');control.show();APP.processEvents()
+        control=button('','download');control.setToolTip('下载文件');control.show();APP.processEvents()
         try:
             handler=APP._flickdock_tooltip_corners
             with patch.object(control,'underMouse',return_value=True),patch.object(QToolTip,'showText') as shown:
                 APP.sendEvent(control,QEvent(QEvent.Enter))
+                self.assertEqual(handler._timer.interval(),500)
+                QTest.qWait(390);shown.assert_not_called()
+                QTest.qWait(250);shown.assert_called_once()
                 APP.sendEvent(control,QHelpEvent(QEvent.ToolTip,QPoint(2,2),QPoint(50,50)))
-                QTest.qWait(850);shown.assert_not_called()
-                QTest.qWait(200);shown.assert_called_once()
+                QTest.qWait(100);shown.assert_called_once()
+                APP.sendEvent(control,QEvent(QEvent.Leave))
                 shown.reset_mock();APP.sendEvent(control,QEvent(QEvent.Enter))
-                APP.sendEvent(control,QHelpEvent(QEvent.ToolTip,QPoint(2,2),QPoint(50,50)))
-                APP.sendEvent(control,QEvent(QEvent.Leave));QTest.qWait(1050);shown.assert_not_called()
+                APP.sendEvent(control,QEvent(QEvent.Leave));QTest.qWait(570);shown.assert_not_called()
+                labelled=QPushButton('下载');labelled.setToolTip('下载文件')
+                APP.sendEvent(labelled,QEvent(QEvent.Enter))
+                self.assertFalse(handler._timer.isActive())
             self.assertFalse(APP.isEffectEnabled(Qt.UI_AnimateTooltip));self.assertFalse(APP.isEffectEnabled(Qt.UI_FadeTooltip))
         finally:control.hide();control.deleteLater();QToolTip.hideText();APP.processEvents()
 

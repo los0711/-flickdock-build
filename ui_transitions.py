@@ -1,4 +1,5 @@
 """Utility-window transitions, separate from the native shelf compositor."""
+import math
 from PySide6.QtCore import QCoreApplication,QEvent,QObject,QPoint,QPointF,QRectF,Qt,QTimer,QEasingCurve,Signal,Slot
 from PySide6.QtGui import QGuiApplication,QPainter,QPixmap
 from PySide6.QtWidgets import QWidget,QFrame,QGraphicsEffect
@@ -14,10 +15,12 @@ NOTICE_SPLIT_BRIDGE_END=.58
 DROP_HOVER_TRANSITION_MS=180
 WINDOW_MIN_SCALE=.96
 WINDOW_OPEN_OPACITY=.78
-SHELF_REVEAL_RESPONSE_SECONDS=.34
-SHELF_REVEAL_DAMPING=.60
-OVERVIEW_OPEN_DURATION_MS=360
-OVERVIEW_OPEN_OVERSHOOT=.55
+SHELF_REVEAL_RESPONSE_SECONDS=.36
+SHELF_REVEAL_DAMPING=.52
+SHELF_REVEAL_SCALE=(.92,.875)
+OVERVIEW_MORPH_DURATION_MS=360
+OVERVIEW_MORPH_REBOUND_PX=12.
+CARD_REBOUND_SPRING=(240,20)
 SURFACE_SOURCE_FADE_END=.45
 SURFACE_TARGET_FADE_END=.72
 STACK_SPREAD_RESPONSE_SECONDS=.72
@@ -27,6 +30,13 @@ STACK_PULSE_TIMEOUT_MS=950
 SHARED_ELEMENT_MAX_TRAVEL_PX=600
 EMPTY_STATE_ENTRY_MS=180
 EMPTY_STATE_ENTRY_OFFSET_PX=6
+
+
+def spring_progress(elapsed,stiffness,damping):
+    decay=damping/2
+    frequency=math.sqrt(stiffness-decay**2)
+    angle=frequency*elapsed
+    return 1-math.exp(-decay*elapsed)*(math.cos(angle)+decay/frequency*math.sin(angle))
 
 
 def motion_allowed():
@@ -47,23 +57,37 @@ class SelectionSurface(QFrame):
     horizontal spring retains velocity across interruptions, while vertical
     navigation uses a short ease-out. Reduced motion snaps to the target.
     """
+    selection_settled=Signal()
+
     def __init__(self,parent=None,*,vertical=False,color_role='card',border_role='border',radius=6,motion=True):
         super().__init__(parent)
         self._selection_buttons=[];self._selection_button=None;self._selection_rect=QRectF()
         self._selection_target=QRectF();self._selection_theme=None
         self._surface_background=None
         self._selection_opacity=1.;self._selection_start_opacity=1.;self._selection_warp=False
+        self._vertical_spring=None
         self._selection_vertical=vertical;self._selection_color_role=color_role
         self._selection_border_role=border_role;self._selection_radius=radius;self._selection_motion=motion
         if vertical:
             self._selection_animation=DisplayAnimation(self);self._selection_animation.setDuration(190)
             self._selection_animation.setEasingCurve(exit_curve());self._selection_animation.valueChanged.connect(self._animation_frame)
+            self._selection_animation.finished.connect(self.selection_settled)
         else:
             from flickdock_motion import Spring
             self._selection_animation=Spring(self,{'x':0,'y':0,'w':0,'h':0},self._spring_frame)
+            self._selection_animation.settled.connect(self.selection_settled)
+
+    def selection_is_moving(self):
+        if self._selection_vertical:
+            return self._selection_animation.state()==self._selection_animation.Running
+        return self._selection_animation._timer.isActive()
 
     def set_selection_theme(self,theme):
         self._selection_theme=theme;self.update()
+
+    def configure_vertical_spring(self,stiffness,damping):
+        self._vertical_spring=(math.sqrt(stiffness-damping*damping/4),damping/2)
+        self._selection_animation.setDuration(450)
 
     def set_surface_background(self,dark,light,radius,*,stroke_role=None):
         self._surface_background=(dark,light,float(radius),stroke_role);self.update()
@@ -96,16 +120,26 @@ class SelectionSurface(QFrame):
         target=QRectF(target)
         if target.isEmpty():return
         if target==self._selection_target and not layout:return
+        old_target=self._selection_target
         self._selection_target=target
+        if (layout and self._vertical_spring and old_target.y()==target.y() and
+                self._selection_animation.state()==self._selection_animation.Running):
+            self._selection_rect=QRectF(target.x(),self._selection_rect.y(),target.width(),target.height())
+            self.update()
+            return
         if self._selection_rect.isEmpty() or layout or not self._enabled_motion():
+            was_moving=self.selection_is_moving()
             if self._selection_vertical:self._selection_animation.stop()
             else:self._selection_animation.jump(dict(x=target.x(),y=target.y(),w=target.width(),h=target.height()))
-            self._selection_rect=target;self._selection_opacity=1.;self.update();return
+            self._selection_rect=target;self._selection_opacity=1.;self.update()
+            if was_moving:self.selection_settled.emit()
+            return
         if self._selection_vertical:
             self._selection_animation.stop();self._selection_animation.setStartValue(QRectF(self._selection_rect))
             self._selection_start_opacity=self._selection_opacity
-            self._selection_warp=abs(target.center().y()-self._selection_rect.center().y())>max(72.,target.height()*2.2)
-            self._selection_animation.setEasingCurve(QEasingCurve.InOutCubic if self._selection_warp else exit_curve())
+            self._selection_warp=not self._vertical_spring and abs(target.center().y()-self._selection_rect.center().y())>max(72.,target.height()*2.2)
+            curve=QEasingCurve.Linear if self._vertical_spring else QEasingCurve.InOutCubic if self._selection_warp else exit_curve()
+            self._selection_animation.setEasingCurve(curve)
             self._selection_animation.setEndValue(target);self._selection_animation.start()
         else:
             self._selection_animation.animate(dict(x=target.x(),y=target.y(),w=target.width(),h=target.height()),response=.24,damping=.72)
@@ -117,6 +151,17 @@ class SelectionSurface(QFrame):
         if isinstance(value,QRectF):
             self._selection_rect=QRectF(value)
             t=min(1.,max(0.,self._selection_animation.currentTime()/max(1,self._selection_animation.duration())))
+            if self._vertical_spring:
+                frequency,decay=self._vertical_spring
+                elapsed=self._selection_animation.currentTime()/1000
+                angle=frequency*elapsed
+                at=1. if t>=1 else 1-math.exp(-decay*elapsed)*(math.cos(angle)+decay/frequency*math.sin(angle))
+                start=self._selection_animation.startValue().top()
+                self._selection_rect=QRectF(self._selection_target)
+                self._selection_rect.moveTop(start+(self._selection_rect.top()-start)*at)
+                self._selection_opacity=1.
+                self.update()
+                return
             smooth=lambda x:x*x*(3-2*x)
             if self._selection_warp:
                 self._selection_opacity=(self._selection_start_opacity*(1-smooth(t*2)) if t<.5 else smooth((t-.5)*2))
@@ -131,7 +176,7 @@ class SelectionSurface(QFrame):
     def eventFilter(self,watched,event):
         if watched in self._selection_buttons:
             if watched is self._selection_button and event.type() in (QEvent.Move,QEvent.Resize,QEvent.Show):
-                QTimer.singleShot(0,self._layout_selection)
+                QTimer.singleShot(0,self,self._layout_selection)
             if watched is self._selection_button and event.type() in (QEvent.Enter,QEvent.Leave,QEvent.MouseButtonPress,QEvent.MouseButtonRelease):self.update()
         return super().eventFilter(watched,event)
 
@@ -157,16 +202,62 @@ class SelectionSurface(QFrame):
         role=self._selection_color_role
         border_role=self._selection_border_role
         button=self._selection_button
+        draw_radius=self._selection_radius
         if role=='card':
             role='segment_selected'
-            if border_role=='border':border_role='segment_border'
+            border_role=None
+            draw_radius=min(float(self._selection_radius),self._selection_rect.height()/2.0)
             if not button.isEnabled():role='control'
-            elif button.isDown():role='control_pressed'
-            elif button.underMouse():role='control_hover'
+        elif role=='rail_active':
+            border_role=None
+            draw_radius=self._selection_rect.height()/2.0
         p=QPainter(self);p.setRenderHint(QPainter.Antialiasing);p.setOpacity(self._selection_opacity)
-        paint_rounded_surface(p,self._selection_rect,self._selection_radius,qss_color(c[role]),
+        paint_rounded_surface(p,self._selection_rect,draw_radius,qss_color(c[role]),
                               qss_color(c[border_role]) if border_role else None)
         p.end()
+
+
+class TabPillSurface(SelectionSurface):
+    """One elastic indicator whose edges keep their velocity on a new click."""
+
+    # DesignBookmark's tab demo tunes the shared lead/trail presets for its tabs.
+    LEADING=(620,40)
+    TRAILING=(170,19)
+
+    def __init__(self,parent,*,motion=True):
+        super().__init__(parent,color_role='selected',border_role=None,radius=13,motion=motion)
+        from flickdock_motion import Spring
+        self._selection_animation._on_update=self._edge_changed
+        self._right_edge=Spring(self,{'x':0},self._edge_changed)
+
+    def _move_selection(self,target,*,layout=False):
+        if target.isEmpty() or target==self._selection_target:return
+        left,right=self._selection_animation,self._right_edge
+        old=self._selection_target
+        self._selection_target=QRectF(target)
+        if old.isEmpty() or layout or not self._enabled_motion():
+            left.jump({'x':target.left()})
+            right.jump({'x':target.right()})
+            return
+        goes_right=target.center().x()>old.center().x()
+        left.animate_physical({'x':target.left()},*(self.TRAILING if goes_right else self.LEADING))
+        right.animate_physical({'x':target.right()},*(self.LEADING if goes_right else self.TRAILING))
+
+    def _edge_changed(self,_):
+        left=self._selection_animation.values['x']
+        right=self._right_edge.values['x']
+        self._selection_rect=QRectF(left,self._selection_target.y(),max(0.,right-left),self._selection_target.height())
+        self.update()
+
+    def clear_selection(self):
+        self._right_edge.stop()
+        super().clear_selection()
+
+    def hideEvent(self,event):
+        target=self._selection_target
+        self._selection_animation.jump({'x':target.left()})
+        self._right_edge.jump({'x':target.right()})
+        super().hideEvent(event)
 
 
 class PreviewWidthTransition(QObject):

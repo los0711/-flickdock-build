@@ -271,6 +271,9 @@ class ShelfManager:
         self._applied_settings = dict(self.settings._data)
         self.settings.changed.connect(self.apply_settings)
         QTimer.singleShot(0,self.warm_overview)
+        QTimer.singleShot(350,self.warm_overview)
+        if not self.cocoa_smoke and not os.environ.get('PYTEST_CURRENT_TEST') and not os.environ.get('FLICKDOCK_NO_PREWARM'):
+            QTimer.singleShot(1400,self.app,self._prewarm_next_utility)
         self.timer = QTimer(self.app)
         self.timer.timeout.connect(self.poll)
         self.timer.setTimerType(Qt.TimerType.PreciseTimer)
@@ -593,11 +596,77 @@ class ShelfManager:
     def warm_overview(self):
         if self._quitting:return
         shelf=self.shelf
-        if not shelf.isVisible() and shelf.popup is None:
-            # Compact-first users need the same idle construction as direct
-            # overview users, before their first expand click.
+        if shelf.popup is None and not getattr(shelf,'expanded',False):
+            if self._shelf_uses_frame_budget():return
+            # Pre-construct the overview container before the user's first expand click.
             shelf.popup=ContentsPopup(shelf)
             shelf.popup.hide()
+            target=shelf._expansion_rect(shelf.visual_geometry())
+            shelf.popup.resize(target.width()-28,target.height()-27)
+            shelf.popup.prepare_open_layout()
+            shelf.popup.prepare_transition()
+
+    def _prewarm_next_utility(self,step=0):
+        if self._quitting:return
+        if self._shelf_uses_frame_budget():
+            QTimer.singleShot(500,self.app,lambda:self._prewarm_next_utility(step))
+            return
+        try:
+            if step==0 and self.settings_dialog is None:
+                self._build_settings_dialog_hidden()
+            elif step==1 and self.lan_dialog is None:
+                dialog=LanDialog(self.lan,self.settings)
+                dialog.send_started.connect(self._manual_send_notice)
+                dialog.overview_requested.connect(lambda:self.show_overview_from_transfer(dialog))
+                dialog.mode_selected.connect(lambda mode:self.show_wan_dialog() if mode=='wan' else self.show_lan_dialog())
+                dialog.lan_recommended.connect(self._use_recommended_lan)
+                dialog.mini_requested.connect(self.show_shortcut)
+                dialog.dock_requested.connect(lambda:self.shelf.hide_animated(explicit=True))
+                dialog.hide()
+                self.lan_dialog=self.wan_dialog=dialog
+            elif step==2 and self.lan_dialog is not None and self.wan not in self.lan_dialog._panels:
+                from lan_panel import LanPanel
+                panel=LanPanel(self.wan,self.lan_dialog.panel_stack,theme=self.lan_dialog._theme,settings=self.settings,metadata_cache=self.lan_dialog.file_metadata)
+                panel.lan_recommended.connect(self.lan_dialog.lan_recommended)
+                panel.send_started.connect(self.lan_dialog.send_started)
+                self.lan_dialog._panels[self.wan]=panel;self.lan_dialog.panel_stack.addWidget(panel)
+                self.wan.identity_changed.connect(self.lan_dialog._update_ready)
+                for widget in (panel,*panel.findChildren(QWidget)):widget.setAcceptDrops(True)
+            elif step==3 and self.translator_dialog is None:
+                from translator_panel import TranslatorDialog
+                self.translator_dialog=TranslatorDialog(self);self.translator_dialog.hide()
+            elif step==4 and self.video_dialog is None:
+                from video_panel import VideoDialog
+                self.video_dialog=VideoDialog(self,self.video_controller);self.video_dialog.hide()
+        except Exception:
+            pass
+        if step<4 and not self._quitting:
+            QTimer.singleShot(650,self.app,lambda s=step+1:self._prewarm_next_utility(s))
+
+    def _build_settings_dialog_hidden(self):
+        if self.settings_dialog is not None:return
+        self.settings_dialog = SettingsDialog(self.settings)
+        self.settings_dialog.overview_requested.connect(lambda:self.return_to_overview(self.settings_dialog))
+        self.settings_dialog.finished.connect(self._settings_closed)
+        self._refresh_paste_permission()
+        self.settings_dialog.dock_requested.connect(lambda:self.shelf.hide_animated(explicit=True))
+        self.settings_dialog.mini_requested.connect(self.show_shortcut)
+        self.settings_dialog.update_requested.connect(self._settings_update_clicked)
+        self.settings_dialog.diagnostics_requested.connect(lambda:QTimer.singleShot(0,self.settings_dialog,self._export_diagnostics))
+        diagnostics=getattr(self.app,'_crash_diagnostics',None)
+        if diagnostics is not None:
+            from qt_lifetime import guard
+            diagnostics.exported.connect(guard(self.settings_dialog,lambda dialog,path,error:
+                dialog.export_diagnostics_button.setText('导出失败：'+error if error else '诊断包已导出')))
+        self.updates.state_changed.connect(self._render_settings_update)
+        self.account_panel = AccountPanel(self.account,self.settings_dialog,theme=self.settings.theme,email_binding=False,show_sync_status=False)
+        self._cloud_device_connections_changed(self.wan.peers())
+        self.settings_dialog.set_account_panel(self.account_panel)
+        self.settings_dialog.preview_changed.connect(self.preview_dock)
+        self.settings_dialog.preview_changed.connect(self._refresh_trigger_region_action)
+        self.settings_dialog.gesture_preview_changed.connect(self.preview_shake)
+        self.settings_dialog.shortcut_validator = lambda values: self.hotkeys.validate(values["shelf_shortcut"], values["overview_shortcut"])
+        self.settings_dialog.hide()
 
     def paste_new(self):
         if not self.active_shelf.isVisible():self.show_first()
@@ -665,15 +734,28 @@ class ShelfManager:
         if self._dock_preview_values is not None:self._dock_preview_values['trigger_visible']=target
         self._refresh_trigger_region_action();self._position_edges();self.update_handles()
 
-    def warm_heavy_ui(self):
-        """Pay import and icon costs on an idle turn instead of the first click."""
-        try:
+    def _shelf_uses_frame_budget(self):
+        shelf=self.shelf
+        return shelf.isVisible() and (shelf.content_transition_active()
+            or time.monotonic()-shelf.last_activity<.55
+            or any(zone.icon._hovered for zone in shelf.zones.values()))
+
+    def warm_heavy_ui(self,step=0):
+        """Warm one dependency per quiet turn, away from the first hover."""
+        if self._quitting:return
+        if self._shelf_uses_frame_budget():
+            QTimer.singleShot(500,self.app,lambda:self.warm_heavy_ui(step))
+            return
+        modules=('video_dialog','lan_panel','account_panel','transfer_workbench',
+                 'media_preview','settings_navigation','clipboard_preview')
+        if step<len(modules):
             import importlib
-            for name in ('video_dialog','lan_panel','account_panel','transfer_workbench',
-                         'media_preview','settings_navigation','clipboard_preview'):
-                try:importlib.import_module(name)
-                except Exception:pass
-        except Exception:pass
+            try:importlib.import_module(modules[step])
+            except ImportError:
+                import logging
+                logging.getLogger(__name__).debug('Optional utility prewarm unavailable: %s',modules[step],exc_info=True)
+            QTimer.singleShot(80,self.app,lambda:self.warm_heavy_ui(step+1))
+            return
         try:
             from native_ui_common import colors,icon
             for name in ('settings','pin','pin-filled','close','menu','expand','video',
@@ -686,6 +768,7 @@ class ShelfManager:
 
     def show_settings(self,*,category=None):
         self._note_ui('settings.open')
+        self._remember_overview_position()
         if self.update_notice is not None:
             self.update_notice.hide()
         self.reset_drag_gesture()
@@ -693,6 +776,7 @@ class ShelfManager:
         self.auto_shown=None
         if self.settings_dialog is None:
             self.settings_dialog = SettingsDialog(self.settings)
+            self.settings_dialog.overview_requested.connect(lambda:self.return_to_overview(self.settings_dialog))
             self.settings_dialog.finished.connect(self._settings_closed)
             self._refresh_paste_permission()
             self.settings_dialog.dock_requested.connect(lambda:self.shelf.hide_animated(explicit=True))
@@ -753,6 +837,7 @@ class ShelfManager:
 
     def show_video_dialog(self,url=None):
         self._note_ui('video.open')
+        self._remember_overview_position()
         from video_panel import VideoDialog
         if self.video_dialog is None:self.video_dialog=VideoDialog(self,self.video_controller)
         if url is not None:self.video_dialog.url.setText(url);self.video_controller.parse(url)
@@ -761,6 +846,7 @@ class ShelfManager:
 
     def show_translator_dialog(self,*,text=None,target=None):
         self._note_ui('translator.open')
+        self._remember_overview_position()
         from translator_panel import TranslatorDialog
         if self.translator_dialog is None:self.translator_dialog=TranslatorDialog(self)
         self.shelf._release_reveal_level()
@@ -826,6 +912,22 @@ class ShelfManager:
         if dialog.isMinimized():dialog.showNormal()
         elif not dialog.isVisible():dialog.show()
         dialog.raise_();dialog.activateWindow()
+        other=self.lan if service is self.wan else self.wan
+        if other not in dialog._panels and not os.environ.get('PYTEST_CURRENT_TEST'):
+            QTimer.singleShot(180,dialog,lambda d=dialog,o=other:self._prewarm_transfer_other(d,o))
+
+    def _prewarm_transfer_other(self,dialog,service):
+        if self._quitting or dialog is None or service in dialog._panels:return
+        try:
+            from lan_panel import LanPanel
+            panel=LanPanel(service,dialog.panel_stack,theme=dialog._theme,settings=self.settings,metadata_cache=dialog.file_metadata)
+            panel.lan_recommended.connect(dialog.lan_recommended)
+            panel.send_started.connect(dialog.send_started)
+            dialog._panels[service]=panel;dialog.panel_stack.addWidget(panel)
+            if getattr(service,'mode','lan')=='wan':service.identity_changed.connect(dialog._update_ready)
+            for widget in (panel,*panel.findChildren(QWidget)):widget.setAcceptDrops(True)
+        except Exception:
+            pass
 
     def _use_recommended_lan(self,paths,identifier):
         previous=self.lan_dialog.panel if self.lan_dialog else None
@@ -955,9 +1057,7 @@ class ShelfManager:
             # every application panel, re-register hotkeys or touch sync.
             if self.shelf.popup:
                 popup=self.shelf.popup
-                popup.view_list.setChecked(self.settings.view_mode=='list')
-                popup.view_grid.setChecked(self.settings.view_mode=='icons')
-                popup.rebuild()
+                popup.sync_view_mode()
         if changed & {'theme','accent_color'}:
             self._note_ui('theme.change')
             recorder=getattr(self.app,'_crash_diagnostics',None)
@@ -980,11 +1080,24 @@ class ShelfManager:
                 finally:
                     try:dialog.setUpdatesEnabled(True)
                     except RuntimeError:pass
+            refresh_dialogs=[self.video_dialog,self.translator_dialog,self.clipboard_preview_dialog]
             for dialog in themed:
                 if dialog is not None and dialog.isVisible():restyle(dialog)
-            QTimer.singleShot(90,self,lambda:[restyle(dialog) for dialog in themed
-                                              if dialog is not None and not dialog.isVisible()])
-            if self.video_dialog:self.video_dialog.refresh()
+            for dialog in refresh_dialogs:
+                if dialog is not None and dialog.isVisible():dialog.refresh()
+            def _restyle_hidden(target,is_refresh=False):
+                if self._quitting or target is None or target.isVisible():return
+                try:
+                    if is_refresh:target.refresh()
+                    else:restyle(target)
+                except RuntimeError:pass
+            delay=90
+            for dialog in themed:
+                if dialog is not None and not dialog.isVisible():
+                    QTimer.singleShot(delay,dialog,lambda d=dialog:_restyle_hidden(d,False));delay+=65
+            for dialog in refresh_dialogs:
+                if dialog is not None and not dialog.isVisible():
+                    QTimer.singleShot(delay,dialog,lambda d=dialog:_restyle_hidden(d,True));delay+=65
             self.updates.apply_theme(self.settings.theme)
             if self.update_notice is not None:self.update_notice.apply_theme(self.settings.theme)
             if self.completed_update_notice is not None:self.completed_update_notice.apply_theme(self.settings.theme)
@@ -1002,6 +1115,16 @@ class ShelfManager:
             self.update_handles()
         if changed & {'shelf_shortcut','overview_shortcut'}:
             self.shortcut_error=self.hotkeys.apply(self.settings.shelf_shortcut,self.settings.overview_shortcut)
+
+    def _remember_overview_position(self):
+        shelf=self.shelf
+        if shelf.isVisible() and shelf.expanded:
+            self._overview_return_rect=QRect(shelf.geometry_morph._to if shelf.geometry_morph.active else shelf.visual_geometry())
+
+    def return_to_overview(self,dialog):
+        if confirmation_active(self.shelf) or self.shelf._archive_choosing:return
+        dialog.close()
+        self.show_overview_from_transfer(dialog)
 
     def show_overview_from_transfer(self,dialog):
         if confirmation_active(self.shelf) or self.shelf._archive_choosing:return

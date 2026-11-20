@@ -40,7 +40,9 @@ class DropBridge(QWidget):
 
     def dragEnterEvent(self,event):
         if self.shelf and self.shelf.accepts_content_drop(event):
-            self._entered=True;self.shelf._highlight_content_drop(True);event.acceptProposedAction()
+            self._entered=True
+            self.shelf._highlight_content_drop(True,self.mapToGlobal(event.position().toPoint()))
+            event.acceptProposedAction()
         else:event.ignore()
 
     def dragMoveEvent(self,event):self.dragEnterEvent(event)
@@ -53,6 +55,7 @@ class DropBridge(QWidget):
     def dropEvent(self,event):
         self._entered=False
         if self.shelf:
-            self.shelf._highlight_content_drop(False)
-            if self.shelf.receive_mime('permanent',event.mimeData()):event.acceptProposedAction();return
+            accepted=self.shelf.receive_mime('permanent',event.mimeData())
+            self.shelf._highlight_content_drop(False,accepted=accepted)
+            if accepted:event.acceptProposedAction();return
         event.ignore()

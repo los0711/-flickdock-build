@@ -84,6 +84,7 @@ def stack_pixmap(repository, refs, size=110, *, dpr=None, preview_cache=None, ar
 class StackTile(ContentTile):
     """Cached stack with an interruptible, short incoming-card landing."""
     pulse_timeout_ms=STACK_PULSE_TIMEOUT_MS
+    uses_default_artwork=True
     def __init__(self,parent=None,motion=True):
         super().__init__(parent,motion)
         self.repository=None;self.refs=();self.preview_cache={};self.arrival=1.0
@@ -265,16 +266,17 @@ class StackTile(ContentTile):
         self.repository=repository;self.refs=new_refs;self.preview_cache=preview_cache or {}
         ratio=self.devicePixelRatioF()
         self._front_art=None
-        if new_refs:
+        if new_refs and self.uses_default_artwork:
             ref=new_refs[-1];kind=repository.category(ref);cached=self.preview_cache.get(ref)
             if kind=='images' or (cached is not None and not cached.isNull()) or repository.metadata.get(ref,{}).get('preview_image'):
                 self._front_art=QPixmap.fromImage(cached) if isinstance(cached,QImage) and not cached.isNull() else repository.item_pixmap(ref,90,dpr=ratio)
             else:
                 value=('link' if kind=='links' else 'TEXT') if repository.is_text(ref) else Path(ref).suffix or 'generic'
                 self._front_art=document_pixmap(value,100,dpr=ratio)
-        self._stack_cache=stack_pixmap(repository,new_refs,128,dpr=ratio,preview_cache=self.preview_cache,front_art=self._front_art)
+        if self.uses_default_artwork:
+            self._stack_cache=stack_pixmap(repository,new_refs,128,dpr=ratio,preview_cache=self.preview_cache,front_art=self._front_art)
         self._stack_dpr=ratio
-        if animate:
+        if animate and self.uses_default_artwork:
             self._layers={ref:stack_pixmap(repository,new_refs,128,dpr=ratio,preview_cache=self.preview_cache,
                 front_art=self._front_art,layer_ref=ref) for ref in new_refs}
             if previous!=new_refs and self.isVisible() and (removed or self.removal.state()==QAbstractAnimation.Running):

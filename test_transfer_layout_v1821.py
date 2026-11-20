@@ -39,6 +39,7 @@ class TransferGeometryTests(unittest.TestCase):
                 service=FakeLan() if mode=='lan' else WanTransferService(base/'wan',enabled=False)
                 dialog=LanDialog(service,store);dialog.show();flush();panel=dialog.panel
                 try:
+                    panel.set_queue_list_mode(True)
                     for theme in ('dark','light'):
                         dialog.apply_theme(theme)
                         for height in (704,660,800):

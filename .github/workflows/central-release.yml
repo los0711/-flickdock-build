@@ -9,6 +9,12 @@ on:
         required: true
         default: verify
         options: [signing-test, verify, publish]
+      target:
+        description: Publish both current platforms or only Apple Silicon
+        type: choice
+        required: true
+        default: both
+        options: [both, mac-arm64]
       notes:
         description: Concise user-facing release notes (required for publish)
         type: string
@@ -16,6 +22,9 @@ on:
 
 permissions:
   contents: read
+
+env:
+  FLICKDOCK_RELEASE_TARGET: ${{ inputs.target }}
 
 concurrency:
   group: flickdock-central-release
@@ -54,11 +63,15 @@ jobs:
         if: inputs.mode == 'publish'
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          GITEE_RELEASE_TOKEN: ${{ secrets.GITEE_RELEASE_TOKEN }}
           FLICKDOCK_RELEASE_NOTES: ${{ inputs.notes }}
-        run: python release_pipeline.py preflight
+        run: |
+          python release_pipeline.py preflight
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python release_source_sync.py --verify-baseline
 
   windows:
-    if: inputs.mode == 'publish'
+    if: inputs.mode == 'publish' && inputs.target != 'mac-arm64'
     needs: authorization
     uses: ./.github/workflows/release-windows.yml
     permissions:
@@ -70,11 +83,15 @@ jobs:
     uses: ./.github/workflows/macos-build.yml
     with:
       test_build: true
+      desktop_checks: ${{ inputs.target == 'mac-arm64' }}
     permissions:
       contents: read
 
   publish:
-    if: inputs.mode == 'publish'
+    if: >-
+      always() && inputs.mode == 'publish' && needs.authorization.result == 'success' &&
+      needs.macos.result == 'success' &&
+      (needs.windows.result == 'success' || (inputs.target == 'mac-arm64' && needs.windows.result == 'skipped'))
     needs: [authorization, windows, macos]
     runs-on: windows-2025
     timeout-minutes: 90
@@ -100,6 +117,7 @@ jobs:
           python -m pip install -r requirements.txt requests==2.34.2
           npm ci --prefix website --no-audit --no-fund
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        if: inputs.target != 'mac-arm64'
         with:
           name: FlickDock-Windows-x64-${{ github.sha }}
           path: ci-windows-release

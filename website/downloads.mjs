@@ -13,7 +13,7 @@ export function releaseIndex(value){
   for(const row of rows){
     if(!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(row.version))throw new Error('Invalid release version');
     const expected=new Set(['FlickDock-Setup-'+row.version+'.exe',...['pkg','zip','dmg'].map(ext=>'FlickDock-'+row.version+'-macOS-arm64.'+ext)]);
-    if(!Array.isArray(row.assets)||row.assets.length!==expected.size)throw new Error('Incomplete installer release');
+    if(!Array.isArray(row.assets))throw new Error('Invalid release installers');
     for(const asset of row.assets){
       const url=new URL(asset.archive);
       const gitee=url.origin==='https://gitee.com'&&/^\/rooogerluo\/flick-dock-(?:windows|macos)-releases-\d+\/releases\/download\//.test(url.pathname)&&url.pathname.endsWith('/releases/download/v'+row.version+'/'+asset.name);
@@ -23,6 +23,9 @@ export function releaseIndex(value){
       const originKey=asset.originKey??('v'+row.version+'/'+asset.name);
       if(asset.originKey!==undefined&&originKey!=='v'+row.version+'/sha256-'+asset.sha256+'/'+asset.name)throw new Error('Invalid immutable installer origin');
       index.set(asset.name,{...asset,originKey,version:row.version,hot:hot.has(row.version)});
+    }
+    if(expected.size&&!(expected.size===1&&expected.has('FlickDock-Setup-'+row.version+'.exe'))){
+      throw new Error('Incomplete Apple Silicon installer release');
     }
   }
   return index;

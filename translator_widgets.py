@@ -3,25 +3,463 @@ from collections import OrderedDict
 from functools import cache
 from pathlib import Path
 import math
+import re
 import time
 import weakref
 from shiboken6 import isValid
 
 from PySide6.QtCore import QEasingCurve, QEvent, QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, QSignalBlocker, QTimer, Signal
-from PySide6.QtGui import QColor, QFontMetrics, QIcon, QLinearGradient, QPainter, QPalette, QPen, QPixmap, QRegion
+from PySide6.QtGui import QColor, QFontMetrics, QFontMetricsF, QIcon, QLinearGradient, QPainter, QPainterPath, QPalette, QPen, QPixmap, QRegion, QTextCharFormat, QTextLayout, QTextLine, QTextOption
 from PySide6.QtSvg import QSvgRenderer
-from PySide6.QtWidgets import (QToolButton, QAbstractButton, QApplication, QFrame, QHBoxLayout, QLabel,
+from PySide6.QtWidgets import (QToolButton, QAbstractButton, QApplication, QFrame, QGraphicsOpacityEffect, QHBoxLayout, QLabel,
                                QLineEdit, QListWidget, QListWidgetItem, QPlainTextEdit, QStyledItemDelegate, QStyle, QVBoxLayout, QWidget)
 
-from native_ui_common import (PopupChevronMotion, RoundedScrollBar, RoundedSurfaceFrame, colors, icon, paint_rounded_surface,
-                              qss_color, reduced_motion, reference_font, rounded_popup, screen_for_widget)
+from native_ui_common import (RADIUS_PANEL_PX, PopupChevronMotion, RoundedScrollBar, RoundedSurfaceFrame, colors, icon, paint_rounded_surface,
+                              qss_color, reduced_motion, reference_font, rounded_popup, screen_for_widget, set_ui_weight)
 from display_frames import DisplayAnimation, FramePulse
 from reference_widgets import IconTextButton, ToolbarButton, button, css, label
 from surface_morph import paint_surface_shadow
 from translation_languages import TARGETS
+from flickdock_motion import Spring
+from bisect import bisect_right
 import ui_theme
 
 ACTION_SIZE=28
+
+
+class ThinkingText(QLabel):
+    """Native AI Text Loading motion, adapted from Kokonut UI (MIT)."""
+
+    PHRASE_INTERVAL=1.5
+    WAVE_DURATION=1.6
+    WAVE_STEP=.07
+    ENTER_DURATION=.28
+    ENTER_STEP=.018
+    EXIT_DURATION=.15
+    GLYPH_PADDING=4
+
+    def __init__(self,parent):
+        super().__init__(parent)
+        font=set_ui_weight(reference_font(),500)
+        font.setPixelSize(11);self.setFont(font)
+        self.setFixedHeight(math.ceil(QFontMetricsF(font).height())+10)
+        self.setTextFormat(Qt.PlainText)
+        self._phrases=();self._started=0.;self._since=0.
+        self._ink=qss_color(colors(ui_theme.current_theme())['secondary'])
+        self._sprites={}
+        from ui_transitions import exit_curve
+        self._ease_out=exit_curve()
+        self._wave=QEasingCurve(QEasingCurve.BezierSpline)
+        self._wave.addCubicBezierSegment(QPointF(.42,0),QPointF(.58,1),QPointF(1,1))
+        self._frames=FramePulse(self)
+        self._frames.timeout.connect(self._frame)
+        self.hide()
+
+    def set_theme(self,theme):
+        ink=qss_color(colors(theme)['secondary'])
+        if ink!=self._ink:
+            self._ink=ink
+            self._sprites.clear()
+            self.update()
+
+    def set_task(self,caption='',alternate=''):
+        phrases=(caption,alternate) if alternate else (caption,) if caption else ()
+        if phrases==self._phrases:return
+        self._phrases=phrases
+        self.setText(caption);self.setAccessibleName(caption)
+        self.setVisible(bool(phrases))
+        self._restart()
+
+    def _restart(self):
+        self._started=time.perf_counter()
+        self._since=0.
+        if self.isVisible() and self._phrases and not reduced_motion():
+            if not self._frames.isActive():self._frames.start()
+        else:self._frames.stop()
+        self.update()
+
+    def showEvent(self,event):
+        super().showEvent(event)
+        self._restart()
+
+    def hideEvent(self,event):
+        self._frames.stop()
+        super().hideEvent(event)
+
+    def _frame(self):
+        if reduced_motion():
+            self._frames.stop();self._since=0.
+        else:self._since=time.perf_counter()-self._started
+        self.update()
+
+    def _soft_glyph(self,letter,metrics,ratio):
+        key=(letter,ratio)
+        if key not in self._sprites:
+            pad=self.GLYPH_PADDING
+            width=math.ceil((metrics.horizontalAdvance(letter)+2*pad)*ratio)
+            height=math.ceil((metrics.height()+2*pad)*ratio)
+            image=QPixmap(width,height);image.setDevicePixelRatio(ratio);image.fill(Qt.transparent)
+            painter=QPainter(image)
+            painter.setFont(self.font());painter.setPen(self._ink)
+            painter.drawText(QPointF(pad,pad+metrics.ascent()),letter)
+            painter.end()
+            softened=image.scaled(max(1,round(width/3)),max(1,round(height/3)),
+                                  Qt.IgnoreAspectRatio,Qt.SmoothTransformation)
+            softened=softened.scaled(width,height,Qt.IgnoreAspectRatio,Qt.SmoothTransformation)
+            softened.setDevicePixelRatio(ratio)
+            self._sprites[key]=softened
+        return self._sprites[key]
+
+    def _paint_phrase(self,painter,metrics,phrase,at,*,entering=False,leaving=False):
+        x=0.
+        baseline=(self.height()-metrics.height())/2+metrics.ascent()
+        for index,letter in enumerate(phrase):
+            wave=((at-index*self.WAVE_STEP)%self.WAVE_DURATION)/self.WAVE_DURATION
+            opacity=1.-.7*self._wave.valueForProgress(1.-abs(2.*wave-1.))
+            offset=blur=0.
+            if entering:
+                fraction=max(0.,min(1.,(at-index*self.ENTER_STEP)/self.ENTER_DURATION))
+                settled=self._ease_out.valueForProgress(fraction)
+                opacity*=settled;offset=8.*(1.-settled);blur=1.-settled
+            elif leaving:
+                departed=self._ease_out.valueForProgress(at/self.EXIT_DURATION)
+                opacity*=1.-departed;offset=-6.*departed;blur=departed*.75
+            if opacity>0:
+                if blur>0:
+                    pad=self.GLYPH_PADDING
+                    painter.setOpacity(opacity*blur)
+                    painter.drawPixmap(QPointF(x-pad,baseline+offset-metrics.ascent()-pad),
+                                       self._soft_glyph(letter,metrics,self.devicePixelRatioF()))
+                painter.setOpacity(opacity*(1.-blur))
+                painter.drawText(QPointF(x,baseline+offset),letter)
+            x+=metrics.horizontalAdvance(letter)
+
+    def paintEvent(self,event):
+        if not self._phrases:return
+        painter=QPainter(self);painter.setFont(self.font());painter.setPen(self._ink)
+        metrics=QFontMetricsF(self.font())
+        if not self._frames.isActive():
+            painter.drawText(self.rect(),Qt.AlignLeft|Qt.AlignVCenter,self._phrases[0])
+        else:
+            cycle=int(self._since/self.PHRASE_INTERVAL)
+            now=self._since-cycle*self.PHRASE_INTERVAL
+            index=cycle%len(self._phrases)
+            changing=cycle>0 and len(self._phrases)>1
+            if changing and now<self.EXIT_DURATION:
+                self._paint_phrase(painter,metrics,self._phrases[index-1],now,leaving=True)
+            phrase=self._phrases[index]
+            entering=changing and now<self.ENTER_DURATION+(len(phrase)-1)*self.ENTER_STEP
+            self._paint_phrase(painter,metrics,phrase,now,entering=entering)
+        painter.end()
+
+
+class StreamingResultEditor(QPlainTextEdit):
+    """Reveal the complete native document without editing it on paint frames."""
+
+    WORD_INTERVAL=.07
+    MAX_STAGGER=2.1
+    WORD_STIFFNESS=340
+    WORD_DAMPING=26
+    WORD_SETTLE=.36
+    _UNITS=re.compile(r'[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]|[^\s\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]+')
+
+    def __init__(self,parent):
+        super().__init__(parent)
+        self._reveal=FramePulse(self);self._reveal.timeout.connect(self._reveal_frame)
+        self._words=[]
+        self._started_at=0.
+        self._delay=self.WORD_INTERVAL
+        self.textChanged.connect(self.finish_reveal)
+
+    def start_reveal(self,value):
+        self.finish_reveal()
+        if not self.isVisible() or reduced_motion() or not value.strip():return
+        offsets=[]
+        last=position=0
+        for match in self._UNITS.finditer(value):
+            start=position+len(value[last:match.start()].encode('utf-16-le'))//2
+            last=match.end()
+            position=start+len(match[0].encode('utf-16-le'))//2
+            offsets.append((start,position))
+        if not offsets:return
+        # Very long documents reveal in larger groups within the same budget.
+        if len(offsets)>48:
+            stride=math.ceil(len(offsets)/48)
+            offsets=[(offsets[i][0],offsets[min(i+stride,len(offsets))-1][1])
+                     for i in range(0,len(offsets),stride)]
+        self._words=offsets
+        self._delay=min(self.WORD_INTERVAL,self.MAX_STAGGER/max(1,len(offsets)-1))
+        self._started_at=time.perf_counter();self._reveal.start()
+        self.viewport().update()
+
+    def finish_reveal(self):
+        if not self._words:return
+        self._words=[];self._reveal.stop();self.viewport().update()
+
+    def _reveal_frame(self):
+        duration=(len(self._words)-1)*self._delay+self.WORD_SETTLE
+        if time.perf_counter()-self._started_at>=duration or reduced_motion():
+            self.finish_reveal()
+        else:self.viewport().update()
+
+    def hideEvent(self,event):
+        self.finish_reveal()
+        super().hideEvent(event)
+
+    def viewportEvent(self,event):
+        if hasattr(self,'_words') and event.type() in (QEvent.MouseButtonPress,QEvent.Wheel,QEvent.TouchBegin):
+            self.finish_reveal()
+        return super().viewportEvent(event)
+
+    def keyPressEvent(self,event):
+        self.finish_reveal()
+        super().keyPressEvent(event)
+
+    def _draw_reveal_block(self,painter,block,origin,elapsed):
+        layout=block.layout()
+        length=block.length()-1
+        start=block.position()
+        finish=min(len(self._words),max(0,1+math.floor((elapsed-self.WORD_SETTLE)/self._delay)))
+        cutoff=self._words[finish-1][1]-start if finish else 0
+        if cutoff>0:
+            for run in layout.glyphRuns(0,min(cutoff,length)):
+                painter.drawGlyphRun(origin,run)
+        if cutoff>=length:return
+        damping=self.WORD_DAMPING/2
+        frequency=math.sqrt(self.WORD_STIFFNESS-damping*damping)
+        for index in range(finish,min(len(self._words),1+math.floor(elapsed/self._delay))):
+            left,right=self._words[index]
+            left=max(0,left-start);right=min(length,right-start)
+            if right<=left:continue
+            t=max(0.,elapsed-index*self._delay)
+            angle=frequency*t
+            spring=1-math.exp(-damping*t)*(math.cos(angle)+damping/frequency*math.sin(angle))
+            alpha=max(0.,min(1.,spring))
+            shift=QPointF(0,6*(1-spring))
+            softness=.8*(1-alpha)
+            runs=layout.glyphRuns(left,right-left)
+            if softness>.12:
+                painter.setOpacity(alpha*.55)
+                for run in runs:painter.drawGlyphRun(origin+shift-QPointF(softness,0),run)
+                painter.setOpacity(alpha*.65)
+                shift+=QPointF(softness,0)
+            else:painter.setOpacity(alpha)
+            for run in runs:painter.drawGlyphRun(origin+shift,run)
+        painter.setOpacity(1.)
+
+    def paintEvent(self,event):
+        if not self._words:
+            super().paintEvent(event);return
+        painter=QPainter(self.viewport())
+        painter.setPen(self.palette().color(QPalette.Text))
+        painter.setClipRegion(event.region())
+        clip=QRectF(event.rect())
+        elapsed=time.perf_counter()-self._started_at
+        block=self.firstVisibleBlock()
+        while block.isValid():
+            rect=self.blockBoundingGeometry(block).translated(self.contentOffset())
+            if rect.top()>clip.bottom()+6:break
+            if block.isVisible() and rect.bottom()+6>=clip.top():
+                self._draw_reveal_block(painter,block,rect.topLeft(),elapsed)
+            block=block.next()
+        painter.end()
+
+
+class ReadAlongCaption(QWidget):
+    """Wrap once, then move the word pill and scroll independently on the frame clock."""
+
+    seek_requested=Signal(int)
+
+    def __init__(self,parent):
+        super().__init__(parent)
+        font=reference_font();font.setPixelSize(13);self.setFont(font)
+        self.setMinimumWidth(0)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setAccessibleName('朗读字幕')
+        self._text=''
+        self._span=(0,0)
+        self._complete=False
+        self._layout=None
+        self._layout_width=0
+        self._offsets=[0]
+        self._line_tops=[]
+        self._line_starts=[]
+        self._formats=[]
+        self._word_box=None
+        self._left=Spring(self,{'edge':0.},self._frame)
+        self._right=Spring(self,{'edge':0.},self._frame)
+        self._top=Spring(self,{'y':0.},self._frame)
+        self._opacity=Spring(self,{'alpha':0.},self._frame)
+        self._scroll=Spring(self,{'y':0.},self._frame)
+        self._theme=None
+        self.setFixedHeight(0)
+
+    def _frame(self,_):
+        self.update()
+
+    def set_caption(self,text,start,end,*,complete=False):
+        if (text,(start,end),complete)==(self._text,self._span,self._complete) and self._theme==ui_theme.current_theme():return
+        changed=text!=self._text
+        self._text=text;self._span=(start,end);self._complete=complete
+        if changed:
+            self.setAccessibleDescription(text)
+            self._offsets=[0]
+            for char in text:self._offsets.append(self._offsets[-1]+(2 if ord(char)>0xffff else 1))
+            self._wrap()
+        self._retarget(snap=changed)
+
+    def finish_caption(self):
+        self.set_caption(self._text,*self._span,complete=True)
+
+    def _wrap(self):
+        self._line_starts=[];self._line_tops=[]
+        self._layout_width=max(1,self.width()-6)
+        if not self._text:
+            self._layout=None
+            self.setFixedHeight(0)
+            return
+        self._layout=QTextLayout(self._text.replace('\r',' ').replace('\n','\u2028'),self.font())
+        self._layout.setCacheEnabled(True)
+        options=QTextOption();options.setWrapMode(QTextOption.WrapAtWordBoundaryOrAnywhere)
+        self._layout.setTextOption(options)
+        self._layout.beginLayout()
+        y=2.
+        while (line:=self._layout.createLine()).isValid():
+            line.setLineWidth(self._layout_width)
+            line.setPosition(QPointF(3.,y))
+            self._line_starts.append(line.textStart());self._line_tops.append(y)
+            y+=line.height()+1.
+        self._layout.endLayout()
+        last=self._layout.lineAt(min(len(self._line_tops),3)-1)
+        self.setFixedHeight(math.ceil(last.y()+last.height()+2.))
+
+    @staticmethod
+    def _ink_range(start,end,color):
+        run=QTextLayout.FormatRange()
+        run.start=start;run.length=end-start
+        run.format=QTextCharFormat();run.format.setForeground(color)
+        return run
+
+    def _retarget(self,*,snap=False):
+        self._theme=ui_theme.current_theme()
+        c=colors(self._theme)
+        self._formats=[]
+        if self._layout is None or not self._line_starts:
+            self._word_box=None;self._scroll.jump({'y':0.});self._opacity.jump({'alpha':0.})
+            return
+        start,end=(self._offsets[min(spot,len(self._text))] for spot in self._span)
+        read_end=self._offsets[-1] if self._complete else end
+        if read_end:self._formats.append(self._ink_range(0,read_end,qss_color(c['text'])))
+        snap=snap or reduced_motion() or not self.isVisible()
+        line_index=max(0,bisect_right(self._line_starts,start)-1)
+        line=self._layout.lineAt(line_index)
+        # Leave one leading line above the current word when there is room.
+        target_scroll=self._line_tops[max(0,line_index-1)]-2.
+        final=self._layout.lineAt(self._layout.lineCount()-1)
+        target_scroll=min(target_scroll,max(0.,final.y()+final.height()+2.-self.height()))
+        if snap:self._scroll.jump({'y':target_scroll})
+        elif self._scroll._targets['y']!=target_scroll:self._scroll.animate_physical({'y':target_scroll},600,48)
+        if end<=start:
+            self._word_box=None
+            self._opacity.jump({'alpha':0.})
+            return
+        next_line=line.textStart()+line.textLength()
+        x1=line.cursorToX(start)[0];x2=line.cursorToX(min(end,next_line))[0]
+        pad=QFontMetricsF(self.font()).height()*.16
+        left,right=sorted((x1,x2))
+        left=max(0.,left-pad);right=min(float(self.width()),right+pad)
+        top=line.y();height=line.height()
+        prev=self._word_box
+        self._word_box=(left,top,right,height)
+        if prev==self._word_box and not snap:
+            self.update()
+            return
+        if snap:
+            self._left.jump({'edge':left});self._right.jump({'edge':right})
+            self._top.jump({'y':top});self._opacity.jump({'alpha':1.})
+            return
+        forward=prev is None or left>=prev[0]
+        if prev is None or prev[1]!=top:
+            self._left.jump({'edge':left});self._right.jump({'edge':left});self._top.jump({'y':top})
+        self._left.animate_physical({'edge':left},*((210,26) if forward else (520,40)))
+        self._right.animate_physical({'edge':right},*((520,40) if forward else (210,26)))
+        self._opacity.animate_physical({'alpha':1.},300,30)
+
+    def resizeEvent(self,event):
+        super().resizeEvent(event)
+        if max(1,self.width()-6)!=self._layout_width:
+            self._wrap();self._retarget(snap=True)
+
+    def hideEvent(self,event):
+        for spring in (self._left,self._right,self._top,self._opacity,self._scroll):spring.stop()
+        super().hideEvent(event)
+
+    def showEvent(self,event):
+        super().showEvent(event)
+        self._retarget(snap=True)
+
+    def paintEvent(self,event):
+        if self._layout is None:return
+        c=colors(self._theme or ui_theme.current_theme())
+        painter=QPainter(self);painter.setRenderHint(QPainter.Antialiasing)
+        scroll=self._scroll.values['y']
+        origin=QPointF(0,-scroll)
+        pill=None
+        alpha=min(1.,max(0.,self._opacity.values['alpha']))
+        if self._word_box is not None and alpha>0.:
+            left=self._left.values['edge'];width=max(0.,self._right.values['edge']-left)
+            top=self._top.values['y'];height=self._word_box[3]
+            pill=QPainterPath()
+            pill.addRoundedRect(QRectF(left,top-scroll,width,height),height*.26,height*.26)
+            painter.setOpacity(alpha);painter.fillPath(pill,qss_color(c['action']));painter.setOpacity(1.)
+        painter.setPen(qss_color(c['muted']))
+        self._layout.draw(painter,origin,self._formats)
+        if pill is not None:
+            # Keep text legible even while only part of a word is under the pill.
+            painter.setClipPath(pill,Qt.IntersectClip)
+            painter.setOpacity(alpha);painter.setPen(qss_color(c['on_action']))
+            self._layout.draw(painter,origin)
+        painter.end()
+
+    def mousePressEvent(self,event):
+        if event.button()==Qt.LeftButton and self._layout is not None:
+            y=event.position().y()+self._scroll.values['y']
+            index=max(0,bisect_right(self._line_tops,y)-1)
+            offset=self._layout.lineAt(index).xToCursor(event.position().x(),QTextLine.CursorOnCharacter)
+            self.seek_requested.emit(max(0,bisect_right(self._offsets,offset)-1))
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+
+class PolishArrival:
+    """Fade in the comparison and editors' action controls after a result."""
+    def __init__(self,parent):
+        self.motion=DisplayAnimation(parent)
+        self.motion.setDuration(185);self.motion.setStartValue(0.);self.motion.setEndValue(1.)
+        self.motion.setEasingCurve(QEasingCurve.OutCubic)
+        self.motion.valueChanged.connect(self._step);self.motion.finished.connect(self.stop)
+        self._items=[]
+
+    def start(self,controls):
+        self.stop()
+        if reduced_motion():return
+        for control in controls:
+            if control.isVisible() and control.graphicsEffect() is None:
+                effect=QGraphicsOpacityEffect(control);effect.setOpacity(0.)
+                control.setGraphicsEffect(effect);self._items.append((control,effect))
+        if self._items:self.motion.start()
+
+    def _step(self,alpha):
+        for control,effect in self._items:
+            if isValid(control) and isValid(effect):effect.setOpacity(alpha)
+
+    def stop(self):
+        self.motion.stop()
+        items,self._items=self._items,[]
+        for control,effect in items:
+            if isValid(control) and isValid(effect) and control.graphicsEffect() is effect:
+                control.setGraphicsEffect(None)
 
 
 @cache
@@ -45,6 +483,27 @@ class TranslatorToolButton(ToolbarButton):
 
 
 class TranslatorActionButton(IconTextButton):
+    def _paint_surface(self,painter):
+        parent=self.parentWidget()
+        if not isinstance(parent,TranslatorSplitAction):
+            super()._paint_surface(painter)
+            return
+        if not self.isEnabled():return
+        palette=colors(ui_theme.current_theme())
+        hover=self.underMouse()
+        if hover or self.isDown():
+            painter.save()
+            path=QPainterPath()
+            bounds=QRectF(parent.rect()).adjusted(1,1,-1,-1).translated(-self.x(),-self.y())
+            radius=bounds.height()/2
+            path.addRoundedRect(bounds,radius,radius)
+            painter.setClipPath(path,Qt.IntersectClip)
+            painter.fillRect(self.rect(),qss_color(palette['control_pressed' if self.isDown() else 'control_hover']))
+            painter.restore()
+        if self.property('keyboardFocus'):
+            paint_rounded_surface(painter,QRectF(self.rect()).adjusted(2,2,-2,-2),9,
+                                  QColor(Qt.transparent),qss_color(palette['ring']))
+
     def sizeHint(self):
         if not self.text() and not self.icon().isNull():return QSize(self.height(),self.height())
         return super().sizeHint()
@@ -62,7 +521,7 @@ class TranslatorActionButton(IconTextButton):
         self.setIcon(icon(glyph,colors(ui_theme.current_theme())['secondary']))
 
 
-def translator_action(text,glyph,parent,*,variant='secondary'):
+def translator_action(text,glyph,parent,*,variant='secondary',padding=7):
     control=button(text,glyph,variant,parent,control_type=TranslatorActionButton)
     control.setFixedHeight(ACTION_SIZE)
     control.setIconSize(QSize(14,14))
@@ -71,7 +530,7 @@ def translator_action(text,glyph,parent,*,variant='secondary'):
     styles=[]
     for theme in ('dark','light'):
         c=colors(theme);ink='@fd_on_action@' if variant=='primary' else c['text']
-        styles.append(f"QPushButton{{background:transparent;color:{ink};border:0;padding:2px 7px;font:500 11px 'FlickDock UI';}}"
+        styles.append(f"QPushButton{{background:transparent;color:{ink};border:0;padding:2px {padding}px;font:500 11px 'FlickDock UI';}}"
                       f"QPushButton:disabled{{color:{c['muted']};}}")
     css(control,*styles)
     return control
@@ -79,6 +538,8 @@ def translator_action(text,glyph,parent,*,variant='secondary'):
 
 def picker_list(parent):
     view=QListWidget(parent)
+    view.setProperty('scrollEdgeBlur',False)
+    view.setProperty('scrollBackdropRole','popup_surface')
     view.setFrameShape(QFrame.NoFrame)
     view.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
     view.setVerticalScrollMode(QListWidget.ScrollPerPixel)
@@ -105,7 +566,7 @@ class TranslatorSurface(RoundedSurfaceFrame):
 
 class TranslatorSplitAction(TranslatorSurface):
     def __init__(self,text,glyph,parent):
-        super().__init__(parent,role='control',radius=8)
+        super().__init__(parent,role='control',radius=ACTION_SIZE/2)
         self.setFixedHeight(ACTION_SIZE)
         layout=QHBoxLayout(self);layout.setContentsMargins(1,1,1,1);layout.setSpacing(0)
         self.primary=translator_action(text,glyph,self,variant='quiet')
@@ -126,7 +587,7 @@ class PolishPane(TranslatorSurface):
     BREATH_SECONDS=3.8
 
     def __init__(self,parent):
-        super().__init__(parent,role='input')
+        super().__init__(parent,role='card',radius=RADIUS_PANEL_PX)
         self._active=False;self._started_at=0.
         self._rim=QRegion()
         self._frames=FramePulse(self);self._frames.timeout.connect(self._tick)
@@ -302,12 +763,12 @@ class TranslatorPopup(QFrame):
     def __init__(self,parent=None,*,width=300):
         super().__init__(parent,Qt.Popup);rounded_popup(self);self._shadow=OrderedDict()
         self.setFixedWidth(width+16);outer=QVBoxLayout(self);outer.setContentsMargins(8,8,8,8)
-        self.surface=TranslatorSurface(self,role='popup_surface');outer.addWidget(self.surface)
+        self.surface=TranslatorSurface(self,role='popup_surface',radius=RADIUS_PANEL_PX);outer.addWidget(self.surface)
         self.body=QVBoxLayout(self.surface);self.body.setContentsMargins(12,12,12,12);self.body.setSpacing(10)
         self._anchor=None
     def paintEvent(self,event):
         p=QPainter(self);p.setCompositionMode(QPainter.CompositionMode_Source);p.fillRect(self.rect(),Qt.transparent);p.setCompositionMode(QPainter.CompositionMode_SourceOver)
-        paint_surface_shadow(p,QRectF(self.surface.geometry()),self._shadow,10,QPoint(0,2),QColor(0,0,0,60),radius=12);p.end()
+        paint_surface_shadow(p,QRectF(self.surface.geometry()),self._shadow,12,QPoint(0,1),QColor(0,0,0,32),radius=RADIUS_PANEL_PX);p.end()
     def hideEvent(self,event):
         QApplication.instance().removeEventFilter(self)
         self.closed_at=time.monotonic();super().hideEvent(event)
@@ -320,6 +781,7 @@ class TranslatorPopup(QFrame):
         return False
 
     def popup_below(self,anchor):
+        self._dropdown_anchor=anchor
         self._anchor=weakref.ref(anchor);QApplication.instance().installEventFilter(self)
         self.setAttribute(Qt.WA_NoMouseReplay,True)
         self.adjustSize();point=anchor.mapToGlobal(QPoint(0,anchor.height()+4))-QPoint(8,0)
@@ -336,31 +798,35 @@ class LanguageButton(QAbstractButton):
         super().__init__(parent);self.setFixedHeight(32);self.setMinimumWidth(100);self.setCursor(Qt.PointingHandCursor)
         self.compact=compact;self._region=''
         self.chevron=PopupChevronMotion(self);font=reference_font();font.setPixelSize(12);self.setFont(font)
+        from dropdown_motion import DropdownTextRoll
+        self._text_roll=DropdownTextRoll(self)
     def set_language(self, code, detected=''):
         name,region=TARGETS.get(code,('自动检测',''))
         if code=='auto' and detected:
             name='识别为 '+detected
         if self.text()==name and self._region==region:
             return
+        popup=self.chevron.popup
+        if popup is not None and isValid(popup) and time.monotonic()-getattr(popup,'closed_at',0)<.45:
+            self._text_roll.begin(self.text(),name)
         self._region=region
         self.setText(name);self.updateGeometry();self.update()
-    def sizeHint(self):return QSize(self.fontMetrics().horizontalAdvance(self.text())+42+(24 if self._region else 0),32)
+    def sizeHint(self):return QSize(self.fontMetrics().horizontalAdvance(self.text())+(42 if self.compact else 50)+(24 if self._region else 0),32)
     def paintEvent(self,event):
         c=colors(ui_theme.current_theme());p=QPainter(self);p.setRenderHint(QPainter.Antialiasing)
         if self.isDown():
             center=QRectF(self.rect()).center();p.translate(center);p.scale(.97,.97);p.translate(-center)
         if not self.compact or self.underMouse() or self.isDown():
-            paint_rounded_surface(p,self.rect(),8,qss_color(c['control_pressed'] if self.isDown() else c['control_hover'] if self.underMouse() else c['control']),None if self.compact else qss_color(c['input_border']))
+            paint_rounded_surface(p,self.rect(),12,qss_color(c['control_pressed'] if self.isDown() else c['control_hover'] if self.underMouse() else c['card']),None if self.compact else qss_color(c['input_border']))
         p.setFont(self.font());p.setPen(QColor(c['secondary'] if self.compact else c['text']))
-        left=5 if self.compact else 10
+        left=5 if self.compact else 14
         flag=language_flag(self._region)
         if not flag.isNull():
             flag.paint(p,left,(self.height()-14)//2,18,14)
             left+=24
-        available=max(1,self.width()-left-26)
-        text=p.fontMetrics().elidedText(self.text(),Qt.ElideRight,available)
-        p.drawText(QRectF(left,0,available,self.height()),Qt.AlignVCenter|Qt.AlignLeft,text)
-        p.translate(self.width()-(10 if self.compact else 17),self.height()/2);p.rotate(self.chevron.angle);p.setPen(QPen(QColor(c['secondary']),1.3,Qt.SolidLine,Qt.RoundCap,Qt.RoundJoin))
+        available=max(1,self.width()-left-(26 if self.compact else 30))
+        self._text_roll.paint(p,QRectF(left,0,available,self.height()),self.text())
+        p.translate(self.width()-(10 if self.compact else 21),self.height()/2);p.rotate(self.chevron.angle);p.setPen(QPen(QColor(c['secondary']),1.3,Qt.SolidLine,Qt.RoundCap,Qt.RoundJoin))
         p.drawLine(QPoint(-4,-2),QPoint(0,2));p.drawLine(QPoint(0,2),QPoint(4,-2));p.end()
 
 
@@ -400,7 +866,8 @@ class LanguageOptionDelegate(QStyledItemDelegate):
         hover=popup._hovered
         pressed=popup._pressed
         point=(code,False)
-        if selected or hover==point or pressed==point:
+        highlighted=popup._highlight.paint(painter,qss_color(c['control_hover']),8,option.rect)
+        if selected or (hover==point and not highlighted) or pressed==point:
             role=('action_pressed' if pressed==point else 'action') if selected else ('control_pressed' if pressed==point else 'control_hover')
             paint_rounded_surface(painter,choice,8,qss_color(c[role]))
         if option.state & QStyle.State_HasFocus and not selected:
@@ -432,6 +899,9 @@ class LanguagePopup(TranslatorPopup):
         self._list_key=None;self._favorites=set();self._hovered=None;self._pressed=None
         self.search=QLineEdit(self.surface);self.search.setPlaceholderText('搜索语言名称或代码');self.search.setClearButtonEnabled(True);self.search.setToolTip('搜索语言');self.body.addWidget(self.search)
         self.list=picker_list(self.surface);self.list.setFixedHeight(290)
+        from dropdown_motion import StretchHighlight
+        self._highlight=StretchHighlight(self.list.viewport())
+        self.list.verticalScrollBar().valueChanged.connect(lambda _:self._highlight.move(QRectF()))
         self.list.setMouseTracking(True)
         self.list.viewport().setMouseTracking(True)
         self.list.setItemDelegate(LanguageOptionDelegate(self))
@@ -442,6 +912,7 @@ class LanguagePopup(TranslatorPopup):
     def configure(self,current,*,allow_auto=True):
         self.current=current;self.allow_auto=allow_auto
         self._hovered=self._pressed=None
+        self._highlight.move(QRectF())
         with QSignalBlocker(self.search):self.search.clear()
         self.refresh()
     def refresh(self):
@@ -485,7 +956,10 @@ class LanguagePopup(TranslatorPopup):
             if kind in (QEvent.MouseMove,QEvent.Leave):
                 hit=self._hit(event.position().toPoint()) if kind==QEvent.MouseMove else None
                 if hit!=self._hovered:
-                    self._hovered=hit;self.list.viewport().update()
+                    self._hovered=hit
+                    item=self.list.itemAt(event.position().toPoint()) if hit and not hit[1] else None
+                    self._highlight.move(LanguageOptionDelegate.parts(self.list.visualItemRect(item),hit[0])[0] if item else QRectF())
+                    self.list.viewport().update()
             elif kind in (QEvent.MouseButtonPress,QEvent.MouseButtonRelease) and event.button()==Qt.LeftButton:
                 hit=self._hit(event.position().toPoint())
                 if kind==QEvent.MouseButtonPress:
@@ -504,104 +978,6 @@ class LanguagePopup(TranslatorPopup):
         return super().eventFilter(watched,event)
     def _activate(self,item):self._choose(item.data(Qt.UserRole))
     def _choose(self,code):self.hide();self.selected.emit(code)
-
-
-class _TipWindow(QWidget):
-    def __init__(self):
-        super().__init__(None, Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint
-                         | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.WindowDoesNotAcceptFocus
-                         | Qt.WindowType.WindowTransparentForInput)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
-        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        self.text = ''
-        self._tip_font = reference_font()
-        self._tip_font.setPixelSize(12)
-
-    def sizeHint(self):
-        metrics = QFontMetrics(self._tip_font)
-        return QSize(metrics.horizontalAdvance(self.text) + 22, metrics.height() + 16)
-
-    def paintEvent(self, event):
-        c = colors(ui_theme.current_theme())
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        paint_rounded_surface(painter, self.rect(), 8, qss_color(c['popup_surface']), qss_color(c['border']))
-        painter.setFont(self._tip_font)
-        painter.setPen(QColor(c['text']))
-        painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self.text)
-        painter.end()
-
-
-class HoverTip(QObject):
-    """Reliable hover hints: one small rounded window instead of QToolTip."""
-    def __init__(self, scope):
-        super().__init__(scope)
-        self.scope = scope
-        self._target = None
-        self._window = _TipWindow()
-        self._timer = QTimer(self)
-        self._timer.setSingleShot(True)
-        self._timer.setInterval(380)
-        self._timer.timeout.connect(self._show)
-        app = QApplication.instance()
-        if app is not None: app.installEventFilter(self)
-
-    def _inside(self, widget):
-        try:
-            return widget is self.scope or self.scope.isAncestorOf(widget)
-        except RuntimeError:
-            return False
-
-    def eventFilter(self, watched, event):
-        if not isinstance(watched, QWidget): return False
-        kind = event.type()
-        if kind==QEvent.Resize and watched is self.scope:
-            if self._target is not None:self._hide()
-            return False
-        if kind==QEvent.ToolTip and self._inside(watched):
-            event.accept();return True
-        if kind in (QEvent.Type.Enter, QEvent.Type.HoverEnter):
-            if self._inside(watched) and ui_theme.allows_hover_hint(watched) and watched.isVisible() and watched.toolTip().strip():
-                self._target = watched
-                self._timer.start()
-            elif self._target is not None:
-                self._hide()
-        elif kind in (QEvent.Type.Leave, QEvent.Type.Hide, QEvent.Type.MouseButtonPress):
-            if watched is self._target: self._hide()
-        return False
-
-    def _show(self):
-        widget = self._target
-        if widget is None or not isValid(widget) or not ui_theme.allows_hover_hint(widget): return
-        try:
-            if not widget.isVisible() or not widget.underMouse(): return
-            text = widget.toolTip().strip()
-        except RuntimeError:
-            return
-        if not text: return
-        self._window.text = text
-        self._window.resize(self._window.sizeHint())
-        anchor = widget.mapToGlobal(QPoint(0, widget.height() + 6))
-        x = anchor.x() + widget.width() // 2 - self._window.width() // 2
-        y = anchor.y()
-        screen = screen_for_widget(widget)
-        if screen is not None:
-            area = screen.availableGeometry()
-            if y + self._window.height() > area.bottom() + 1:
-                y = widget.mapToGlobal(QPoint(0, 0)).y() - self._window.height() - 6
-            x = max(area.left() + 4, min(x, area.right() - self._window.width() - 4))
-            y = max(area.top() + 4, y)
-        self._window.move(x, y)
-        self._window.show()
-        self._window.raise_()
-
-    def _hide(self):
-        self._timer.stop(); self._target = None
-        if self._window.isVisible(): self._window.hide()
-
-    def close(self):
-        self._hide(); self._window.deleteLater()
 
 
 class VoiceRow(QFrame):
@@ -730,6 +1106,6 @@ class PresetButton(QAbstractButton):
         c=colors(ui_theme.current_theme());p=QPainter(self)
         if self.isDown():
             center=QRectF(self.rect()).center();p.translate(center);p.scale(.97,.97);p.translate(-center)
-        fill=c['action'] if self.isChecked() else c['hover'] if self.underMouse() else 'transparent'
+        fill=c['action'] if self.isChecked() else c['control_hover'] if self.underMouse() else c['card']
         paint_rounded_surface(p,self.rect(),14,qss_color(fill),None if self.isChecked() else qss_color(c['input_border']))
-        p.setFont(self.font());p.setPen(qss_color(c['on_action'] if self.isChecked() else c['secondary']));p.drawText(self.rect(),Qt.AlignCenter,self.text());p.end()
+        p.setFont(self.font());p.setPen(qss_color(c['on_action'] if self.isChecked() else c['text']));p.drawText(self.rect(),Qt.AlignCenter,self.text());p.end()

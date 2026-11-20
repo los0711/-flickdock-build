@@ -41,6 +41,23 @@ class ReleasePipelineTests(unittest.TestCase):
                 pipeline.preflight(publish=True)
             baselines.assert_not_called()
 
+    def test_mac_only_does_not_require_the_windows_version_to_advance(self):
+        previous={name:{'version':'1.8.38'} for name in pipeline.INDEX_NAMES}
+        previous['latest.json']['version']=pipeline.APP_VERSION
+        env={'FLICKDOCK_RELEASE_TARGET':'mac-arm64','FLICKDOCK_RELEASE_NOTES':'优化体验'}
+        with patch.dict(os.environ,env,clear=True), patch.object(pipeline,'context',return_value='a'*40), \
+             patch.object(pipeline,'main_head',return_value='a'*40), \
+             patch.object(pipeline,'baselines',return_value=(previous,{})):
+            pipeline.preflight(publish=True)
+            self.assertEqual(pipeline.release_indices(),pipeline.MAC_ARM_INDICES)
+
+    def test_mac_only_updates_the_mac_website_link(self):
+        previous={name:{'version':'1.8.38'} for name in pipeline.INDEX_NAMES}
+        with patch.dict(os.environ,{'FLICKDOCK_RELEASE_TARGET':'mac-arm64'}):
+            html=pipeline._next_html(previous)
+        self.assertIn('/v1.8.38/FlickDock-Setup-1.8.38.exe',html)
+        self.assertIn('/v1.8.39/FlickDock-1.8.39-macOS-arm64.pkg',html)
+
     def test_baseline_is_bounded_and_does_not_follow_redirects(self):
         response = MagicMock(status_code=200)
         response.iter_content.return_value = iter([b'x' * (1024*1024), b'x'])

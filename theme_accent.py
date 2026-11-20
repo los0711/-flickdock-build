@@ -35,10 +35,11 @@ def _action_tokens(value,theme):
     # The neutral black theme retains the existing inverse controls in dark
     # appearance. A custom hue is identical across both appearances.
     if value==DEFAULT:
-        return dict(action='#000000' if theme=='light' else '#E5E5E5',
-            action_hover='#333333' if theme=='light' else '#D4D4D4',
-            action_pressed='#4D4D4D' if theme=='light' else '#C4C4C4',
-            on_action='#FFFFFF' if theme=='light' else '#171717')
+        surface='#111114' if theme=='light' else '#F5F6F8'
+        return dict(action=surface,ring=surface,
+            action_hover='#27282E' if theme=='light' else '#E2E4EA',
+            action_pressed='#3A3C44' if theme=='light' else '#CFD2DC',
+            on_action='#FAFAFC' if theme=='light' else '#0E0F11')
     color=QColor(value);on=contrasting_ink(color)
     return dict(action=value,on_action=on,
         action_hover=(color.darker(110) if on=='#FFFFFF' else color.lighter(110)).name(),

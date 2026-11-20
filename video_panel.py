@@ -8,7 +8,8 @@ from PySide6.QtCore import QEvent,QPointF,QRect,QRectF,QSize,Qt,QTimer
 from PySide6.QtGui import QFont,QFontMetricsF,QPainter,QColor,QLinearGradient,QPen
 from PySide6.QtWidgets import QButtonGroup,QCheckBox,QFrame,QGridLayout,QHBoxLayout,QLabel,QLineEdit,QPushButton,QSizePolicy,QStackedWidget,QStyle,QStyleOptionButton,QStylePainter,QVBoxLayout,QWidget
 from app_settings import ReferenceModalDialog,SettingsCloseButton,SettingsToggleSwitch
-from native_ui_common import colors,font_css_stack,keyboard_focus_visible,set_ui_weight,RADIUS_CARD_PX,RADIUS_CONTROL_PX
+from native_ui_common import SEGMENT_INSET_PX
+from native_ui_common import RADIUS_PANEL_PX, colors,font_css_stack,keyboard_focus_visible,set_ui_weight,RADIUS_CARD_PX,RADIUS_CONTROL_PX
 from reference_widgets import IconTextButton,button,css,refresh_tree,icon
 from image_preview import ImagePreview
 from media_preview import MediaPreview
@@ -309,9 +310,9 @@ class VideoResult(QFrame):
         info.addWidget(plain_label(f'解析成功 · {len(entry["sources"])} 个源',self,'videoSuccess'));summary.addLayout(info,1);layout.addLayout(summary)
         tabs=QHBoxLayout();tabs.setContentsMargins(0,0,0,0);tabs.setSpacing(6)
         from ui_transitions import SelectionSurface
-        self.tabs_frame=SelectionSurface(self,radius=RADIUS_CONTROL_PX-2);self.tabs_frame.setObjectName('videoSourceTabs')
+        self.tabs_frame=SelectionSurface(self,radius=16);self.tabs_frame.setObjectName('videoSourceTabs')
         self.tabs_frame.setSizePolicy(QSizePolicy.Maximum,QSizePolicy.Fixed)
-        tab_row=QHBoxLayout(self.tabs_frame);tab_row.setContentsMargins(4,4,4,4);tab_row.setSpacing(4)
+        tab_row=QHBoxLayout(self.tabs_frame);tab_row.setContentsMargins(*(SEGMENT_INSET_PX,)*4);tab_row.setSpacing(4)
         self.source_tabs={};self.source_stack=VideoSourceStack(self);self.source_group=QButtonGroup(self);self.source_group.setExclusive(True)
         for index,(kind,title) in enumerate((('video','视频'),('audio','音频'))):
             rows=[row for row in entry['sources'] if row['option']['kind']==kind]
@@ -425,7 +426,9 @@ class VideoDialog(ReferenceModalDialog):
         self.body_layout.setContentsMargins(22,12,22,20);self.body_layout.setSpacing(20)
         self.title_bar=QWidget(self.surface);self.title_bar.setFixedHeight(44)
         header=QHBoxLayout(self.title_bar);header.setContentsMargins(22,0,12,0);header.setSpacing(12)
-        header.addWidget(plain_label('视频解析',self.title_bar,'videoSourceTitle'));header.addWidget(plain_label('FlickDock',self.title_bar));header.addStretch()
+        header.addWidget(plain_label('视频解析',self.title_bar,'videoTitle'))
+        from reference_widgets import overview_back_button
+        self.back_button=overview_back_button(self.title_bar,lambda:manager.return_to_overview(self));header.addWidget(self.back_button);header.addStretch()
         self.close_button=SettingsCloseButton(self.title_bar,glyph_size=14);self.close_button.setFixedSize(28,28);self.close_button.clicked.connect(self.close);self.close_button.setAccessibleName('关闭视频解析');header.addWidget(self.close_button)
         self.surface.layout().insertWidget(0,self.title_bar)
         input_container=QWidget(self.surface);input_row=QHBoxLayout(input_container);input_row.setContentsMargins(22,10,22,10);input_row.setSpacing(8)
@@ -530,10 +533,13 @@ class VideoDialog(ReferenceModalDialog):
         if self._theme!=theme or getattr(self,'_accent',None)!=accent:
             self._accent=accent
             self._theme=theme;self.set_surface_theme(theme);self.close_button.dark=dark;c=colors(theme)
-            self.setStyleSheet(f'QLabel{{color:{c["text"]};background:transparent;font-size:12px;}} QLabel#videoTitle{{font-size:15px;font-weight:600;}} QLabel#videoSourceTitle{{font-size:12px;font-weight:600;}} QLabel#videoMeta{{font-size:11px;color:{c["secondary"]};}} QLabel#videoSuccess{{font-size:11px;color:{c["green"]};}} QWidget#videoFooter{{background:{c["dialog_surface"]};border:0;border-bottom-left-radius:{c["radius"]}px;border-bottom-right-radius:{c["radius"]}px;}} QFrame#videoSourceCard{{background:{c["card"]};border:1px solid {c["border"]};border-radius:{RADIUS_CARD_PX}px;}} QFrame#videoSourceCard:hover{{background:{c["hover"]};}} QLineEdit{{background:{c["input"]};color:{c["text"]};border:1px solid {c["input_border"]};border-radius:{RADIUS_CONTROL_PX}px;padding:10px 12px;}} QLineEdit:focus{{border-color:{c["ring"]};}} QProgressBar{{background:{c["control"]};border:0;border-radius:3px;}} QProgressBar::chunk{{background:{c["action"]};border-radius:3px;}}')
+            from native_ui_common import apply_widget_theme_style
+            apply_widget_theme_style(self,
+                f'QLabel{{color:{c["text"]};background:transparent;font-size:12px;}} QLabel#videoTitle{{font-size:15px;font-weight:600;}} QLabel#videoSourceTitle{{font-size:12px;font-weight:600;}} QLabel#videoMeta{{font-size:11px;color:{c["secondary"]};}} QLabel#videoSuccess{{font-size:11px;color:{c["green"]};}} QWidget#videoFooter{{background:transparent;border:0;border-bottom-left-radius:{c["radius"]}px;border-bottom-right-radius:{c["radius"]}px;}} QFrame#videoSourceCard{{background:{c["card"]};border:1px solid {c["border"]};border-radius:{RADIUS_PANEL_PX}px;}} QFrame#videoSourceCard:hover{{background:{c["hover"]};}} QLineEdit{{background:{c["input"]};color:{c["text"]};border:1px solid {c["input_border"]};border-radius:{RADIUS_CONTROL_PX}px;padding:10px 12px;}} QLineEdit:focus{{border-color:{c["ring"]};}} QProgressBar{{background:{c["control"]};border:0;border-radius:3px;}} QProgressBar::chunk{{background:{c["action"]};border-radius:3px;}}'
+                f'QCheckBox{{font-size:12px;color:{c["text"]};}} QLabel#videoFolder{{font-size:11px;color:{c["secondary"]};font-family:{font_css_stack(technical=True)};}} QFrame#videoSourceCard[downloadComplete="true"]{{background:{c["selected"]};}}'
+            )
             refresh_tree(self,theme)
             self.prompt.dark=dark
-            self.setStyleSheet(self.styleSheet()+f'QCheckBox{{font-size:12px;color:{c["text"]};}} QLabel#videoFolder{{font-size:11px;color:{c["secondary"]};font-family:{font_css_stack(technical=True)};}} QFrame#videoSourceCard[downloadComplete="true"]{{background:{c["selected"]};}}')
         blocked=self.prompt.blockSignals(True);self.prompt.setChecked(self.manager.settings.video_link_prompt);self.prompt.blockSignals(blocked)
         self._refresh_folder_label()
         busy=self.controller.extracting is not None;self.parse_button.setEnabled(not busy);self.parse_button.setText('解析中…' if busy else '解析');self.stop_button.setVisible(busy)

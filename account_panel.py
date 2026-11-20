@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import sys
 from account_service import valid_new_password
+from native_ui_common import SEGMENT_INSET_PX
 from native_ui_common import (reference_font, set_ui_weight, icon as ui_icon, colors as ui_colors,
     RADIUS_CONTROL_PX, RADIUS_CARD_PX, RADIUS_PANEL_PX, RADIUS_SUBCONTROL_PX,
     RoundedSurfaceFrame, RoundedScrollBar, paint_rounded_surface, qss_color)
@@ -250,7 +251,7 @@ class AccountDeviceCard(RoundedSurfaceFrame):
 
     def surface_style(self):
         c=ui_colors(_account_theme(self))
-        return c['control'],c['ring'] if self.hasFocus() else c['border'],RADIUS_CARD_PX
+        return c['subcard'],c['ring'] if self.hasFocus() else c['border'],16
 
     def focusInEvent(self,event):
         super().focusInEvent(event);self.update();self._refresh_actions()
@@ -295,11 +296,11 @@ class AccountGlyph(QWidget):
         painter=QPainter(self);painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         if not self.device:
             c=ui_colors('dark' if self.dark else 'light')
-            painter.setPen(Qt.PenStyle.NoPen);painter.setBrush(QColor(c['action']));painter.drawEllipse(QRectF(self.rect()).adjusted(.5,.5,-.5,-.5))
+            painter.setPen(Qt.PenStyle.NoPen);painter.setBrush(QColor(c['brand_accent']));painter.drawEllipse(QRectF(self.rect()).adjusted(.5,.5,-.5,-.5))
             font=self.font();font.setPixelSize(14);set_ui_weight(font,600);painter.setFont(font)
-            painter.setPen(QColor(c['on_action']))
+            painter.setPen(QColor(c['brand_accent_ink']))
             if self.initial:painter.drawText(self.rect(),Qt.AlignmentFlag.AlignCenter,self.initial)
-            else:ui_icon('user',c['on_action']).paint(painter,(self.width()-22)//2,(self.height()-22)//2,22,22)
+            else:ui_icon('user',c['brand_accent_ink']).paint(painter,(self.width()-22)//2,(self.height()-22)//2,22,22)
             return
         tint=ui_colors('dark' if self.dark else 'light')['secondary']
         size=min(20,max(0,min(self.width(),self.height())-4))
@@ -328,7 +329,7 @@ class AccountPanel(RoundedSurfaceFrame):
     height_changed=Signal()
     def surface_style(self):
         c=ui_colors('dark' if self._dark else 'light')
-        return c['card'],c['border'],RADIUS_CARD_PX
+        return c['card'],c['border'],RADIUS_PANEL_PX
 
     def hasHeightForWidth(self):return True
 
@@ -605,9 +606,9 @@ class AccountPanel(RoundedSurfaceFrame):
         auth=self.auth_page.layout();self._empty_layout(auth);auth.setSpacing(12)
         auth.setSizeConstraints(QLayout.SetNoConstraint,QLayout.SetMinimumSize)
         from ui_transitions import SelectionSurface
-        tabs_frame=SelectionSurface(self.auth_page,radius=8);tabs_frame.setObjectName('accountAuthTabs');self.auth_tabs=tabs_frame
+        tabs_frame=SelectionSurface(self.auth_page,radius=16);tabs_frame.setObjectName('accountAuthTabs');self.auth_tabs=tabs_frame
         tabs_frame.set_surface_background('rgba(0,0,0,64)','#EEEEEE',RADIUS_CARD_PX,stroke_role='border')
-        tabs=QHBoxLayout(tabs_frame);tabs.setContentsMargins(4,4,4,4);tabs.setSpacing(4)
+        tabs=QHBoxLayout(tabs_frame);tabs.setContentsMargins(*(SEGMENT_INSET_PX,)*4);tabs.setSpacing(4)
         self.register_tab.setText('注册新账号')
         for button in (self.login_tab,self.register_tab):
             button.setFixedHeight(24);tabs.addWidget(button,1);button.show();tabs_frame.add_selection_button(button)
@@ -1146,8 +1147,10 @@ class AccountPanel(RoundedSurfaceFrame):
         super().showEvent(event);self._queue_fit()
 
     def apply_theme(self,theme):
-        if getattr(self,'_applied_theme',None)==theme:return
-        self._applied_theme=theme
+        from theme_accent import current
+        key=(theme,current())
+        if getattr(self,'_applied_theme',None)==key:return
+        self._applied_theme=key
         self._dark=theme=='dark'
         tokens=ui_colors(theme)
         card,field,ink,secondary,edge,hover=(tokens[k] for k in ('card','input','text','secondary','border','hover'))
@@ -1234,7 +1237,7 @@ class AccountPanel(RoundedSurfaceFrame):
             QDialog#accountModal QPushButton#accountPrimary {{background:#0A84FF;color:#FFFFFF;}}
             QDialog#accountModal QPushButton#accountModalClose {{background:transparent;padding:0;border-radius:8px;}}
             QDialog#accountModal QPushButton#accountTab {{background:transparent;border:0;padding:4px 6px;border-radius:8px;}}
-            QDialog#accountModal QPushButton#accountTab:checked,QDialog#accountModal QPushButton#accountTab:checked:hover,QDialog#accountModal QPushButton#accountTab:checked:pressed {{background:transparent;color:{ink};}}
+            QDialog#accountModal QPushButton#accountTab:checked,QDialog#accountModal QPushButton#accountTab:checked:hover,QDialog#accountModal QPushButton#accountTab:checked:pressed {{background:transparent;color:{tokens['segment_selected_ink']};font-weight:600;}}
             QFrame#accountSecurity {{background:transparent;border:0;}}
         '''
         for dialog in (self.password_dialog,self.auth_dialog,*self._rename_forms.values()):

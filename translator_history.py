@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (QApplication, QFrame, QHBoxLayout, QLineEdit, QLi
 
 from app_settings import SettingsComboBox
 from display_frames import DisplayAnimation
-from native_ui_common import colors, icon, paint_rounded_surface, qss_color, reduced_motion, reference_font, set_ui_weight
+from native_ui_common import colors, icon, paint_rounded_surface, qss_color, reduced_motion, reference_font, set_ui_weight, RoundedScrollBar, RADIUS_PANEL_PX, RADIUS_SUBCONTROL_PX
 from reference_widgets import button, label
 from translation_languages import TARGETS
 from translator_widgets import TranslatorSurface
@@ -46,7 +46,7 @@ class HistoryDelegate(QStyledItemDelegate):
             hover=owner.hover_action==entry;pressed=owner.pressed_action==entry and hover
             if hover:
                 fill=c['control_pressed' if pressed else 'control_hover'] if key=='favorite' else ('rgba(255,69,58,62)' if pressed else 'rgba(255,69,58,34)')
-                paint_rounded_surface(painter,area,6,qss_color(fill))
+                paint_rounded_surface(painter,area,RADIUS_SUBCONTROL_PX,qss_color(fill))
             glyph='trash' if key=='delete' else 'star-filled' if row['favorite'] else 'star'
             tint=c['red'] if key=='delete' and hover else '#E5AA17' if key=='favorite' and row['favorite'] else c['text'] if hover else c['secondary']
             icon(glyph,tint).paint(painter,area.adjusted(5,5,-5,-5).toAlignedRect())
@@ -61,6 +61,12 @@ class HistoryList(QListWidget):
         super().__init__(parent);self.setFrameShape(QFrame.NoFrame);self.setMouseTracking(True)
         self.setItemDelegate(HistoryDelegate(self));self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff);self.origin=None
         self.hover_action=None;self.pressed_action=None
+        self.setProperty('scrollBackdropRole','popup_surface')
+        self.setVerticalScrollBar(RoundedScrollBar(Qt.Vertical,self,
+            thumb_color=lambda:colors(ui_theme.current_theme())['input_border']))
+        self.setStyleSheet("""QListWidget {background:transparent;}
+            QScrollBar:vertical {background:transparent;border:0;width:8px;}
+            QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical {height:0;}""")
     def _action_at(self,point):
         item=self.itemAt(point)
         if item is None:return None
@@ -98,13 +104,17 @@ class HistoryList(QListWidget):
 class _Backdrop(QWidget):
     clicked=Signal()
     def paintEvent(self,event):
-        painter=QPainter(self);painter.fillRect(self.rect(),QColor(0,0,0,38));painter.end()
+        from surface_morph import surface_clip
+        painter=QPainter(self);painter.setRenderHint(QPainter.Antialiasing)
+        shade=QColor(0,0,0,95) if ui_theme.current_theme()=='dark' else QColor(187,190,198,145)
+        painter.fillPath(surface_clip(QRectF(self.parentWidget().rect()).translated(-self.x(),-self.y())),shade)
+        painter.end()
     def mousePressEvent(self,event):self.clicked.emit();event.accept()
 
 
 class TranslatorHistory(TranslatorSurface):
     def __init__(self,owner,parent):
-        super().__init__(parent,role='popup_surface',radius=12)
+        super().__init__(parent,role='popup_surface',radius=RADIUS_PANEL_PX)
         self.owner=owner;self.store=owner.store;self.opened=False;self.progress=0.;self._key=None;self._confirm_clear=False
         self.backdrop=_Backdrop(parent);self.backdrop.clicked.connect(lambda:self.set_open(False));self.backdrop.hide()
         self.animation=DisplayAnimation(self);self.animation.setDuration(230);self.animation.setEasingCurve(QEasingCurve.OutCubic)
@@ -134,7 +144,8 @@ class TranslatorHistory(TranslatorSurface):
     def reposition(self):
         parent=self.parentWidget();width=min(430,max(330,parent.width()-70));height=max(100,parent.height()-76)
         self.resize(width,height);self.move(round(parent.width()-8-self.progress*(width+8)),58)
-        self.backdrop.setGeometry(QRect(12,52,max(1,parent.width()-24),max(1,parent.height()-68)))
+        title_bottom=self.owner.title_bar.geometry().bottom()+1
+        self.backdrop.setGeometry(QRect(0,title_bottom,parent.width(),max(0,parent.height()-title_bottom)))
     def _step(self,value):self.progress=float(value);self.reposition()
     def set_open(self,opened,*,animate=True):
         self.opened=bool(opened);self.owner.history_button.setChecked(self.opened);self.animation.stop()

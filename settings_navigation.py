@@ -1,6 +1,7 @@
 """One scroll document with accessible anchor navigation and scroll tracking."""
+from collections import Counter
 from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, QRectF, QSignalBlocker, QTimer, QEasingCurve, Qt
-from PySide6.QtGui import QColor,QPainter
+from PySide6.QtGui import QColor,QImage,QLinearGradient,QPainter,QRegion
 from PySide6.QtWidgets import QApplication,QAbstractItemView,QAbstractScrollArea,QListWidget,QStyledItemDelegate,QStyle,QWidget
 from display_frames import DisplayAnimation
 from ui_transitions import motion_allowed
@@ -33,13 +34,45 @@ def _parent_can_scroll(area,distance):
 class _BounceOverlay(QWidget):
     """Brief visual overscroll; the real scrollbar never passes its limits."""
     def __init__(self,viewport):
-        super().__init__(viewport);self.snapshot=None;self.offset=0.;self.background=QColor()
+        super().__init__(viewport);self.snapshot=None;self.offset=0.;self.edge_backgrounds=()
         self.setAttribute(Qt.WA_TransparentForMouseEvents);self.setAttribute(Qt.WA_NoSystemBackground);self.hide()
+
+    @property
+    def background(self):
+        return self.edge_backgrounds[self.offset<0] if self.edge_backgrounds else QColor()
 
     def paintEvent(self,event):
         if self.snapshot is None:return
         painter=QPainter(self);painter.setClipRect(self.rect());painter.fillRect(self.rect(),self.background)
         painter.drawPixmap(QPointF(0,self.offset),self.snapshot);painter.end()
+
+
+def _bounce_edge_colors(area,snapshot):
+    from native_ui_common import qss_color
+    import ui_theme
+    color=area.property('scrollBackdropColor')
+    if color:return qss_color(color),qss_color(color)
+    if area.property('scrollBackdropFromSnapshot'):
+        # The overview's left viewport gutter always belongs to its backing.
+        # Use the composited color so the stretch follows translucent glass.
+        image=snapshot.toImage()
+        if not image.isNull():
+            corner=image.pixelColor(0,0)
+            if corner.alpha():return corner,corner
+    role=area.property('scrollBackdropRole')
+    fallback=qss_color(ui_theme.color(role or 'window_backdrop'))
+    if role:return fallback,fallback
+    image=snapshot.toImage()
+    width,height=image.width(),image.height()
+    if not width or not height:return fallback,fallback
+    # Sample both exposed edges. A corner can belong to a border, gutter or
+    # scrollbar, while a few text/icon pixels should not tint the whole gap.
+    def color_at_edge(top):
+        rows=(min(height-1,step) if top else max(0,height-1-step) for step in (1,3,5))
+        colors=Counter(image.pixel(x,y) for y in rows for x in range(width//16,width,max(1,width//24))
+                       if image.pixelColor(x,y).alpha()==255)
+        return QColor.fromRgb(colors.most_common(1)[0][0]) if colors else fallback
+    return color_at_edge(True),color_at_edge(False)
 
 
 class ScrollBoundaryBounce(QObject):
@@ -56,19 +89,22 @@ class ScrollBoundaryBounce(QObject):
         overlay=self.overlay;self.animation.stop()
         if not overlay.isVisible():
             viewport=self.area.viewport();window=viewport.window()
+            fade=getattr(self.area,'_flickdock_edge_fade',None)
+            if fade is not None:fade._capturing=True
             # Many app viewports are transparent. Capturing them alone loses
             # the parent surface and can paint black into the bounce snapshot.
             # Capture their composited region from the real Qt window instead.
-            if window is not viewport and window.isVisible():
-                rect=QRect(viewport.mapTo(window,QPoint()),viewport.size())
-                overlay.snapshot=window.grab(rect)
-            else:overlay.snapshot=viewport.grab()
+            try:
+                if window is not viewport and window.isVisible():
+                    rect=QRect(viewport.mapTo(window,QPoint()),viewport.size())
+                    overlay.snapshot=window.grab(rect)
+                else:overlay.snapshot=viewport.grab()
+            finally:
+                if fade is not None:fade._capturing=False
             if overlay.snapshot.isNull():return
-            color=overlay.snapshot.toImage().pixelColor(0,0)
-            if color.alpha()<255:
-                import ui_theme
-                color=QColor(ui_theme.color('background'))
-            overlay.background=color;overlay.setGeometry(self.area.viewport().rect());overlay.show();overlay.raise_()
+            overlay.edge_backgrounds=_bounce_edge_colors(self.area,overlay.snapshot)
+            overlay.setGeometry(self.area.viewport().rect());overlay.show();overlay.raise_()
+            if fade is not None:fade.set_bounce_source(overlay)
         # Resist progressively near the limit while retaining direction, so
         # reversing a gesture unwinds the stretch instead of jumping.
         delta=max(-12.,min(12.,-float(distance)*.12))
@@ -90,6 +126,8 @@ class ScrollBoundaryBounce(QObject):
 
     def stop(self):
         self.idle.stop();self.animation.stop();self.overlay.hide();self.overlay.snapshot=None;self.overlay.offset=0.
+        fade=getattr(self.area,'_flickdock_edge_fade',None)
+        if fade is not None:fade.set_bounce_source(None)
 
     def eventFilter(self,watched,event):
         if event.type() in (QEvent.Hide,QEvent.Resize,QEvent.MouseButtonPress,QEvent.KeyPress,QEvent.TouchBegin):self.stop()
@@ -166,10 +204,153 @@ class InertialWheelScroll(QObject):
         event.accept();return True
 
 
+def _blurred_edge(sample, height, *, top, tone):
+    """Progressively diffuse the captured pixels, keeping center content sharp."""
+    width=sample.width()
+    source=QRect(0,0 if top else sample.height()-height,width,height)
+    output=sample.copy(source)
+    destination=QRect(0,0,width,height)
+    start,stop=(0,height) if top else (height,0)
+    for scale,end in ((3.,1.),(6.,.78),(12.,.52)):
+        low_detail=sample.scaled(max(1,round(width/scale)),max(1,round(sample.height()/scale)),
+                                 Qt.IgnoreAspectRatio,Qt.SmoothTransformation)
+        level=low_detail.scaled(sample.size(),Qt.IgnoreAspectRatio,Qt.SmoothTransformation).copy(source)
+        p=QPainter(level)
+        p.setCompositionMode(QPainter.CompositionMode_DestinationIn)
+        blend=QLinearGradient(0,start,0,stop)
+        blend.setColorAt(0,Qt.black)
+        blend.setColorAt(end*.30,Qt.black)
+        blend.setColorAt(end,Qt.transparent)
+        p.fillRect(destination,blend)
+        p.end()
+        p=QPainter(output);p.drawImage(0,0,level);p.end()
+    clear=QColor(tone);clear.setAlpha(0)
+    veil=QLinearGradient(0,start,0,stop)
+    veil.setColorAt(0,tone)
+    veil.setColorAt(.08,tone)
+    veil.setColorAt(.58,clear)
+    p=QPainter(output);p.fillRect(destination,veil);p.end()
+    return output
+
+
+class _ScrollEdgeFade(QWidget):
+    """Composite blur from the current scroll frame within fixed edge bands."""
+    def __init__(self,area):
+        viewport=area.viewport()
+        # Text and item views can scroll their viewport's child widgets with
+        # the content. A sibling keeps the optical edge fixed to the frame.
+        super().__init__(viewport.parentWidget())
+        self.area=area
+        self.bar=area.verticalScrollBar()
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self._strengths=(0.,0.)
+        self._capturing=False
+        self._bounce_source=None
+        self.setGeometry(viewport.geometry())
+        viewport.installEventFilter(self)
+        self.bar.valueChanged.connect(self.sync)
+        self.bar.rangeChanged.connect(self.sync)
+        self.sync()
+
+    def sync(self,*args):
+        ramp=min(32,max(1,self._edge_height()))
+        top=self.bar.value()-self.bar.minimum()
+        bottom=self.bar.maximum()-self.bar.value()
+        self._strengths=tuple(_smoothstep(min(1.,distance/ramp)) for distance in (top,bottom))
+        self.setVisible(any(self._strengths))
+        self._update_bands()
+
+    def _update_bands(self):
+        height=self._edge_height()
+        if self.isVisible() and height>0:
+            self.update(QRegion(0,0,self.width(),height).united(
+                QRegion(0,self.height()-height,self.width(),height)))
+
+    def eventFilter(self,watched,event):
+        kind=event.type()
+        if kind in (QEvent.Resize,QEvent.Move):
+            self.setGeometry(watched.geometry())
+            self.raise_()
+            self.sync()
+        elif kind in (QEvent.PaletteChange,QEvent.StyleChange,QEvent.Show):
+            self._update_bands()
+        return False
+
+    def set_bounce_source(self,overlay):
+        if self._bounce_source is overlay:return
+        self._bounce_source=overlay
+        if overlay is not None:self.raise_()
+        self.sync()
+
+    def _edge_height(self):
+        compact=self.area.property('scrollBackdropColor') is not None
+        return min(18 if compact else 48,self.height()//4)
+
+    def _tone(self):
+        from native_ui_common import colors,qss_color
+        import ui_theme
+        owner=self.area.window()
+        theme=getattr(owner,'_applied_settings_theme',None) or owner.property('uiTheme') or ui_theme.current_theme()
+        color=self.area.property('scrollBackdropColor')
+        role=self.area.property('scrollBackdropRole')
+        if color:
+            tone=qss_color(color)
+        elif role:
+            tone=qss_color(colors(theme)[role])
+        else:
+            tone=self.area.viewport().palette().base().color()
+            if tone.alpha()==0:
+                tone=qss_color(colors(theme)['window_backdrop'])
+        return tone
+
+    def paintEvent(self,event):
+        if self._capturing:return
+        height=self._edge_height()
+        if height<=0 or self.width()<=0:return
+        source=self._bounce_source or self.area.viewport()
+        tone=self._tone()
+        sampled=min(self.height(),height+12)
+        painter=QPainter(self)
+        self._capturing=True
+        try:
+            for top,strength in zip((True,False),self._strengths):
+                y=0 if top else self.height()-height
+                if strength<=0 or not event.region().intersects(QRect(0,y,self.width(),height)):continue
+                region=QRect(0,0 if top else self.height()-sampled,self.width(),sampled)
+                capture=QImage(region.size(),QImage.Format_ARGB32_Premultiplied)
+                capture.fill(tone)
+                p=QPainter(capture)
+                source.render(p,QPoint(),QRegion(region),QWidget.DrawChildren)
+                p.end()
+                image=_blurred_edge(capture,height,top=top,tone=tone)
+                # Blend into the actual live pixels at the inner boundary.
+                # The resampled copy never replaces crisp content in the center.
+                mask=QPainter(image)
+                mask.setCompositionMode(QPainter.CompositionMode_DestinationIn)
+                gradient=QLinearGradient(0,0 if top else height,0,height if top else 0)
+                gradient.setColorAt(0,Qt.black)
+                gradient.setColorAt(.64,Qt.black)
+                gradient.setColorAt(1,Qt.transparent)
+                mask.fillRect(image.rect(),gradient);mask.end()
+                painter.setOpacity(strength);painter.drawImage(0,y,image)
+        finally:
+            self._capturing=False
+            painter.end()
+
+
+def _smoothstep(t):
+    return t*t*(3-2*t)
+
+
 class _SmoothScrollRouter(QObject):
     """Attach wheel momentum lazily to each application's scroll viewport."""
     def eventFilter(self,watched,event):
-        if event.type()!=QEvent.Wheel or not isinstance(watched,QWidget):return False
+        kind=event.type()
+        if kind==QEvent.Show and isinstance(watched,QAbstractScrollArea):
+            if watched.property('scrollEdgeBlur') is not False and not getattr(watched,'_flickdock_edge_fade',None):
+                watched._flickdock_edge_fade=_ScrollEdgeFade(watched)
+            return False
+        if kind!=QEvent.Wheel or not isinstance(watched,QWidget):return False
         area=watched if isinstance(watched,QAbstractScrollArea) else watched.parentWidget()
         while area is not None and not isinstance(area,QAbstractScrollArea):area=area.parentWidget()
         if area is None or watched not in (area,area.viewport(),area.verticalScrollBar()):return False
@@ -189,18 +370,20 @@ def install_smooth_scrolling(app):
 
 class _CategoryDelegate(QStyledItemDelegate):
     def paint(self,painter,option,index):
-        owner=self.parent();c=owner._colors();rect=QRectF(option.rect).adjusted(0,0,0,-4)
+        owner=self.parent();c=owner._colors();rect=QRectF(option.rect).adjusted(2,0,-2,-4)
+        pill_r=rect.height()/2.0
         painter.save();painter.setRenderHint(QPainter.Antialiasing);painter.setClipRect(option.rect)
         if option.state & QStyle.State_MouseOver:
-            paint_rounded_surface(painter,rect,RADIUS_CONTROL_PX,QColor(c['hover']))
+            paint_rounded_surface(painter,rect,pill_r,QColor(c['rail_item_hover']))
         if not owner._marker_rect.isEmpty():
+            marker=owner._marker_rect.adjusted(2,0,-2,0)
             painter.save();painter.setOpacity(owner._marker_opacity)
-            paint_rounded_surface(painter,owner._marker_rect,RADIUS_CONTROL_PX,QColor(c['action']));painter.restore()
+            paint_rounded_surface(painter,marker,marker.height()/2.0,QColor(c['rail_active']));painter.restore()
         point=rect.center()
         active=owner._marker_rect.contains(point) and owner._marker_opacity>.55
-        painter.setPen(QColor(c['on_action'] if active else c['secondary']));painter.setFont(option.font)
-        text=option.fontMetrics.elidedText(str(index.data() or ''),Qt.ElideRight,max(1,round(rect.width()-20)))
-        painter.drawText(rect.adjusted(10,0,-10,0),Qt.AlignLeft|Qt.AlignVCenter,text);painter.restore()
+        painter.setPen(QColor(c['rail_active_ink'] if active else c['rail_item_ink']));painter.setFont(option.font)
+        text=option.fontMetrics.elidedText(str(index.data() or ''),Qt.ElideRight,max(1,round(rect.width()-24)))
+        painter.drawText(rect.adjusted(14,0,-10,0),Qt.AlignLeft|Qt.AlignVCenter,text);painter.restore()
 
 
 class AnimatedCategoryList(QListWidget):

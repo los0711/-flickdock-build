@@ -18,13 +18,13 @@ from PySide6.QtWidgets import (QLabel, QPushButton, QWidget, QFrame, QHBoxLayout
     QStackedWidget, QPlainTextEdit, QTextEdit, QCheckBox, QApplication, QDialog, QRubberBand)
 
 import ui_theme
+from native_ui_common import SEGMENT_INSET_PX
 from native_ui_common import (colors, icon, keyboard_focus_visible, paint_rounded_surface, qss_color, readable_qss, set_ui_weight, reference_font, RoundedSurfaceFrame, RoundedScrollBar, RoundedProgressBar,
     RADIUS_SMALL_PX,RADIUS_SUBCONTROL_PX,RADIUS_CONTROL_PX,RADIUS_CARD_PX,RADIUS_PANEL_PX,
     SHELF_HEADER_BUTTON_SIZE_PX, SHELF_HEADER_BUTTON_GAP_PX, SHELF_HEADER_RIGHT_MARGIN_PX,
     SHELF_OVERVIEW_HEADER_HEIGHT_PX)
-from content_stack import (StackTile,FAN_FRONT_ANGLE_DEGREES,FAN_LAYER_ANGLE_DEGREES,
-    FAN_LAYER_OFFSET_X_PX,MINI_FAN_LAYER_OFFSET_Y_PX,STACK_ARRIVAL_OFFSET_PX)
-from flickdock_motion import FeedbackButton
+from content_stack import StackTile,STACK_ARRIVAL_OFFSET_PX
+from flickdock_motion import FeedbackButton,Spring
 from ui_transitions import SelectionSurface
 from transfer_visuals import TransferIconLabel, CLOUD_STATUS_LABELS
 from lan_panel import _DropZone
@@ -87,8 +87,8 @@ class OverviewEmptyDropZone(_DropZone):
         self._transfer_choice_active=bool(active)
         if active:self._hovered=False;self.set_drag_active(False)
 
-    def set_drag_active(self,active):
-        super().set_drag_active(bool(active) and not self._transfer_choice_active)
+    def set_drag_active(self,active,point=None,*,accepted=False):
+        super().set_drag_active(bool(active) and not self._transfer_choice_active,point,accepted=accepted)
 
     def enterEvent(self,event):
         if not self._transfer_choice_active:super().enterEvent(event)
@@ -139,16 +139,21 @@ def css(widget, dark, light=None):
 def refresh_tree(widget,theme=None):
     theme=theme if theme in ('light','dark') else ui_theme.current_theme()
     themed_colors=colors(theme)
-    for child in [widget, *widget.findChildren(QWidget)]:
-        source=getattr(child,'_reference_style',None)
-        if source:
-            from theme_accent import resolve_qss
-            resolved=resolve_qss(source[theme=='light'],theme)
-            if child.styleSheet()!=resolved:child.setStyleSheet(resolved)
-        if getattr(child,'_reference_icon',None):
-            name,tint=child._reference_icon
-            child.setIcon(icon(name,themed_colors.get(tint,tint)))
-        child.update()
+    from theme_accent import resolve_qss
+    was_enabled=widget.updatesEnabled()
+    widget.setUpdatesEnabled(False)
+    try:
+        for child in [widget, *widget.findChildren(QWidget)]:
+            source=getattr(child,'_reference_style',None)
+            if source:
+                resolved=resolve_qss(source[theme=='light'],theme)
+                if child.styleSheet()!=resolved:child.setStyleSheet(resolved)
+            if getattr(child,'_reference_icon',None):
+                name,tint=child._reference_icon
+                child.setIcon(icon(name,themed_colors.get(tint,tint)))
+    finally:
+        widget.setUpdatesEnabled(was_enabled)
+    widget.update()
 
 
 def optical_text_baseline(font,text,height):
@@ -234,7 +239,9 @@ class IconTextButton(QPushButton):
 
     def _surface_radius(self):
         parent=self.parentWidget()
-        if self.property('previewCopyPath') or isinstance(parent,SelectionSurface) and not parent._selection_vertical:
+        if self.property('pillShape') or isinstance(parent,SelectionSurface):
+            return self.height()/2.0
+        if self.property('previewCopyPath'):
             return RADIUS_SUBCONTROL_PX
         return RADIUS_CONTROL_PX
 
@@ -261,16 +268,20 @@ class IconTextButton(QPushButton):
                   ('#2c2c31' if theme=='dark' else '#e1e1e3') if hover else
                   ('#1d1d21' if theme=='dark' else '#eeeeef')) if enabled else c['control']
         elif isinstance(parent,SelectionSurface):
-            fill=(c['control_pressed'] if down else c['control_hover'] if hover else 'transparent') if enabled and not self.isChecked() else 'transparent'
+            if parent._selection_vertical and parent._selection_color_role=='rail_active':
+                fill=(c['rail_item_hover'] if (hover or down) else 'transparent') if enabled and not self.isChecked() else 'transparent'
+            else:
+                fill=(c['control_pressed'] if down else c['control_hover'] if hover else 'transparent') if enabled and not self.isChecked() else 'transparent'
         elif not enabled:
-            fill='transparent' if self.property('iconOnly') else c['control']
+            fill='transparent' if self.property('iconOnly') else c['card']
+            if not self.property('iconOnly'):edge=c['input_border']
         elif variant=='primary':fill=c['action_pressed'] if down else c['action_hover'] if hover else c['action']
         elif self.isChecked():fill=c['selected']
         elif variant=='danger':fill='rgba(255,69,58,78)' if down else 'rgba(255,69,58,58)' if hover else 'rgba(255,69,58,30)'
         elif variant in ('secondary','secondary_blue'):
-            fill=c['control_pressed'] if down else c['control_hover'] if hover else c['control']
+            fill=c['control_pressed'] if down else c['control_hover'] if hover else c['card']
             if self.property('previewCopyPath') and not down and not hover and theme=='dark':fill='#333333'
-            if variant=='secondary':edge=c['border']
+            if variant=='secondary':edge=c['input_border']
         else:fill=c['selected'] if down else c['hover'] if hover else 'transparent'
         if enabled and self.property('keyboardFocus'):edge=c['ring']
         paint_rounded_surface(painter,self.rect(),radius,ink(fill),None if edge is None else ink(edge))
@@ -327,11 +338,15 @@ class IconTextButton(QPushButton):
             c.update(action_tokens(theme if theme in ('light','dark') else ui_theme.current_theme()))
         surface=self.parentWidget()
         navigation=isinstance(surface,SelectionSurface) and surface._selection_vertical and left
-        navigation_ink=c['text'] if self.property('sidebarUtility') else c['secondary']
-        active=(surface._selection_rect.contains(QRectF(self.geometry()).center()) and surface._selection_opacity>.55) if navigation else (self.isChecked() and left)
+        is_rail=navigation and surface._selection_color_role=='rail_active'
+        is_hseg=isinstance(surface,SelectionSurface) and not surface._selection_vertical
+        navigation_ink=c['rail_item_ink'] if is_rail else (c['text'] if self.property('sidebarUtility') else c['secondary'])
+        active=(surface._selection_rect.contains(QRectF(self.geometry()).center()) and surface._selection_opacity>.55) if navigation else (self.isChecked() and (left or is_hseg))
         named_icon=getattr(self,'_reference_icon',None)
         if named_icon:
-            icon_tint=(c['on_action'] if active or variant=='primary'
+            icon_tint=(c['rail_active_ink'] if (active and is_rail)
+                       else c['segment_selected_ink'] if (active and is_hseg)
+                       else c['on_action'] if active or variant=='primary'
                        else navigation_ink if navigation else c['red'] if variant=='danger' else c.get(named_icon[1],named_icon[1]))
             art=icon(named_icon[0],icon_tint if self.isEnabled() else c['muted'])
         painter=QStylePainter(self);self._paint_surface(painter)
@@ -360,6 +375,9 @@ class IconTextButton(QPushButton):
         text=painter.fontMetrics().elidedText(words,Qt.ElideRight,max(1,space))
         width=painter.fontMetrics().horizontalAdvance(text)+size.width()+gap
         x=12 if left else (self.width()-width)/2
+        rail_label=getattr(self,'_sidebar_label_alpha',1.)
+        rail_compact=getattr(self,'_sidebar_compact_progress',0.)
+        if rail_compact:x+=(max(0.,(self.width()-size.width())/2)-x)*rail_compact
         mode=QIcon.Mode.Normal if self.isEnabled() else QIcon.Mode.Disabled
         icon_y=round((self.height()-size.height())/2)
         if self.property('alignIconToTextInk') and text:
@@ -375,11 +393,18 @@ class IconTextButton(QPushButton):
             painter.translate(-icon_x-size.width()/2,-icon_y-size.height()/2)
         art.paint(painter,QRect(round(icon_x),icon_y,size.width(),size.height()),Qt.AlignCenter,mode)
         painter.restore()
-        tint=(c['on_action'] if active or variant=='primary' else navigation_ink if navigation else
+        tint=(c['rail_active_ink'] if (active and is_rail)
+              else c['segment_selected_ink'] if (active and is_hseg)
+              else c['on_action'] if active or variant=='primary' else navigation_ink if navigation else
               c['text'] if self.isChecked() or variant=='secondary' else c['red'] if variant=='danger' else c['secondary'])
         painter.setPen(QColor(tint if self.isEnabled() else c['muted']))
         text_x=x if trailing else x+size.width()+gap
-        painter.drawText(QRectF(text_x,0,painter.fontMetrics().horizontalAdvance(text)+2,self.height()),Qt.AlignLeft|Qt.AlignVCenter,text)
+        if rail_label>0:
+            painter.save()
+            painter.setOpacity(rail_label)
+            painter.setClipRect(QRectF(text_x,0,max(0,self.width()-text_x),self.height()),Qt.IntersectClip)
+            painter.drawText(QRectF(text_x-10*(1-rail_label),0,painter.fontMetrics().horizontalAdvance(text)+2,self.height()),Qt.AlignLeft|Qt.AlignVCenter,text)
+            painter.restore()
 
 
 class HoldRemoveButton(IconTextButton):
@@ -504,14 +529,15 @@ class SortButton(IconTextButton):
         p=QStylePainter(self);self._paint_surface(p);p.setFont(self.font())
         text_width=p.fontMetrics().horizontalAdvance(self.text())
         x=(self.width()-text_width-SORT_ARROW_GAP_PX-SORT_ARROW_SIZE_PX)/2
-        c=palette();tint=c['text'] if self.isChecked() else c['secondary']
+        c=palette();tint=c['segment_selected_ink'] if self.isChecked() else c['secondary']
         p.setPen(QColor(tint if self.isEnabled() else c['muted']))
         p.drawText(QRectF(x,0,text_width,self.height()),Qt.AlignLeft|Qt.AlignVCenter,self.text())
         from native_ui_common import cached_svg_renderer
         values=getattr(self,'_sort_value',QPointF(float(self.direction==1),float(self.direction==2)))
+        arrow_active=c['segment_selected_ink'] if self.isChecked() else c['text']
         for index,path in enumerate(('M4 9 12 1 20 9Z','M4 15 12 23 20 15Z')):
             rect=QRectF(x+text_width+SORT_ARROW_GAP_PX,(self.height()-SORT_ARROW_SIZE_PX)/2,SORT_ARROW_SIZE_PX,SORT_ARROW_SIZE_PX)
-            for tint,opacity in ((c['sort_arrow_idle'],1),(c['sort_arrow_active'],values.x() if index==0 else values.y())):
+            for tint,opacity in ((c['sort_arrow_idle'],1),(arrow_active,values.x() if index==0 else values.y())):
                 if opacity<=0:continue
                 svg=f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="{tint}" d="{path}"/></svg>'
                 p.save();p.setOpacity(opacity);cached_svg_renderer(svg).render(p,rect);p.restore()
@@ -545,21 +571,21 @@ class _SidebarHitBridge(QObject):
 class SegmentedControl(SelectionSurface):
     """Shared shell and button states for view and ordering controls."""
     def __init__(self,parent=None):
-        super().__init__(parent)
+        super().__init__(parent,radius=SEGMENT_BUTTON_HEIGHT_PX/2)
         self.setFixedHeight(SEGMENT_HEIGHT_PX)
         self.setSizePolicy(QSizePolicy.Fixed,QSizePolicy.Fixed)
         self.setObjectName('segmentedControl')
         css(self,'QFrame#segmentedControl{background:transparent;border:0;}')
-        self.set_surface_background('rgba(255,255,255,10)','rgba(0,0,0,10)',RADIUS_CONTROL_PX)
-        layout=QHBoxLayout(self);layout.setContentsMargins(2,2,2,2);layout.setSpacing(0)
+        self.set_surface_background('subcard','subcard',SEGMENT_HEIGHT_PX/2,stroke_role='border')
+        layout=QHBoxLayout(self);layout.setContentsMargins(*(SEGMENT_INSET_PX,)*4);layout.setSpacing(0)
 
     def add_button(self,control,width=None):
         control.setCheckable(True);control.setFixedHeight(SEGMENT_BUTTON_HEIGHT_PX)
         padding=SORT_TEXT_PADDING_PX if isinstance(control,SortButton) else SEGMENT_TEXT_PADDING_PX
         sources=[]
         for theme in ('dark','light'):
-            c=colors(theme);selected=c['card']
-            sources.append(f"QPushButton{{background:transparent;border:0;color:{c['secondary']};padding:0 {padding+1}px;font:12px 'FlickDock UI';}} QPushButton:checked,QPushButton:checked:hover,QPushButton:checked:pressed{{color:{c['text']};}} QPushButton:disabled{{color:{c['muted']};}}")
+            c=colors(theme)
+            sources.append(f"QPushButton{{background:transparent;border:0;color:{c['secondary']};padding:0 {padding+1}px;font:12px 'FlickDock UI';}} QPushButton:checked,QPushButton:checked:hover,QPushButton:checked:pressed{{color:{c['segment_selected_ink']};}} QPushButton:disabled{{color:{c['muted']};}}")
         css(control,*sources);control.ensurePolished()
         if width is None:
             width=control.fontMetrics().horizontalAdvance(control.text())+2*(padding+SEGMENT_BORDER_PX)+2
@@ -586,6 +612,13 @@ def button(value='',glyph='',variant='quiet',parent=None,*,control_type=IconText
         widget._reference_icon=(glyph,'secondary')
         widget.setIcon(icon(glyph,palette()['secondary']))
     return widget
+
+
+def overview_back_button(parent,callback):
+    control=button('返回总览','left',variant='secondary',parent=parent)
+    control.setFixedHeight(28)
+    control.clicked.connect(callback)
+    return control
 
 
 class _SplitSendSurface(RoundedSurfaceFrame):
@@ -650,6 +683,7 @@ class ToolbarButton(FeedbackButton):
         if not self.isEnabled():p.setOpacity(float(self.property('disabledOpacity') or .4))
         name={'pin-filled':'pin','check':'check'}.get(self.glyph,self.glyph)
         tint=self._glyph_tint or (c['action'] if self.isChecked() and name=='pin' else c['blue'] if self.isChecked() else c['secondary'])
+        if self.property('shelfPin') and name=='star-filled':tint=c['shelf_pin']
         p.save();p.setOpacity(p.opacity()*getattr(self,'_entry_alpha',1.));p.translate(getattr(self,'_entry_dx',0.),0.)
         if self.property('subtle'):p.setOpacity(p.opacity()*(.45+.4*v['hover']))
         hover=v['hover']
@@ -688,7 +722,22 @@ class StatusCardAction(ToolbarButton):
 class PreviewSurfaceFrame(RoundedSurfaceFrame):
     """Preview surface with one device-pixel AA outline at every DPR."""
     def surface_style(self):
-        c=palette();return c['card'],c['border'],RADIUS_CARD_PX
+        c=palette();return c['subcard'],c['border'],RADIUS_CARD_PX
+
+
+class BentoPanelFrame(RoundedSurfaceFrame):
+    """Rounded content surface within the overview."""
+    def surface_style(self):
+        c=palette();return c['card'],c['border'],RADIUS_PANEL_PX
+
+
+class InsetDivider(QWidget):
+    """1px horizontal hairline inset from card edges so it never touches rounded corners."""
+    def __init__(self,parent=None,inset=16):
+        super().__init__(parent);self._inset=int(inset);self.setFixedHeight(1)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+    def paintEvent(self,event):
+        p=QPainter(self);p.fillRect(QRectF(self._inset,0,max(0,self.width()-2*self._inset),1),ink(palette()['divider']));p.end()
 
 
 class PreviewSurfaceStack(QStackedWidget):
@@ -707,7 +756,7 @@ class PreviewSurfaceStack(QStackedWidget):
     def paintEvent(self,event):
         if not self._surface_enabled:return
         p=QPainter(self);c=palette()
-        paint_rounded_surface(p,self.rect(),RADIUS_CARD_PX,ink(c['card']),ink(c['border']))
+        paint_rounded_surface(p,self.rect(),RADIUS_CARD_PX,ink(c['subcard']),ink(c['border']))
         p.end()
 
 
@@ -783,28 +832,54 @@ class ProfileButton(QPushButton):
 
     def paintEvent(self,event):
         p=QPainter(self);p.setRenderHint(QPainter.Antialiasing);c=palette()
-        if self.isDown():fill=QColor(255,255,255,40) if ui_theme.current_theme()=='dark' else QColor(0,0,0,34)
-        else:fill=ink(c['hover'] if self.underMouse() else c['control'])
-        paint_rounded_surface(p,QRectF(self.rect()).adjusted(0,1,0,-1),RADIUS_CARD_PX,fill,ink(c['border']))
-        avatar=QRectF(8,(self.height()-28)/2,28,28)
-        p.setBrush(QColor(c['action']) if self.connected else ink(c['control']));p.setPen(Qt.NoPen);p.drawEllipse(avatar)
-        f=p.font();f.setPixelSize(14 if sys.platform=='win32' else 12);set_ui_weight(f,600);p.setFont(f);p.setPen(QColor(c['on_action']))
+        fill=ink(c['rail_item_hover'] if (self.isDown() or self.underMouse()) else c['rail_item'])
+        paint_rounded_surface(p,QRectF(self.rect()).adjusted(0,1,0,-1),18,fill,QColor(255,255,255,18))
+        compact=getattr(self,'_sidebar_compact_progress',0.)
+        alpha=getattr(self,'_sidebar_label_alpha',1.)
+        avatar_x=9+((self.width()-28)/2-9)*compact
+        avatar=QRectF(avatar_x,(self.height()-28)/2,28,28)
+        p.setBrush(QColor(c['brand_accent']) if self.connected else ink(c['rail_item_hover']));p.setPen(Qt.NoPen);p.drawEllipse(avatar)
+        f=p.font();f.setPixelSize(14 if sys.platform=='win32' else 12);set_ui_weight(f,600);p.setFont(f);p.setPen(QColor(c['brand_accent_ink']))
         if self.connected:p.drawText(avatar,Qt.AlignCenter,self.username[:1].upper())
-        else:icon('user',c['secondary']).paint(p,QRect(14,round(avatar.center().y()-8),16,16))
+        else:icon('user',c['rail_item_ink']).paint(p,QRect(round(avatar_x+6),round(avatar.center().y()-8),16,16))
+        p.save();p.setOpacity(alpha)
         f.setPixelSize(13 if sys.platform=='win32' else 11)
-        set_ui_weight(f,600);p.setFont(f);p.setPen(QColor(c['text']))
+        set_ui_weight(f,600);p.setFont(f);p.setPen(QColor('#FAFAFC'))
         name_height=p.fontMetrics().height()
         status_font=QFont(f);status_font.setPixelSize(10 if sys.platform=='win32' else 9);set_ui_weight(status_font,400)
         from PySide6.QtGui import QFontMetrics
         status_height=QFontMetrics(status_font).height()
         gap=2 if self.status else 0
         top=(self.height()-name_height-status_height-gap)/2-PROFILE_TEXT_RISE_PX if self.status else 0
-        p.drawText(QRectF(46,top,self.width()-68,name_height if self.status else self.height()),Qt.AlignVCenter,p.fontMetrics().elidedText(self.username,Qt.ElideRight,self.width()-68))
-        if self.status:
-            p.setFont(status_font);p.setPen(QColor(c['secondary']));p.drawText(QRectF(46,top+name_height+gap,self.width()-68,status_height),Qt.AlignVCenter,p.fontMetrics().elidedText(self.status,Qt.ElideRight,self.width()-68))
-        icon('right',c['muted']).paint(p,QRect(self.width()-20,(self.height()-12)//2,12,12))
+        text_width=self.width()-68
+        if alpha>0 and text_width>0:
+            p.drawText(QRectF(46,top,text_width,name_height if self.status else self.height()),Qt.AlignVCenter,p.fontMetrics().elidedText(self.username,Qt.ElideRight,text_width))
+            if self.status:
+                p.setFont(status_font);p.setPen(QColor(c['rail_item_ink']));p.drawText(QRectF(46,top+name_height+gap,text_width,status_height),Qt.AlignVCenter,p.fontMetrics().elidedText(self.status,Qt.ElideRight,text_width))
+            icon('right',c['rail_item_ink']).paint(p,QRect(self.width()-20,(self.height()-12)//2,12,12))
+        p.restore()
         if keyboard_focus_visible(self):
             paint_rounded_surface(p,QRectF(self.rect()).adjusted(2,2,-2,-2),RADIUS_CONTROL_PX,QColor(Qt.transparent),QColor(c['link']))
+        p.end()
+
+
+class SidebarToggle(QPushButton):
+    def __init__(self,parent):
+        super().__init__(parent)
+        self.setFixedSize(34,32)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setCheckable(True)
+        self.angle=0.
+
+    def paintEvent(self,event):
+        c=palette()
+        p=QPainter(self)
+        fill=c['rail_item_hover'] if self.underMouse() or self.isDown() else c['rail_item']
+        paint_rounded_surface(p,self.rect(),RADIUS_CONTROL_PX,ink(fill),
+                              ink(c['rail_active']) if keyboard_focus_visible(self) else None)
+        center=QRectF(self.rect()).center()
+        p.translate(center);p.rotate(self.angle);p.translate(-center)
+        icon('left',c['rail_item_ink']).paint(p,QRect((self.width()-16)//2,(self.height()-16)//2,16,16))
         p.end()
 
 
@@ -821,19 +896,23 @@ class SelectionCheck(QCheckBox):
 
     def hitButton(self,position):return self.rect().contains(position)
 
+    def selection_pose(self,origin=QPointF()):
+        from item_transitions import FileSelection
+        c=palette()
+        chosen=self.isChecked()
+        rect=QRectF((self.width()-15)/2,(self.height()-15)/2,15,15).translated(origin)
+        fill=c['action'] if chosen else c['hover'] if self.underMouse() or self.isDown() else c['card']
+        edge=c['action'] if chosen else c['ring'] if self.underMouse() else c['input_border']
+        return FileSelection(rect,ink(fill),ink(edge),ink(c['on_action']) if chosen else QColor(Qt.transparent))
+
     def paintEvent(self,event):
         if outside_content_view(self):return
         p=QPainter(self);p.setRenderHint(QPainter.Antialiasing)
-        p.translate((self.width()-15)/2,(self.height()-15)/2)
-        c=palette()
         if not self.isEnabled():p.setOpacity(.5)
-        fill=QColor(c['action']) if self.isChecked() else QColor(c['hover'] if self.underMouse() or self.isDown() else c['card'])
-        paint_rounded_surface(p,QRectF(0,0,15,15),RADIUS_SMALL_PX,fill,
-                              QColor(c['action']) if self.isChecked() else ink(c['ring'] if self.underMouse() else c['input_border']))
-        if self.isChecked():
-            p.setPen(QPen(QColor(c['on_action']),1.5,Qt.SolidLine,Qt.RoundCap,Qt.RoundJoin));p.drawLine(QPointF(4,7),QPointF(6,10));p.drawLine(QPointF(6,10),QPointF(11,4.5))
+        pose=self.selection_pose()
+        pose.paint(p)
         if keyboard_focus_visible(self):
-            paint_rounded_surface(p,QRectF(-1,-1,17,17),RADIUS_SMALL_PX,QColor(Qt.transparent),QColor(c['ring']))
+            paint_rounded_surface(p,pose.rect.adjusted(-1,-1,1,1),8.5,QColor(Qt.transparent),QColor(palette()['ring']))
         p.end()
 
 
@@ -928,11 +1007,12 @@ class TransferStrip(QFrame):
     def paintEvent(self,event):
         c=palette();p=QPainter(self);p.setRenderHint(QPainter.Antialiasing)
         rect=QRectF(self.rect()).adjusted(.5,.5,-.5,-.5)
-        path=QPainterPath();path.addRoundedRect(rect,8,8)
-        p.fillPath(path,QColor(c['control']))
+        cap=rect.height()/2.0
+        path=QPainterPath();path.addRoundedRect(rect,cap,cap)
+        p.fillPath(path,QColor(c['subcard']))
         if self.paint_fraction:
             p.save();p.setClipPath(path)
-            p.fillRect(QRectF(rect.left(),rect.top(),rect.width()*self.paint_fraction,rect.height()),QColor(c['transfer_progress_fill']))
+            p.fillRect(QRectF(rect.left(),rect.top(),rect.width()*self.paint_fraction,rect.height()),ink(c['transfer_progress_fill']))
             p.restore()
         p.setPen(QPen(ink(c['border']),1));p.setBrush(Qt.NoBrush);p.drawPath(path);p.end()
     def mouseReleaseEvent(self,event):
@@ -949,7 +1029,7 @@ def _draw_transfer_ink(painter,widget,draw):
     width=host.width()*host.paint_fraction-origin.x()
     if width<=0:return
     painter.save();painter.setClipRect(QRectF(0,0,width,widget.height()))
-    draw(palette()['on_action']);painter.restore()
+    draw(palette()['text']);painter.restore()
 
 
 class TransferPercentLabel(QLabel):
@@ -1095,7 +1175,7 @@ class RenameDialog(QDialog):
         css(self.card,'QFrame#renameSheet{background:transparent;border:0;}')
         form=QVBoxLayout(self.card);form.setContentsMargins(20,20,20,20);form.setSpacing(16)
         header=QHBoxLayout();header.addWidget(label('重命名文件',14,600,parent=self.card),1)
-        close=ToolbarButton('close',self.card,motion=shelf.manager.motion);close.setFixedSize(32,32);close.setAutoDefault(False);close.clicked.connect(self.reject);header.addWidget(close);form.addLayout(header)
+        close=ToolbarButton('close',self.card,motion=shelf.manager.motion);close.setFixedSize(32,32);close.setAutoDefault(False);close.setAccessibleName('关闭名称编辑');close.clicked.connect(self.reject);header.addWidget(close);form.addLayout(header)
         form.addWidget(label('修改扩展名可能导致文件不可用',12,400,'secondary',self.card))
         edit=shelf.rename_edit;edit.setParent(self.card)
         css(edit,*[f"QTextEdit{{background:transparent;color:{colors(t)['text']};border:0;padding:{RENAME_EDIT_PADDING_Y_PX+1}px {RENAME_EDIT_PADDING_X_PX+1}px;font:12px 'FlickDock UI';}} "
@@ -1239,35 +1319,91 @@ class ThumbnailLabel(TransferIconLabel):
         p.drawPixmap(0,0,art)
         draw_status(p,QRectF(size-18,size-18,18,18),self.cloud_status,self.repository.transfers.get(self.ref))
         pins=getattr(self.shelf,'file_pins',None)
-        if not self.property('suppressPinBadge') and pins and pins.contains(self.ref):icon('star-filled','#E9AF20').paint(p,QRect(size-14,0,14,14))
+        if not self.property('suppressPinBadge') and pins and pins.contains(self.ref):icon('star-filled',palette()['shelf_pin']).paint(p,QRect(size-14,0,14,14))
         p.end()
 
 
 class MiniStack(StackTile):
+    uses_default_artwork=False
+    SOLO_LIFT_PX=5.
+    SOLO_HOVER_SCALE=1.025
+    EMPTY_DROP_SIZE=QSize(216,148)
+
     def __init__(self,shelf,parent=None,motion=True):
         super().__init__(parent,motion)
         self.shelf=shelf
         self._card_art={};self._card_dpr=0;self._card_theme=None
         self._card_rim=QPainterPath()
         self._card_rim.addRoundedRect(QRectF(.5,.5,191,127),RADIUS_PANEL_PX,RADIUS_PANEL_PX)
+        self._fan_index=None
+        self._fan_lift=Spring(self,dict.fromkeys(range(5),0.),lambda _:self.update(),motion)
+        self._fan_scale=Spring(self,dict.fromkeys(range(5),1.),lambda _:self.update(),motion)
         from native_ui_common import DropBorderMotion
         self.border_motion=DropBorderMotion(self)
 
-    def set_hover(self,value):
+    def set_drop_preview(self,active,point=None,*,accepted=False):
+        if self.refs:return
+        if active:
+            self.border_motion.move_drag(point if point is not None else self.rect().center())
+        else:self.border_motion.end_drag(accepted=accepted)
+
+    def _retarget_spread(self):
+        from native_ui_common import reduced_motion
+        value=float(self._hovered and len(self.refs)>1)
+        if not self.motion or reduced_motion():self.spread.jump({'spread':value})
+        else:self.spread.animate_physical({'spread':value},220,18)
+
+    def set_hover(self,value, point=None):
         super().set_hover(value)
-        self.border_motion.set_active(value and not self.refs)
+        if not self.refs:self.border_motion.set_active(value or self.border_motion.dragging)
+        hovered=None
+        if value and self.refs and point is not None:
+            # Use the resting fan for hit testing. Raising a card must not
+            # move its hit area or change which card wins an overlap.
+            for ref,transform,_,_ in reversed(self.presentation_cards(hit_test=True)):
+                inverse,valid=transform.inverted()
+                if valid and QRectF(0,0,192,128).contains(inverse.map(QPointF(point))):
+                    hovered=self.refs.index(ref)
+                    break
+        self._set_fan_index(hovered)
+
+    def _set_fan_index(self,index,*,snap=False):
+        if self._fan_index==index and not snap:return
+        self._fan_index=index
+        solo=len(self.refs)==1
+        distance=self.SOLO_LIFT_PX if solo else 22.
+        magnification=self.SOLO_HOVER_SCALE if solo else 1.06
+        lift={i:-distance if i==index else 0. for i in range(5)}
+        scale={i:magnification if i==index else 1. for i in range(5)}
+        from native_ui_common import reduced_motion
+        if snap or not self.motion or reduced_motion():
+            self._fan_lift.jump(lift);self._fan_scale.jump(scale)
+        else:
+            self._fan_lift.animate_physical(lift,420,20)
+            self._fan_scale.animate_physical(scale,420,22)
+
+    def set_pressed(self,value):
+        super().set_pressed(value)
+        if value and self._fan_index is not None:
+            if len(self.refs)>1:self._fan_lift.kick({self._fan_index:-260.})
 
     def hideEvent(self,event):
         self._hovered=False;self.border_motion.set_active(False)
+        self._set_fan_index(None,snap=True)
         super().hideEvent(event)
 
     def set_stack(self,repository,refs,preview_cache=None):
+        previous=self.refs
         super().set_stack(repository,refs,preview_cache)
-        self.border_motion.set_active(self._hovered and not self.refs)
+        if previous!=self.refs:self._set_fan_index(None,snap=True)
+        if self.refs:
+            if not previous:self.border_motion.reset()
+        else:self.border_motion.set_active(self.border_motion.dragging or self._hovered)
         self._cache_cards()
 
     def _cache_cards(self):
         ratio=self.devicePixelRatioF();cards={};content=self.shelf.content
+        font_key=self.font().toString();theme=ui_theme.current_theme()
         for index,ref in enumerate(self.refs):
             depth=len(self.refs)-1-index
             metadata=getattr(self.shelf,'file_metadata',None)
@@ -1280,10 +1416,10 @@ class MiniStack(StackTile):
                  tuple(info.get(key) for key in ('size','mtime_ns','exists','error','is_dir')) if info else None,
                  directory[1] if directory else None,content.transfers.get(ref,{}).get('total'),
                  cached.cacheKey() if cached is not None else None,decoded.cacheKey() if decoded is not None else None,
-                 cover,ratio,self.font().toString(),ui_theme.current_theme(),depth)
+                 cover,ratio,font_key,theme,depth)
             previous=self._card_art.get(ref)
             cards[ref]=previous if previous is not None and previous[0]==key else (key,self._render_card(ref,ratio,depth))
-        self._card_art=cards;self._card_dpr=ratio;self._card_theme=ui_theme.current_theme()
+        self._card_art=cards;self._card_dpr=ratio;self._card_theme=theme
 
     def _render_card(self,ref,ratio,depth):
         result=QPixmap(round(192*ratio),round(128*ratio));result.setDevicePixelRatio(ratio);result.fill(Qt.transparent)
@@ -1298,18 +1434,43 @@ class MiniStack(StackTile):
         p.setPen(QColor(c['secondary']))
         p.drawText(QRectF(100,14,78,18),Qt.AlignRight|Qt.AlignVCenter,ext[:7]);p.end();return result
 
-    def presentation_cards(self):
-        v=self.spring.values;spread=self.spread.values['spread']
+    def presentation_cards(self,*,hit_test=False):
+        v={'x':0.,'y':0.,'sx':1.,'sy':1.} if hit_test else self.spring.values
+        spread=float(len(self.refs)>1) if hit_test else self.spread.values['spread']
         center=QPointF(self.width()/2,self.height()/2)
         base=QTransform();base.translate(center.x(),center.y()+v['y']);base.scale(v['sx'],v['sy']);base.translate(-center.x(),-center.y())
-        refs=list(reversed(self.refs));frames=[]
+        refs=list(reversed(self.refs));frames=[];front=None
         transforms=((0,1,0,1),(-7,.95,-2,.9),(-14,.9,2.2,.75),(-20,.85,-1.5,.58),(-26,.8,1,.4))
+        # Leave room for the outside corner when a fanned card rotates around
+        # its bottom edge and grows under the pointer.
+        span=min(78.,max(14.,self.width()/2-107))
+        slots=sorted((index-(len(refs)-1)/2 for index in range(len(refs))),key=abs)
         for idx in reversed(range(len(refs))):
             dy,scale,angle,opacity=transforms[idx]
-            local=QTransform();local.translate(center.x()-idx*FAN_LAYER_OFFSET_X_PX*spread,center.y()+dy+idx*MINI_FAN_LAYER_OFFSET_Y_PX*spread)
-            local.rotate(angle+spread*(FAN_FRONT_ANGLE_DEGREES if idx==0 else -idx*FAN_LAYER_ANGLE_DEGREES));local.scale(scale,scale);local.translate(-96,-64)
-            if idx==0:local.translate(0,-STACK_ARRIVAL_OFFSET_PX*(1-self.arrival))
-            frames.append((refs[idx],local*base,opacity if ui_theme.current_theme()=='dark' else 1.,idx==0))
+            source=len(refs)-1-idx
+            slot=slots[idx]
+            direction=slot/max(1.,(len(refs)-1)/2)
+            x=(-idx*2)*(1-spread)+direction*span*spread
+            y=dy*(1-spread)+(abs(direction)*12-10)*spread
+            lift=0. if hit_test else self._fan_lift.values[source]
+            y+=lift
+            local=QTransform();local.translate(center.x()+x,center.y()+64+y)
+            local.rotate(angle*(1-spread)+12*direction*spread)
+            scale=scale*(1-spread)+.83*spread
+            if not hit_test:scale*=self._fan_scale.values[source]
+            local.scale(scale,scale);local.translate(-96,-128)
+            if idx==0 and not hit_test:local.translate(0,-STACK_ARRIVAL_OFFSET_PX*(1-self.arrival))
+            opacity=opacity*(1-spread)+spread
+            transform=local*base
+            if len(refs)==1 and lift<0.:
+                # Arrival and hover can overlap briefly. Keep the artwork
+                # inside its paint viewport even at the combined peak.
+                top=transform.mapRect(QRectF(0,0,192,128)).top()
+                if top<3.:transform*=QTransform.fromTranslate(0.,3.-top)
+            frame=(refs[idx],transform,max(0.,min(opacity,1.)) if ui_theme.current_theme()=='dark' else 1.,idx==0)
+            if not hit_test and source==self._fan_index:front=frame
+            else:frames.append(frame)
+        if front is not None:frames.append(front)
         return frames
 
     def paint_card(self,painter,ref,front):
@@ -1322,15 +1483,22 @@ class MiniStack(StackTile):
             from transfer_visuals import draw_progress_badge
             draw_progress_badge(painter,QRectF(162,40,16,16),state)
 
+    def empty_drop_rect(self):
+        width=min(self.EMPTY_DROP_SIZE.width(),self.width()-12)
+        height=min(self.EMPTY_DROP_SIZE.height(),self.height()-12)
+        return QRectF((self.width()-width)/2,(self.height()-height)/2+5,width,height)
+
     def paintEvent(self,event):
         p=QPainter(self);p.setRenderHints(QPainter.Antialiasing|QPainter.SmoothPixmapTransform)
         if not self.refs:
-            r=QRectF((self.width()-176)/2,28,176,128)
+            r=self.empty_drop_rect()
             path=QPainterPath();path.addRoundedRect(r,EMPTY_DROP_RADIUS_PX,EMPTY_DROP_RADIUS_PX)
-            self.border_motion.paint(p,path,dark=ui_theme.current_theme()=='dark',radius=EMPTY_DROP_RADIUS_PX,idle_fill=ink(palette()['card']))
+            self.border_motion.paint(p,path,dark=ui_theme.current_theme()=='dark',radius=EMPTY_DROP_RADIUS_PX)
             icon('upload',palette()['secondary']).paint(p,QRect(round(r.center().x()-12),round(r.center().y()-31),24,24))
             f=p.font()
-            f.setPixelSize(13);p.setFont(f);p.setPen(QColor(palette()['text']));p.drawText(r.adjusted(0,34,0,0),Qt.AlignCenter,COMPACT_EMPTY_LABEL);p.end();return
+            f.setPixelSize(13);p.setFont(f);p.setPen(QColor(palette()['text']))
+            p.drawText(r.adjusted(0,34,0,0),Qt.AlignCenter,'松手添加' if self.border_motion.dragging else COMPACT_EMPTY_LABEL)
+            p.end();return
         if self._card_dpr!=self.devicePixelRatioF() or self._card_theme!=ui_theme.current_theme():self._cache_cards()
         reveal=getattr(QApplication.instance(),'_flickdock_border_reveal',None)
         for ref,transform,opacity,front in self.presentation_cards():
@@ -1348,10 +1516,10 @@ class MiniStack(StackTile):
 def build_overview(view,preview_type):
     """Build the HTML's 52px toolbar and 210 / flexible / 340 split view."""
     view.setObjectName('referenceOverview')
-    css(view,*[f"QFrame#referenceOverview{{background:{colors(t)['background']};border:0;}}" for t in ('dark','light')])
+    css(view,"QFrame#referenceOverview{background:transparent;border:0;}")
     root=QVBoxLayout(view);root.setContentsMargins(1,1,1,1);root.setSpacing(0)
     view.header=QFrame(view);view.header.setFixedHeight(SHELF_OVERVIEW_HEADER_HEIGHT_PX)
-    css(view.header,*[f"QFrame{{background:{colors(t)['surface']};border:0;border-bottom:1px solid {colors(t)['divider']};}}" for t in ('dark','light')])
+    css(view.header,"QFrame{background:transparent;border:0;}")
     head=QHBoxLayout(view.header);head.setContentsMargins(0,0,0,0);head.setSpacing(0)
     view.header_brand=QWidget(view.header);view.header_brand.setFixedWidth(210)
     # The overview header is slightly taller than the compact one; align the
@@ -1391,18 +1559,21 @@ def build_overview(view,preview_type):
     view.header_status=QWidget(view.header);view.header_status.setFixedWidth(340)
     head.addWidget(view.header_status)
     root.addWidget(view.header)
-    body=QHBoxLayout();body.setContentsMargins(0,0,0,0);body.setSpacing(0);view.body_layout=body
-    view.sidebar=SelectionSurface(view,vertical=True,color_role='action',border_role=None,radius=RADIUS_CONTROL_PX,
+    body=QHBoxLayout();body.setContentsMargins(12,6,12,12);body.setSpacing(12);view.body_layout=body
+    view.sidebar=SelectionSurface(view,vertical=True,color_role='rail_active',border_role=None,radius=20,
                                   motion=lambda:getattr(view.shelf.manager,'motion',True))
-    view.sidebar.setObjectName('referenceSidebar');view.sidebar.setFixedWidth(210)
-    css(view.sidebar,*[f"QFrame#referenceSidebar{{background:{colors(t)['sidebar']};border:0;border-right:1px solid {colors(t)['divider']};}}" for t in ('dark','light')])
-    side=QVBoxLayout(view.sidebar);side.setContentsMargins(10,10,10,10);side.setSpacing(2)
+    view.sidebar.setObjectName('referenceSidebar');view.sidebar.setFixedWidth(206)
+    view.sidebar.set_surface_background('rail','rail',RADIUS_PANEL_PX)
+    css(view.sidebar,'QFrame#referenceSidebar{background:transparent;border:0;}')
+    side=QVBoxLayout(view.sidebar);side.setContentsMargins(10,12,10,12);side.setSpacing(4)
+    view.sidebar_toggle=SidebarToggle(view.sidebar)
+    side.addWidget(view.sidebar_toggle,0,Qt.AlignRight)
     view.scope_group=QButtonGroup(view);view.scope_group.setExclusive(True);view.category_buttons={};view.sidebar_buttons={};view.nav_counts={}
     glyphs={'all':'all','pinned':'star','uploading':'transferring'}
     for key,title in view.SCOPES:
         control=button(title,glyphs[key],parent=view.sidebar);control.setCheckable(True);control.setFixedHeight(40)
         control.setProperty('leftAligned',True)
-        css(control,*[f"QPushButton{{background:transparent;color:{colors(t)['secondary']};border:0;text-align:left;padding:7px 13px;font:400 12px 'FlickDock UI';}} QPushButton:checked,QPushButton:checked:hover{{color:@fd_on_action@;font-weight:400;}}" for t in ('dark','light')])
+        css(control,*[f"QPushButton{{background:transparent;color:{colors(t)['rail_item_ink']};border:0;text-align:left;padding:7px 14px;font:500 12px 'FlickDock UI';}} QPushButton:checked,QPushButton:checked:hover{{color:{colors(t)['rail_active_ink']};font-weight:600;}}" for t in ('dark','light')])
         control.clicked.connect(lambda checked=False,key=key:view.set_scope(key));view.scope_group.addButton(control);side.addWidget(control);view.sidebar.add_selection_button(control)
         count=label('',11,400,'muted',control,control_type=RoundedBadge);count.setAlignment(Qt.AlignCenter);count.setGeometry(145,10,28,20);count.setAttribute(Qt.WA_TransparentForMouseEvents)
         view.nav_counts[key]=count;view.category_buttons[key]=control;view.sidebar_buttons[key]=control
@@ -1421,15 +1592,15 @@ def build_overview(view,preview_type):
         css(control,*[s.replace('padding:4px 11px;','padding:4px 12px;text-align:left;') for s in old])
     view.account_nav=ProfileButton(view.sidebar);view.account_nav.clicked.connect(lambda:view.shelf.manager.show_settings());side.addWidget(view.account_nav)
     body.addWidget(view.sidebar)
-    view.middle=QWidget(view);mid=QVBoxLayout(view.middle);view.middle_layout=mid;mid.setContentsMargins(0,0,0,0);mid.setSpacing(0)
-    view.selection_bar=QFrame(view.middle);view.selection_bar.setFixedHeight(40)
-    css(view.selection_bar,*[f"QFrame{{border:0;border-bottom:1px solid {colors(t)['divider']};background:{colors(t)['background']};}}" for t in ('dark','light')])
+    view.middle=BentoPanelFrame(view);view.middle.setObjectName('referenceMiddle');mid=QVBoxLayout(view.middle);view.middle_layout=mid;mid.setContentsMargins(0,4,0,0);mid.setSpacing(0)
+    view.selection_bar=QFrame(view.middle);view.selection_bar.setFixedHeight(56)
+    css(view.selection_bar,"QFrame{border:0;background:transparent;}")
     selection=QVBoxLayout(view.selection_bar);selection.setContentsMargins(0,0,0,0);selection.setSpacing(0)
     view.selection_navigation=QWidget(view.selection_bar);view.selection_navigation.setFixedHeight(36)
     navigation=QHBoxLayout(view.selection_navigation);navigation.setContentsMargins(16,0,12,0);navigation.setSpacing(8)
     selection.addWidget(view.selection_navigation);view.selection_navigation.hide()
-    view.selection_actions=QWidget(view.selection_bar);view.selection_actions.setFixedHeight(40);selection.addWidget(view.selection_actions)
-    select=QHBoxLayout(view.selection_actions);select.setContentsMargins(12,0,12,0);select.setSpacing(6)
+    view.selection_actions=QWidget(view.selection_bar);view.selection_actions.setFixedHeight(56);selection.addWidget(view.selection_actions)
+    select=QHBoxLayout(view.selection_actions);select.setContentsMargins(14,10,14,14);select.setSpacing(6)
     tools.removeWidget(view.search_edit);view.search_edit.setParent(view.selection_actions)
     view.search_edit.setMinimumWidth(90);view.search_edit.setMaximumWidth(16777215);select.addWidget(view.search_edit,1)
     view.sort_segment=SegmentedControl(view.selection_actions);view.sort_segment.setAccessibleName('排序方式')
@@ -1453,11 +1624,13 @@ def build_overview(view,preview_type):
     view.select_all_button.setFixedWidth(44)
     view.paste_button=button('粘贴',parent=view.selection_bar);view.paste_button.hide()
     mid.addWidget(view.selection_bar)
-    view.type_bar=QScrollArea(view.middle);view.type_bar.setWidgetResizable(True);view.type_bar.setFrameShape(QFrame.NoFrame);view.type_bar.setFixedHeight(38)
+    mid.addWidget(InsetDivider(view.middle,16))
+    view.type_bar=QScrollArea(view.middle);view.type_bar.setWidgetResizable(True);view.type_bar.setFrameShape(QFrame.NoFrame);view.type_bar.setFixedHeight(44)
     view.type_bar.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff);view.type_bar.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
     css(view.type_bar,'QScrollArea{background:transparent;border:0;} QScrollBar:horizontal{height:4px;background:transparent;} QScrollBar::handle:horizontal{background:rgba(128,128,128,70);border-radius:2px;min-width:24px;} QScrollBar::add-line:horizontal,QScrollBar::sub-line:horizontal{width:0;} QScrollBar::add-page:horizontal,QScrollBar::sub-page:horizontal{background:transparent;}')
-    view.type_body=SelectionSurface(view.type_bar,color_role='selected',border_role=None,radius=8,motion=lambda:view.shelf.manager.motion)
-    type_line=QHBoxLayout(view.type_body);type_line.setContentsMargins(12,4,12,8);type_line.setSpacing(4)
+    from ui_transitions import TabPillSurface
+    view.type_body=TabPillSurface(view.type_bar,motion=lambda:view.shelf.manager.motion)
+    type_line=QHBoxLayout(view.type_body);type_line.setContentsMargins(12,8,12,8);type_line.setSpacing(4)
     view.category_group=QButtonGroup(view);view.category_group.setExclusive(True);view.type_buttons={}
     for key,title in view.TYPES:
         control=button(title+' 0',parent=view.type_body);control.setCheckable(True);control.setFixedHeight(26)
@@ -1470,15 +1643,12 @@ def build_overview(view,preview_type):
     view.sidebar_buttons.update({key:control for key,control in view.type_buttons.items() if key!='all'})
     mid.addWidget(view.type_bar)
     view.pin_error=label('',10,400,'red',view.middle);view.pin_error.setWordWrap(True);view.pin_error.hide();mid.addWidget(view.pin_error)
-    view.transfer_summary=QWidget(view.middle);summary=QHBoxLayout(view.transfer_summary);summary.setContentsMargins(16,10,16,10)
-    view.transfer_count=label('',12,600,parent=view.transfer_summary);view.transfer_eta=label('',11,400,'link',view.transfer_summary)
-    view.transfer_bar=RoundedProgressBar(view.transfer_summary);view.transfer_bar.setFixedHeight(6)
-    css(view.transfer_bar,'QProgressBar{border:0;background:transparent;}')
-    summary.addWidget(view.transfer_count);summary.addWidget(view.transfer_bar,1);summary.addWidget(view.transfer_eta);mid.addWidget(view.transfer_summary);view.transfer_summary.hide()
     view.scroll=QScrollArea(view.middle);view.scroll.setWidgetResizable(True);view.scroll.setFrameShape(QFrame.NoFrame);view.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff);view.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+    view.scroll.setProperty('scrollBackdropRole','card')
+    view.scroll.setProperty('scrollBackdropFromSnapshot',True)
     view.scroll.setVerticalScrollBar(RoundedScrollBar(Qt.Vertical,view.scroll,thumb_color=lambda:'#49494E' if ui_theme.current_theme()=='dark' else '#C8C8C8'))
     css(view.scroll,'QScrollArea{background:transparent;border:0;} QScrollBar:vertical{width:6px;background:transparent;} QScrollBar::handle:vertical{background:transparent;min-height:24px;} QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;}')
-    view.rows_body=QWidget();view.rows_layout=QVBoxLayout(view.rows_body);view.rows_layout.setContentsMargins(12,8,12,12);view.rows_layout.setSpacing(6);view.scroll.setWidget(view.rows_body)
+    view.rows_body=QWidget();view.rows_layout=QVBoxLayout(view.rows_body);view.rows_layout.setContentsMargins(12,4,12,12);view.rows_layout.setSpacing(6);view.scroll.setWidget(view.rows_body)
     # QScrollArea enables autoFillBackground on setWidget; its inherited
     # transparent palette otherwise clears a hole in transition snapshots.
     view.rows_body.setAutoFillBackground(False);mid.addWidget(view.scroll,1)
@@ -1520,18 +1690,19 @@ def build_overview(view,preview_type):
         line.addWidget(name,1);line.addWidget(view.strip_more);line.addWidget(percent);progress.hide();strip.addWidget(row);view.strip_rows.append((row,name,percent,progress))
     # Keep capacity, clipboard and transfer progress on one fixed-height row.
     from clipboard_preview import ClipboardButton
-    view.clipboard_footer=QWidget(view.middle);view.clipboard_footer.setObjectName('overviewFooter');view.clipboard_footer.setFixedHeight(56)
-    css(view.clipboard_footer,*[f"QWidget#overviewFooter{{background:{colors(t)['background']};border:0;border-top:1px solid {colors(t)['divider']};}}" for t in ('dark','light')])
-    clipboard_row=QHBoxLayout(view.clipboard_footer);clipboard_row.setContentsMargins(12,12,12,12)
+    view.clipboard_footer=QWidget(view.middle);view.clipboard_footer.setObjectName('overviewFooter');view.clipboard_footer.setFixedHeight(52)
+    css(view.clipboard_footer,"QWidget#overviewFooter{background:transparent;border:0;}")
+    clipboard_row=QHBoxLayout(view.clipboard_footer);clipboard_row.setContentsMargins(14,0,14,0)
     view.clipboard_button=ClipboardButton(view.shelf.manager,view.clipboard_footer)
     clipboard_row.setSpacing(8)
     from shelf_capacity import ShelfCapacityButton
     view.capacity_button=ShelfCapacityButton(view.clipboard_footer,show_value=True)
-    clipboard_row.addWidget(view.capacity_button);clipboard_row.addWidget(view.clipboard_button)
-    clipboard_row.addWidget(view.transfer_strip,1);clipboard_row.addStretch()
+    clipboard_row.addWidget(view.capacity_button,0,Qt.AlignVCenter);clipboard_row.addWidget(view.clipboard_button,0,Qt.AlignVCenter)
+    clipboard_row.addWidget(view.transfer_strip,1,Qt.AlignVCenter);clipboard_row.addStretch()
     sync=getattr(view.shelf.manager,'sync',None)
     if sync is not None:
         view.capacity_button.bind_sync(sync)
+    mid.addWidget(InsetDivider(view.middle,16))
     mid.addWidget(view.clipboard_footer)
     view.transfer_strip.hide();body.addWidget(view.middle,1)
     view.preview=preview_type(view);view.preview.setFixedWidth(340);body.addWidget(view.preview)
@@ -1548,10 +1719,10 @@ def build_overview(view,preview_type):
 def build_preview(view,elided_type,image_type,media_type,content_type):
     from transfer_visuals import TransferOverlay
     view.setObjectName('referencePreview')
-    css(view,*[f"QFrame#referencePreview{{background:{colors(t)['preview']};border:0;border-left:1px solid {colors(t)['divider']};}}" for t in ('dark','light')])
+    css(view,"QFrame#referencePreview{background:transparent;border:0;}")
     root=QVBoxLayout(view);root.setContentsMargins(0,0,0,0);root.setSpacing(0)
     head=QFrame(view);view.preview_head=head;head.setFixedHeight(64)
-    css(head,*[f"QFrame{{border:0;border-bottom:1px solid {colors(t)['divider']};background:transparent;}}" for t in ('dark','light')])
+    css(head,"QFrame{border:0;background:transparent;}")
     header=QHBoxLayout(head);header.setContentsMargins(16,8,16,8);header.setSpacing(8)
     names=QVBoxLayout();names.setSpacing(0)
     view.name=elided_type(view);view.info=elided_type(view);view.upload_time=elided_type(view)
@@ -1564,7 +1735,7 @@ def build_preview(view,elided_type,image_type,media_type,content_type):
     header.addLayout(names,1)
     reserved=QWidget(head);reserved.setFixedSize(PREVIEW_HEADER_RESERVED_ACTION_WIDTH_PX,32)
     reserved.setAttribute(Qt.WA_TransparentForMouseEvents);header.addWidget(reserved)
-    view.copy_button=ToolbarButton('copy',view,motion=view.shelf.manager.motion);view.copy_button.setFixedSize(32,32);view.copy_button.clicked.connect(view.copy_current);header.addWidget(view.copy_button);root.addWidget(head)
+    view.copy_button=ToolbarButton('copy',view,motion=view.shelf.manager.motion);view.copy_button.setFixedSize(32,32);view.copy_button.setAccessibleName('复制内容');view.copy_button.clicked.connect(view.copy_current);header.addWidget(view.copy_button);root.addWidget(head)
     view.content_scroll=QScrollArea(view);view.content_scroll.setWidgetResizable(True);view.content_scroll.setFrameShape(QFrame.NoFrame)
     view.content_scroll.setVerticalScrollBar(RoundedScrollBar(Qt.Vertical,view.content_scroll,thumb_color=lambda:'#49494E' if ui_theme.current_theme()=='dark' else '#C8C8C8'))
     view.content_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -1633,7 +1804,7 @@ def build_preview(view,elided_type,image_type,media_type,content_type):
     path_box.addWidget(view.path_label);body.addWidget(path_card)
     root.addWidget(view.content_scroll,1)
     footer=QFrame(view);view.action_footer=footer;footer.setObjectName('referencePreviewActions')
-    css(footer,*[f"QFrame#referencePreviewActions{{background:{colors(t)['preview']};border:0;border-top:1px solid {colors(t)['divider']};}}" for t in ('dark','light')])
+    css(footer,"QFrame#referencePreviewActions{background:transparent;border:0;}")
     actions=QHBoxLayout(footer)
     actions.setContentsMargins(PREVIEW_ACTION_SIDE_MARGIN_PX,8,PREVIEW_ACTION_SIDE_MARGIN_PX,12)
     actions.setSpacing(0)
@@ -1691,8 +1862,7 @@ def build_preview(view,elided_type,image_type,media_type,content_type):
     root.addWidget(footer)
     view.transfer_overlay=TransferOverlay(view.stack,lambda:view.shelf.content.transfers.get(view.current_path))
     view.group_view=QFrame(view);view.group_view.setObjectName('referenceGroupPreview')
-    css(view.group_view,f"QFrame#referenceGroupPreview{{background:{colors('dark')['background']};border:0;}}",
-        f"QFrame#referenceGroupPreview{{background:{colors('light')['background']};border:0;}}")
+    css(view.group_view,"QFrame#referenceGroupPreview{background:transparent;border:0;}")
     group=QVBoxLayout(view.group_view);group.setContentsMargins(20,20,20,20);group.setSpacing(16);group.addStretch(1)
     view.group_art=QLabel(view.group_view);view.group_art.setFixedSize(96,80);view.group_art.setAlignment(Qt.AlignCenter);group.addWidget(view.group_art,0,Qt.AlignCenter)
     view.group_title=label('',14,600,parent=view.group_view);view.group_title.setAlignment(Qt.AlignCenter);group.addWidget(view.group_title)

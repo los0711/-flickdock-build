@@ -9,11 +9,15 @@ const css = readFileSync(resolve(project, 'public/styles.css'), 'utf8');
 const js = readFileSync(resolve(project, 'public/site.js'), 'utf8');
 const config = JSON.parse(readFileSync(resolve(project, 'wrangler.jsonc'), 'utf8'));
 const catalog = JSON.parse(readFileSync(resolve(project, 'download-catalog.json'), 'utf8'));
-const current = [...catalog.releases].sort((a,b)=>{
+const releases = [...catalog.releases].sort((a,b)=>{
   const left=a.version.split('.').map(Number),right=b.version.split('.').map(Number);
   return right[0]-left[0]||right[1]-left[1]||right[2]-left[2];
-})[0];
-assert(current, 'a current release is required');
+});
+const latest = filename => {
+  const release = releases.find(({version,assets})=>assets.some(asset=>asset.name===filename(version)));
+  assert(release, 'a current release is required for each supported platform');
+  return 'https://download.flickdock.cc.cd/v'+release.version+'/'+filename(release.version);
+};
 
 assert.equal(config.name, 'flickdock-site');
 assert.notEqual(config.name, 'flickdock-cloud');
@@ -26,8 +30,8 @@ const section = html.slice(html.indexOf('<section id="download"')).split('</sect
 const downloads = [...section.matchAll(/<a[^>]*href="([^"]+)"[^>]*data-installer="([^"]+)"[^>]*>([^<]+)<\/a>/g)];
 assert.equal(downloads.length, 3, 'bottom download area keeps exactly three platform links');
 const installers = Object.fromEntries(downloads.map(match => [match[2], { url: match[1], label: match[3] }]));
-assert.equal(installers.windows.url, 'https://download.flickdock.cc.cd/v'+current.version+'/FlickDock-Setup-'+current.version+'.exe');
-assert.equal(installers['mac-arm'].url, 'https://download.flickdock.cc.cd/v'+current.version+'/FlickDock-'+current.version+'-macOS-arm64.pkg');
+assert.equal(installers.windows.url, latest(version=>'FlickDock-Setup-'+version+'.exe'));
+assert.equal(installers['mac-arm'].url, latest(version=>'FlickDock-'+version+'-macOS-arm64.pkg'));
 assert.equal(installers['mac-intel'].url, 'https://gitee.com/rooogerluo/flick-dock-macos-releases-7/releases/download/v1.8.22/FlickDock-1.8.22-macOS-x86_64.pkg');
 assert(installers['mac-intel'].label.includes('已停止更新'));
 assert(!section.includes('data-ui-action="download-windows"') && !section.includes('data-ui-action="download-macos"'), 'remove only the duplicated bottom pair');
@@ -50,7 +54,7 @@ console.log('FlickDock site: config, downloads, assets, navigation, demo and acc
 // Network boundary checks use a controlled upstream; the deployed route is also
 // verified by downloading and hashing the actual published DMG before promotion.
 const worker=(await import('../worker.mjs')).default;
-const asset=current.assets.find(row=>row.name.endsWith('.dmg'));
+const asset=releases.flatMap(release=>release.assets).find(row=>row.name.endsWith('.dmg'));
 assert(asset);
 const contentRange='bytes 0-2/'+asset.bytes;
 const originalFetch=globalThis.fetch;let forwarded=[];

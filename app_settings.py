@@ -6,6 +6,7 @@ its own login item on startup and verifies explicit saves against the OS state.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 from collections import OrderedDict
@@ -17,7 +18,7 @@ from functools import wraps
 from uuid import uuid4
 
 from PySide6.QtCore import QByteArray, QCoreApplication, QElapsedTimer, QEvent, QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, QThread, QUrl, Signal
-from PySide6.QtGui import QKeySequence, QColor, QFont, QFontDatabase, QPainter, QPalette, QPen, QGuiApplication, QIcon, QPixmap, QWheelEvent, QDesktopServices
+from PySide6.QtGui import QKeySequence, QColor, QFont, QFontDatabase, QPainter, QPainterPath, QPen, QGuiApplication, QIcon, QPixmap, QWheelEvent, QDesktopServices
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QFileDialog, QFrame,
                                QGraphicsDropShadowEffect, QHBoxLayout, QLabel, QLineEdit, QPushButton,
                                QVBoxLayout, QGridLayout, QKeySequenceEdit, QScrollArea, QWidget, QSizePolicy,
@@ -33,9 +34,10 @@ from platform_startup import (StartupManager, CallbackBackend,
                               write_startup_value as _platform_write_startup)
 from platform_native import remove_host_window_shadow
 from surface_morph import paint_surface_shadow
-from native_ui_common import (reference_font, font_css_stack, rounded_popup, screen_for_widget, colors as ui_colors,
+from native_ui_common import SEGMENT_INSET_PX
+from native_ui_common import (RADIUS_CONTROL_PX, RADIUS_PANEL_PX, reference_font, font_css_stack, rounded_popup, screen_for_widget, colors as ui_colors,
                               paint_rounded_surface, qss_color, RADIUS_CARD_PX, RADIUS_SUBCONTROL_PX, RADIUS_WINDOW_PX,
-                              RoundedSurfaceFrame, RoundedPopupBackdrop, RoundedScrollBar)
+                              RoundedSurfaceFrame, RoundedScrollBar)
 
 
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
@@ -136,8 +138,10 @@ class SettingsOptionDelegate(QStyledItemDelegate):
         combo=self._combo()
         c=ui_colors('dark' if combo is not None and combo.dark else 'light')
         copy=QStyleOptionViewItem(option)
+        marker=getattr(self.parent(),'_dropdown_highlight',None)
+        moving=marker is not None and marker.paint(painter,qss_color(c['hover']),RADIUS_SUBCONTROL_PX,option.rect)
         if option.state & (QStyle.State_Selected|QStyle.State_MouseOver):
-            paint_rounded_surface(painter,QRectF(option.rect).adjusted(0,1,0,-1),RADIUS_SUBCONTROL_PX,qss_color(c['hover']))
+            if not moving:paint_rounded_surface(painter,QRectF(option.rect).adjusted(0,1,0,-1),RADIUS_SUBCONTROL_PX,qss_color(c['hover']))
             copy.state &= ~(QStyle.State_Selected|QStyle.State_MouseOver)
         super().paint(painter,copy,index)
 
@@ -164,6 +168,9 @@ class SettingsComboBox(QComboBox):
         self.setStyle(self._popup_style)
         from native_ui_common import PopupChevronMotion
         self._popup_chevron=PopupChevronMotion(self)
+        from dropdown_motion import DropdownTextRoll
+        self._text_roll=DropdownTextRoll(self,combo=True)
+        rounded_popup(self.view().window())
 
     def wheelEvent(self, event):
         # Scrolling the settings page must never silently change a preference,
@@ -175,19 +182,9 @@ class SettingsComboBox(QComboBox):
         # item view leaves bright native strips above and below dark options.
         popup = self.view().window()
         self._popup_chevron.attach(popup)
-        popup.setObjectName("flickdockSettingsOptions")
-        c = ui_colors('dark' if self.dark else 'light')
-        surface, edge = c['popup_surface'], c['border']
-        rounded_popup(popup)
-        for part in (popup,self.view(),self.view().viewport()):
-            part.setAutoFillBackground(False);part.setAttribute(Qt.WA_TranslucentBackground,True)
-            palette=part.palette();palette.setColor(QPalette.Window,Qt.transparent);palette.setColor(QPalette.Base,Qt.transparent)
-            part.setPalette(palette)
-        popup.setStyleSheet('QFrame#flickdockSettingsOptions {background:transparent;border:0;}')
-        if popup.layout() is not None:popup.layout().setContentsMargins(1,1,1,1)
-        if not hasattr(popup,'_settings_backdrop'):popup._settings_backdrop=RoundedPopupBackdrop(popup)
-        popup._settings_backdrop.fill=surface;popup._settings_backdrop.stroke=edge
-        popup._settings_backdrop.setGeometry(popup.rect());popup._settings_backdrop.show();popup._settings_backdrop.lower();popup._settings_backdrop.update()
+        from native_ui_common import prepare_combo_popup,show_rounded_combo
+        c=ui_colors('dark' if self.dark else 'light')
+        prepare_combo_popup(popup,self.view(),c,margin=1)
         self.view().setStyleSheet(
             f"QListView{{background:transparent;color:{c['text']};"
             "border:0;padding:5px;outline:0;}"
@@ -197,19 +194,28 @@ class SettingsComboBox(QComboBox):
             "QScrollBar::handle:vertical{background:transparent;min-height:20px;}"
             "QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;}"
             "QScrollBar::add-page:vertical,QScrollBar::sub-page:vertical{background:transparent;}")
-        super().showPopup()
+        show_rounded_combo(self,super().showPopup)
 
     def paintEvent(self, event):
         c=ui_colors('dark' if self.dark else 'light');p=QPainter(self)
-        paint_rounded_surface(p,self.rect(),8,qss_color(c['input']),qss_color(c['ring'] if self.hasFocus() else c['input_border']))
+        fill = c['control_hover'] if (self.underMouse() and self.isEnabled()) else c['input']
+        paint_rounded_surface(p,self.rect(),RADIUS_CONTROL_PX,qss_color(fill),qss_color(c['ring'] if self.hasFocus() else c['input_border']))
         p.end()
-        super().paintEvent(event)
+        if self._text_roll.running:
+            from PySide6.QtWidgets import QStyleOptionComboBox, QStylePainter
+            style=QStyleOptionComboBox()
+            self.initStyleOption(style);style.currentText=''
+            painter=QStylePainter(self);painter.drawComplexControl(QStyle.CC_ComboBox,style)
+            area=self.style().subControlRect(QStyle.CC_ComboBox,style,QStyle.SC_ComboBoxEditField,self)
+            painter.setFont(self.font());painter.setPen(qss_color(c['text']))
+            self._text_roll.paint(painter,QRectF(area),self.currentText());painter.end()
+        else:super().paintEvent(event)
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        pen = QPen(QColor("#b2b2b2" if self.dark else "#686868"), 1.7)
+        pen = QPen(QColor("#A1A5B2" if self.dark else "#5C5F6A"), 1.7)
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         p.setPen(pen)
-        x, y = self.width() - 16, self.height() // 2
+        x, y = self.width() - 18, self.height() // 2
         p.translate(x,y);p.rotate(self._popup_chevron.angle);p.translate(-x,-y)
         p.drawLine(x - 4, y - 2, x, y + 2)
         p.drawLine(x, y + 2, x + 4, y - 2)
@@ -224,7 +230,12 @@ class SettingsSpinBox(QSpinBox):
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setAttribute(Qt.WidgetAttribute.WA_MacShowFocusRect,False)
         self.lineEdit().setAttribute(Qt.WidgetAttribute.WA_MacShowFocusRect,False)
+        self.lineEdit().setTextMargins(8,0,0,0)
         self.lineEdit().installEventFilter(self)
+
+    def setButtonSymbols(self,symbols):
+        super().setButtonSymbols(symbols)
+        self.lineEdit().setTextMargins(0 if symbols==QAbstractSpinBox.NoButtons else 8,0,0,0)
 
     def eventFilter(self,watched,event):
         if watched is self.lineEdit() and event.type()==QEvent.Type.Wheel:
@@ -257,7 +268,54 @@ class SettingsSpinBox(QSpinBox):
         p.drawLine(x, lower + 2, x + 3, lower - 1)
 
 
+class _SliderValueBubble(QWidget):
+    """Small paint-only layer over the slider, inside its owning Qt window."""
+
+    def __init__(self,slider):
+        super().__init__(slider.window())
+        self.slider=slider
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.setAttribute(Qt.WA_NoSystemBackground)
+        self.setFixedSize(68,68)
+        slider.destroyed.connect(self.deleteLater)
+        self.hide()
+
+    def paintEvent(self,event):
+        slider=self.slider;spring=slider._bubble.values
+        lift=max(0.,min(1.08,spring['y']))
+        if lift<=.01:return
+        palette=slider._slider_colors()
+        painter=QPainter(self);painter.setRenderHint(QPainter.Antialiasing)
+        center=QPointF(self.width()/2,self.height()-10)
+        lag=slider._bubble_x.values['x']-slider._handle.values['x']
+        shifted=center+QPointF(max(-12.,min(12.,lag)),-36*lift)
+        font=reference_font();font.setPixelSize(11);painter.setFont(font)
+        value=slider._value_text()
+        radius=max(13.,min(27.,painter.fontMetrics().horizontalAdvance(value)/2+7))
+        diameter=2*radius*(.5+.5*lift)
+        bubble=QRectF(shifted.x()-diameter/2,shifted.y()-15*lift,diameter,30*lift)
+        path=QPainterPath();path.addEllipse(bubble)
+        # The neck narrows continuously as the raised badge separates.
+        tether=max(0.,1.-lift/.93)*9.
+        if tether>.12:
+            bridge=QPainterPath();bridge.moveTo(center+QPointF(-7,1))
+            bridge.cubicTo(center+QPointF(-tether,-7),shifted+QPointF(-tether,8),shifted+QPointF(-10,2))
+            bridge.lineTo(shifted+QPointF(10,2))
+            bridge.cubicTo(shifted+QPointF(tether,8),center+QPointF(tether,-7),center+QPointF(7,1))
+            bridge.closeSubpath();path=path.united(bridge)
+        painter.fillPath(path,qss_color(palette['action']))
+        painter.setOpacity(max(0.,min(1.,(lift-.48)*2.4)))
+        painter.setPen(qss_color(palette['on_action']))
+        painter.drawText(bubble,Qt.AlignCenter,value)
+        painter.end()
+
+
 class SettingsSlider(QSlider):
+    FOLLOW=(900,50)
+    BUBBLE=(420,22)
+    RELEASE=(300,14)
+    GLIDE=(420,34)
+
     def __init__(self,*args,**kwargs):
         super().__init__(*args,**kwargs)
         # The 18px handle extends outside the 4px groove. macOS' compressed
@@ -265,28 +323,97 @@ class SettingsSlider(QSlider):
         self.setMinimumHeight(28)
         self.setSizePolicy(QSizePolicy.Policy.Expanding,QSizePolicy.Policy.Fixed)
         self._pointer_offset=0.
+        self._badge=None
+        self._hovered=False
+        self._key_badge=False
+        from flickdock_motion import Spring
+        self._handle=Spring(self,{'x':0.},self._handle_frame)
+        self._bubble_x=Spring(self,{'x':0.},lambda _:self._bubble_frame())
+        self._bubble=Spring(self,{'y':0.},lambda _:self._bubble_frame())
+        self._press=Spring(self,{'w':1.},lambda _:self.update())
+        self.valueChanged.connect(self._sync_handle)
+        self.setCursor(Qt.PointingHandCursor)
 
-    def _set_from_pointer(self,point):
+    def _can_animate(self):
+        from ui_transitions import motion_allowed
+        return self.orientation()==Qt.Horizontal and self.isVisible() and self.isEnabled() and motion_allowed()
+
+    def _slider_colors(self):
+        return ui_colors(getattr(self.window(),'_applied_settings_theme','light'))
+
+    def _value_text(self):
+        value=self.sliderPosition()
+        return self.valueCaption(value) if callable(getattr(self,'valueCaption',None)) else str(value)
+
+    def _geometry(self):
         from PySide6.QtWidgets import QStyleOptionSlider
         option=QStyleOptionSlider();self.initStyleOption(option)
         groove=self.style().subControlRect(QStyle.CC_Slider,option,QStyle.SC_SliderGroove,self)
         handle=self.style().subControlRect(QStyle.CC_Slider,option,QStyle.SC_SliderHandle,self)
+        return option,groove,handle
+
+    def _sync_handle(self,*_,animate=False):
+        if self.isSliderDown():return
+        _,_,handle=self._geometry()
+        x=QRectF(handle).center().x()
+        if animate and self._can_animate():
+            self._handle.animate_physical({'x':x},*self.GLIDE)
+        else:
+            self._handle.jump({'x':x});self._bubble_x.jump({'x':x})
+
+    def _handle_frame(self,values):
+        self.update()
+        if self._badge is not None and self._badge.isVisible() and self._can_animate():
+            self._bubble_x.animate_physical({'x':values['x']},260,18)
+        self._bubble_frame()
+
+    def _bubble_frame(self):
+        if self._badge is None:return
+        if self._bubble.values['y']<=.01 or not self.isVisible():
+            self._badge.hide();return
+        anchor=self.mapTo(self.window(),QPoint(round(self._handle.values['x']),self.height()//2))
+        self._badge.move(anchor-QPoint(self._badge.width()//2,self._badge.height()-10))
+        if not self._badge.isVisible():self._badge.show();self._badge.raise_()
+        self._badge.update()
+
+    def _feedback(self):
+        if self.orientation()!=Qt.Horizontal:return
+        raised=self.isSliderDown() or self._key_badge
+        if raised and self._badge is None:self._badge=_SliderValueBubble(self)
+        if self._can_animate():
+            self._bubble.animate_physical({'y':float(raised)},*self.BUBBLE)
+            self._press.animate_physical({'w':1.16 if self.isSliderDown() else 1.08 if self._hovered else 1.},520,16)
+        else:
+            self._bubble.jump({'y':float(raised)});self._press.jump({'w':1.})
+
+    def _follow_pointer(self,point,groove,handle):
+        x=point.x()-self._pointer_offset
+        low=groove.left()+handle.width()/2
+        high=groove.right()+1-handle.width()/2
+        clamped=max(low,min(high,x))
+        over=x-clamped
+        target=clamped+math.copysign(18*(1-1/(abs(over)*.55/18+1)),over)
+        if self._can_animate():self._handle.animate_physical({'x':target},*self.FOLLOW)
+        else:self._handle.jump({'x':clamped});self._bubble_x.jump({'x':clamped})
+
+    def _set_from_pointer(self,point):
+        option,groove,handle=self._geometry()
         horizontal=self.orientation()==Qt.Horizontal
         span=max(1,(groove.width()-handle.width()) if horizontal else (groove.height()-handle.height()))
         position=((point.x()-groove.left()-handle.width()/2) if horizontal else
                   (point.y()-groove.top()-handle.height()/2))-self._pointer_offset
         value=QStyle.sliderValueFromPosition(self.minimum(),self.maximum(),max(0,min(span,round(position))),span,option.upsideDown)
         self.setSliderPosition(value)
+        if horizontal:self._follow_pointer(point,groove,handle)
 
     def mousePressEvent(self,event):
         if event.button()!=Qt.LeftButton or not self.isEnabled():
             super().mousePressEvent(event);return
-        from PySide6.QtWidgets import QStyleOptionSlider
-        option=QStyleOptionSlider();self.initStyleOption(option)
-        handle=self.style().subControlRect(QStyle.CC_Slider,option,QStyle.SC_SliderHandle,self)
+        _,_,handle=self._geometry()
         point=event.position();horizontal=self.orientation()==Qt.Horizontal
         self._pointer_offset=((point.x()-handle.center().x()) if horizontal else (point.y()-handle.center().y())) if handle.contains(point.toPoint()) else 0.
-        self.setFocus(Qt.MouseFocusReason);self.setSliderDown(True);self._set_from_pointer(point);event.accept()
+        self._key_badge=False
+        self.setFocus(Qt.MouseFocusReason);self.setSliderDown(True);self._set_from_pointer(point);self._feedback();event.accept()
 
     def mouseMoveEvent(self,event):
         if self.isSliderDown():self._set_from_pointer(event.position());event.accept();return
@@ -294,24 +421,76 @@ class SettingsSlider(QSlider):
 
     def mouseReleaseEvent(self,event):
         if event.button()==Qt.LeftButton and self.isSliderDown():
-            self._set_from_pointer(event.position());self.setSliderDown(False);event.accept();return
+            self._set_from_pointer(event.position());self.setSliderDown(False)
+            if self._can_animate():
+                _,_,handle=self._geometry()
+                self._handle.animate_physical({'x':QRectF(handle).center().x()},*self.RELEASE)
+            else:self._sync_handle()
+            self._feedback();event.accept();return
         super().mouseReleaseEvent(event)
+
+    def enterEvent(self,event):
+        self._hovered=True;self._feedback()
+        super().enterEvent(event)
+
+    def leaveEvent(self,event):
+        self._hovered=False;self._feedback()
+        super().leaveEvent(event)
+
+    def focusOutEvent(self,event):
+        self._key_badge=False;self._feedback()
+        super().focusOutEvent(event)
+
+    def keyPressEvent(self,event):
+        if event.key() not in (Qt.Key_Left,Qt.Key_Right,Qt.Key_Up,Qt.Key_Down,Qt.Key_PageUp,Qt.Key_PageDown,Qt.Key_Home,Qt.Key_End):
+            super().keyPressEvent(event);return
+        previous=self._handle.values['x']
+        super().keyPressEvent(event)
+        if self._can_animate():self._handle.jump({'x':previous})
+        self._sync_handle(animate=True);self._key_badge=True;self._feedback()
+
+    def resizeEvent(self,event):
+        super().resizeEvent(event);self._sync_handle()
+
+    def showEvent(self,event):
+        super().showEvent(event);self._sync_handle()
+
+    def hideEvent(self,event):
+        self._key_badge=False;self._hovered=False;self.setSliderDown(False)
+        self._bubble.jump({'y':0.});self._press.jump({'w':1.})
+        self._sync_handle()
+        if self._badge is not None:self._badge.hide()
+        super().hideEvent(event)
 
     def wheelEvent(self, event):
         _scroll_settings_instead(self, event)
 
     def paintEvent(self,event):
-        from PySide6.QtWidgets import QStyleOptionSlider
-        option=QStyleOptionSlider();self.initStyleOption(option)
-        groove=QRectF(self.style().subControlRect(QStyle.CC_Slider,option,QStyle.SC_SliderGroove,self))
-        handle=QRectF(self.style().subControlRect(QStyle.CC_Slider,option,QStyle.SC_SliderHandle,self))
-        theme=getattr(self.window(),'_applied_settings_theme','light');c=ui_colors(theme)
+        if self.orientation()!=Qt.Horizontal:
+            super().paintEvent(event);return
+        option,native_groove,native_handle=self._geometry()
+        groove=QRectF(native_groove);handle=QRectF(native_handle)
+        animate=self._handle._timer.isActive() or self.isSliderDown()
+        if animate:
+            stretch=1+min(.36,abs(self._handle._velocities['x'])/2400)
+            press=self._press.values['w']
+            handle.setSize(QSize(round(handle.width()*press*stretch),round(handle.height()*press/stretch)))
+            handle.moveCenter(QPointF(self._handle.values['x'],groove.center().y()))
+        c=self._slider_colors()
         p=QPainter(self);paint_rounded_surface(p,groove,groove.height()/2,qss_color(c['border']))
-        start,end=(handle.center().x(),groove.right()) if option.upsideDown else (groove.left(),handle.center().x())
+        center=max(groove.left(),min(groove.right(),handle.center().x()))
+        start,end=(center,groove.right()) if option.upsideDown else (groove.left(),center)
+        fill_color=qss_color(c['action'] if self.isEnabled() else c['muted'])
         fill=QRectF(start,groove.top(),max(0.,end-start),groove.height())
-        if not fill.isEmpty():paint_rounded_surface(p,fill,groove.height()/2,qss_color(c['action']))
-        paint_rounded_surface(p,handle,min(handle.width(),handle.height())/2,qss_color(c['card']),
-                              qss_color(c['ring'] if self.hasFocus() else c['action']))
+        if not fill.isEmpty():paint_rounded_surface(p,fill,groove.height()/2,fill_color)
+        if self.height()-groove.center().y()>=12:
+            for tick in range(11):
+                x=groove.left()+native_handle.width()/2+(groove.width()-native_handle.width())*tick/10
+                lit=x>=center if option.upsideDown else x<=center
+                p.fillRect(QRectF(x-.5,groove.center().y()+9,1,3 if tick in (0,5,10) else 2),
+                           qss_color(c['secondary'] if lit else c['border']))
+        paint_rounded_surface(p,handle,min(handle.width(),handle.height())/2,fill_color,
+                              qss_color(c['ring']) if self.hasFocus() else None)
         p.end()
 
 
@@ -457,7 +636,8 @@ class SettingsToggleSwitch(SettingsCheckBox):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         if not self.isEnabled():
             painter.setOpacity(.46)
-        painter.setPen(QColor("#D4D4D8" if self.dark else "#48484A"))
+        c=ui_colors('dark' if self.dark else 'light')
+        painter.setPen(QColor(c['text']))
         painter.setFont(self.font())
         painter.drawText(QRectF(0, 0, max(0, self.width()-54), self.height()),
                          Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
@@ -466,13 +646,12 @@ class SettingsToggleSwitch(SettingsCheckBox):
         # bounds so neither edge disappears at fractional display scale.
         track = QRectF(self.width()-44, (self.height()-22)/2, 38, 22)
         painter.setPen(Qt.PenStyle.NoPen)
-        c=ui_colors('dark' if self.dark else 'light')
-        off=QColor('#404040' if self.dark else '#D4D4D4');on=QColor(c['action']);position=self._thumb_position
+        off=QColor('#363942' if self.dark else '#D0D3DC');on=QColor(c['brand_accent']);position=self._thumb_position
         track_color=QColor(*(round(a+(b-a)*position) for a,b in zip(off.getRgb(),on.getRgb())))
-        if self.underMouse() and self.isEnabled():track_color=track_color.lighter(110 if self.dark else 94)
+        if self.underMouse() and self.isEnabled():track_color=track_color.lighter(108 if self.dark else 95)
         paint_rounded_surface(painter,track,11,track_color)
         knob_x = track.left()+2+16*position
-        off_thumb,on_thumb=QColor('#FAFAFA'),QColor(c['on_action'])
+        off_thumb,on_thumb=QColor('#FAFAFC'),QColor(c['brand_accent_ink'])
         painter.setBrush(QColor(*(round(a+(b-a)*position) for a,b in zip(off_thumb.getRgb(),on_thumb.getRgb()))))
         inset=.5 if self.isDown() else 0.
         painter.drawEllipse(QRectF(knob_x,track.top()+2,18,18).adjusted(inset,inset,-inset,-inset))
@@ -516,6 +695,7 @@ class SettingsResetButton(QPushButton):
         super().__init__(parent)
         self.dark = False
         self.setObjectName("settingsReset")
+        self.setProperty('flickdockIconOnly',True)
         self.setFixedSize(36, 34)
         self.setAccessibleName("恢复默认摇动灵敏度 50")
         self.setToolTip("恢复默认值 50")
@@ -535,6 +715,7 @@ class SettingsCloseButton(QPushButton):
         self.dark = False
         self.glyph_size = glyph_size
         self.setObjectName("settingsClose")
+        self.setProperty('flickdockIconOnly',True)
         self.setFixedSize(40, 40)
         self.setAccessibleName("关闭设置")
         self.setToolTip("关闭设置")
@@ -1130,12 +1311,14 @@ class ReferenceModalDialog(QDialog):
         self._surface_dark=False
         self._shadow_cache=OrderedDict()
         self._natural_surface_width=surface_width
-        outer=QVBoxLayout(self);outer.setContentsMargins(20,20,20,20);outer.setSpacing(0)
+        _m = 22
+        outer=QVBoxLayout(self);outer.setContentsMargins(_m,_m,_m,_m);outer.setSpacing(0)
         self.surface=QFrame(self);self.surface.setObjectName('referenceModalSurface')
         self.surface.setAutoFillBackground(False)
         outer.addWidget(self.surface)
         surface_layout=QVBoxLayout(self.surface);surface_layout.setContentsMargins(0,0,0,0)
         self.scroll=ModalScrollArea(self.surface);self.scroll.setWidgetResizable(True)
+        self.scroll.setProperty('scrollBackdropRole','window_backdrop')
         self.scroll.setVerticalScrollBar(RoundedScrollBar(Qt.Vertical,self.scroll,thumb_color='rgba(142,142,147,90)'))
         self.scroll.setFrameShape(QFrame.Shape.NoFrame);self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.scroll.setStyleSheet('QScrollArea{background:transparent;border:0;} QScrollArea>QWidget>QWidget{background:transparent;} QScrollBar:vertical{width:6px;background:transparent;} QScrollBar::handle:vertical{background:transparent;min-height:20px;} QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;} QScrollBar::add-page:vertical,QScrollBar::sub-page:vertical{background:transparent;}')
@@ -1201,12 +1384,12 @@ class ReferenceModalDialog(QDialog):
         painter.setCompositionMode(QPainter.CompositionMode_Source);painter.fillRect(self.rect(),Qt.transparent)
         painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
         rect=QRectF(self.surface.geometry())
-        color=QColor(0,0,0,107) if self._surface_dark else QColor(18,31,53,41)
-        paint_surface_shadow(painter,rect,self._shadow_cache,20,QPoint(0,4),color)
-        fill=QColor(ui_colors('dark' if self._surface_dark else 'light')['dialog_surface'])
-        radius=RADIUS_WINDOW_PX
-        paint_rounded_surface(painter,rect,radius,fill,
-                              QColor(255,255,255,20) if self._surface_dark else QColor(0,0,0,23))
+        color=QColor(0,0,0,52 if self._surface_dark else 36)
+        paint_surface_shadow(painter,rect,self._shadow_cache,28,QPoint(0,4),color)
+        c=ui_colors('dark' if self._surface_dark else 'light')
+        fill=qss_color(c['window_backdrop'])
+        paint_rounded_surface(painter,rect,RADIUS_WINDOW_PX,fill,
+                              qss_color(c['glass_border']))
 
     def showEvent(self, event):
         self.adjustSize();self.scroll.verticalScrollBar().setValue(0)
@@ -1310,10 +1493,9 @@ class SettingsSurface(QFrame):
 
     def paintEvent(self, event):
         painter = QPainter(self)
-        background = QColor(ui_colors('dark' if self.dark else 'light')['dialog_surface'])
-        radius=RADIUS_WINDOW_PX
-        paint_rounded_surface(painter,self.rect(),radius,background,
-                              QColor(255,255,255,20) if self.dark else QColor(0,0,0,23))
+        c = ui_colors('dark' if self.dark else 'light')
+        paint_rounded_surface(painter, self.rect(), RADIUS_WINDOW_PX, qss_color(c['window_backdrop']),
+                              qss_color(c['glass_border']))
         painter.end()
 
 
@@ -1323,7 +1505,16 @@ class _SettingsCard(RoundedSurfaceFrame):
         super().__init__(parent);self.dark=False
 
     def surface_style(self):
-        c=ui_colors('dark' if self.dark else 'light');return c['card'],c['border'],RADIUS_CARD_PX
+        c=ui_colors('dark' if self.dark else 'light');return c['card'],c['border'],RADIUS_PANEL_PX
+
+
+class _SettingsRailContainer(RoundedSurfaceFrame):
+    """True antialiased 24px rounded Obsidian sidebar host for settings navigation."""
+    def __init__(self,parent=None):
+        super().__init__(parent,content_inset=0);self.dark=False
+
+    def surface_style(self):
+        c=ui_colors('dark' if self.dark else 'light');return c['rail'],None,RADIUS_PANEL_PX
 
 
 class _MeasuredSettingsFrame(_SettingsCard):
@@ -1337,14 +1528,36 @@ class _SettingsInset(RoundedSurfaceFrame):
     def __init__(self,parent=None):super().__init__(parent,content_inset=0)
     def surface_style(self):
         theme=getattr(self.window(),'_applied_settings_theme','light')
-        return ('rgba(255,255,255,8)' if theme=='dark' else 'rgba(0,0,0,6)'),None,RADIUS_CARD_PX
+        c=ui_colors(theme)
+        return c['subcard'],c['border'],RADIUS_CARD_PX
 
 
 class _SettingsToggleHolder(QWidget):
     def paintEvent(self,event):
         if self.objectName()=='settingsToggleOption':
             theme=getattr(self.window(),'_applied_settings_theme','light');p=QPainter(self)
-            paint_rounded_surface(p,self.rect(),8,qss_color(ui_colors(theme)['control']));p.end()
+            c=ui_colors(theme)
+            paint_rounded_surface(p,self.rect(),14,qss_color(c['subcard']),qss_color(c['border']));p.end()
+
+
+class _SettingsDivider(QWidget):
+    """Clean 1px hairline divider between settings rows (1:1 HTML .set-divider)."""
+    def __init__(self,parent=None):
+        super().__init__(parent);self.setFixedHeight(1)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+    def paintEvent(self,event):
+        theme=getattr(self.window(),'_applied_settings_theme','light')
+        p=QPainter(self);p.fillRect(self.rect(),qss_color(ui_colors(theme)['divider']));p.end()
+
+
+class _SettingsParamCell(RoundedSurfaceFrame):
+    """Bounded parameter cell card (1:1 HTML .param-cell) nested inside subcards."""
+    def __init__(self,parent=None,*,role='card',radius=14):
+        super().__init__(parent,content_inset=0);self._role=role;self._radius=radius
+    def surface_style(self):
+        theme=getattr(self.window(),'_applied_settings_theme','light')
+        c=ui_colors(theme)
+        return c[self._role],c['border'],self._radius
 
 
 class _SettingsVersionLabel(QLabel):
@@ -1386,6 +1599,7 @@ class SettingsLineEdit(QLineEdit):
 
 
 class SettingsDialog(QDialog):
+    overview_requested=Signal()
     def show(self):
         self.chrome.prepare_open();self._window_fade.reopen();super().show()
 
@@ -1418,13 +1632,9 @@ class SettingsDialog(QDialog):
         self.setMinimumSize(740, 560)
         self.resize(860, 600)
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(16, 16, 16, 16)
+        _m = 22
+        outer.setContentsMargins(_m, _m, _m, _m)
         self.surface = SettingsSurface(self)
-        from ui_transitions import SnapshotFade
-        self._theme_transition=SnapshotFade(self.surface)
-        self._pending_theme_index=None
-        self._theme_selection_timer=QTimer(self);self._theme_selection_timer.setSingleShot(True)
-        self._theme_selection_timer.timeout.connect(self._commit_pending_theme)
         # Paint a cached shadow on the host instead of caching the entire
         # settings subtree in QGraphicsEffect. Native Windows backing stores
         # can otherwise retain a hidden update stripe until the next input.
@@ -1441,6 +1651,8 @@ class SettingsDialog(QDialog):
         title.setObjectName("settingsTitle")
         title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         header.addWidget(title)
+        from reference_widgets import overview_back_button
+        self.back_button=overview_back_button(self.title_bar,self.overview_requested.emit);header.addWidget(self.back_button)
         self.version_label = _SettingsVersionLabel(f"v{APP_VERSION}", self.title_bar)
         self.version_label.setObjectName("settingsVersion")
         self.version_label.setAccessibleName("当前版本")
@@ -1484,6 +1696,7 @@ class SettingsDialog(QDialog):
         self.update_notes_area.setWidget(self.update_notes_label);root.addWidget(self.update_notes_area)
 
         scroll = QScrollArea(self)
+        scroll.setProperty('scrollBackdropRole','window_backdrop')
         scroll.setVerticalScrollBar(RoundedScrollBar(Qt.Vertical,scroll,
             thumb_color=lambda:'#555555' if getattr(self,'_applied_settings_theme',self.store.theme)=='dark' else '#C8C8C8'))
         scroll.setWidgetResizable(True)
@@ -1514,8 +1727,6 @@ class SettingsDialog(QDialog):
         self.theme_combo.addItem("暗色", "dark")
         self.theme_combo.setMinimumWidth(160)
         self.theme_combo.setAccessibleName("外观")
-        self.theme_combo.currentIndexChanged.connect(lambda _: self.apply_theme(self.theme_combo.currentData())
-                                                     if not self._loading_values else None)
         appearance_row.addWidget(self.theme_combo)
         appearance_layout.addLayout(appearance_row)
         view_row = QHBoxLayout()
@@ -1677,10 +1888,11 @@ class SettingsDialog(QDialog):
         """The HTML segmented controls keep the existing combo as their model."""
         combo.hide()
         from ui_transitions import SelectionSurface
-        group=SelectionSurface(self.surface,radius=8);group.setObjectName('settingsSegment')
-        group.set_surface_background('rgba(255,255,255,10)','#EEEEEE',RADIUS_CARD_PX)
+        group=SelectionSurface(self.surface,radius=16)
+        group.setObjectName('settingsSegment')
+        group.set_surface_background('control_hover','control_hover',RADIUS_CARD_PX,stroke_role='border')
         group.set_selection_theme(self.theme_combo.currentData())
-        row=QHBoxLayout(group);row.setContentsMargins(4,4,4,4);row.setSpacing(6)
+        row=QHBoxLayout(group);row.setContentsMargins(*(SEGMENT_INSET_PX,)*4);row.setSpacing(6)
         from PySide6.QtWidgets import QButtonGroup
         from reference_widgets import IconTextButton
         selection=QButtonGroup(group);selection.setExclusive(True)
@@ -1697,43 +1909,23 @@ class SettingsDialog(QDialog):
                 button.setProperty('segmentGlyph',glyph);button.setProperty('alignIconToTextInk',True)
                 button.setIcon(icon(glyph,'#68686D'))
                 button.setIconSize(QSize(15,15))
-            if combo is self.theme_combo:
-                button.clicked.connect(lambda _checked=False,i=index:self._select_theme_after_motion(i))
-            else:button.clicked.connect(lambda _checked=False,i=index:combo.setCurrentIndex(i))
+            button.clicked.connect(lambda _checked=False,i=index:combo.setCurrentIndex(i))
             row.addWidget(button,1);buttons.append(button);group.add_selection_button(button)
         if combo is self.theme_combo:
             self._theme_segment=group
-            group._selection_animation.settled.connect(self._commit_pending_theme)
+            # Mouse and keyboard activation toggle the pill before updating the
+            # combo. Programmatic changes can apply without waiting for a slide.
+            combo.currentIndexChanged.connect(self._request_theme)
         def synchronize(*_):
             from native_ui_common import icon
             for i,button in enumerate(buttons):
                 button.setChecked(combo.currentIndex()==i)
                 if button.property('segmentGlyph'):
-                    dark=self.theme_combo.currentData()=='dark'
-                    tint=('#F5F5F7' if dark else '#1D1D1F') if button.isChecked() else ('#A1A1AA' if dark else '#68686D')
+                    dark=self.surface.dark
+                    tint=('#0E0F11' if dark else '#FAFAFC') if button.isChecked() else ('#A1A5B2' if dark else '#5C5F6A')
                     button.setIcon(icon(button.property('segmentGlyph'),tint))
         combo.currentIndexChanged.connect(synchronize);synchronize()
         return group
-
-    def _select_theme_after_motion(self,index):
-        if self._loading_values:return
-        self._pending_theme_index=index if index!=self.theme_combo.currentIndex() else None
-        self._theme_selection_timer.stop()
-        if self._pending_theme_index is None:return
-        from ui_transitions import motion_allowed
-        spring=self._theme_segment._selection_animation
-        if not self.isVisible() or not motion_allowed() or not spring._timer.isActive():
-            self._commit_pending_theme();return
-        # The spring normally settles first; the bounded fallback handles a
-        # hidden/retired selection surface without delaying the preference.
-        self._theme_selection_timer.start(650)
-
-    def _commit_pending_theme(self):
-        index=self._pending_theme_index
-        if index is None:return
-        self._pending_theme_index=None;self._theme_selection_timer.stop()
-        if index==self.theme_combo.currentIndex():return
-        self._theme_transition.change(lambda:self.theme_combo.setCurrentIndex(index))
 
     def _reference_toggle(self, control, label, parent):
         holder=_SettingsToggleHolder(parent);row=QHBoxLayout(holder);row.setContentsMargins(0,0,0,0);row.setSpacing(8)
@@ -1772,17 +1964,20 @@ class SettingsDialog(QDialog):
             header.insertWidget(0,traffic)
         root.addWidget(self.title_bar);root.addWidget(self.update_activity)
         root.addWidget(self.update_notes_area)
-        navigation_body=QWidget(self.surface);navigation=QHBoxLayout(navigation_body);navigation.setContentsMargins(16,8,0,0);navigation.setSpacing(0)
+        navigation_body=QWidget(self.surface);navigation=QHBoxLayout(navigation_body);navigation.setContentsMargins(16,8,12,12);navigation.setSpacing(14)
+        self.category_rail=_SettingsRailContainer(navigation_body);self.category_rail.setFixedWidth(164)
+        rail_layout=QVBoxLayout(self.category_rail);rail_layout.setContentsMargins(8,10,8,10);rail_layout.setSpacing(0)
         from settings_navigation import AnimatedCategoryList
-        self.category_list=AnimatedCategoryList(navigation_body);self.category_list.setObjectName('settingsCategories');self.category_list.setFixedWidth(146)
+        self.category_list=AnimatedCategoryList(self.category_rail);self.category_list.setObjectName('settingsCategories')
         self.category_list.setAccessibleName('设置分类');self.category_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        navigation.addWidget(self.category_list);navigation.addWidget(self.scroll,1);root.addWidget(navigation_body,1)
+        rail_layout.addWidget(self.category_list,1)
+        navigation.addWidget(self.category_rail);navigation.addWidget(self.scroll,1);root.addWidget(navigation_body,1)
         # Keep fractional-DPI child borders inside the scrolling viewport,
         # separated from the fixed footer by an opaque surface gutter.
         self.scroll.setViewportMargins(0,0,0,2)
         # Qt reserves six pixels for its scroll bar; the source's overlay
         # scrollbar occupies that space inside the right-hand 20px inset.
-        self.body_layout.setContentsMargins(20,24,14,16);self.body_layout.setSpacing(16)
+        self.body_layout.setContentsMargins(4,4,10,16);self.body_layout.setSpacing(14)
         self._empty_layout(self.body_layout)
         self.account_slot=QWidget(self.body);self.account_slot_layout=QVBoxLayout(self.account_slot)
         self.account_slot_layout.setContentsMargins(0,0,0,0);self.account_slot_layout.setSpacing(0)
@@ -1791,19 +1986,20 @@ class SettingsDialog(QDialog):
         self.account_slot_layout.addWidget(self.account_placeholder)
         self._reference_top=self.account_slot;self._reference_appearance=appearance
         self.body_layout.addWidget(self.account_slot);self.body_layout.addWidget(appearance)
-        al=appearance.layout();self._empty_layout(al);al.setContentsMargins(16,16,16,16);al.setSpacing(12)
+        al=appearance.layout();self._empty_layout(al);al.setContentsMargins(18,16,18,18);al.setSpacing(12)
         al.setAlignment(Qt.AlignmentFlag.AlignTop)
         heading=QLabel('外观与视图',appearance);heading.setObjectName('settingsSection');al.addWidget(heading)
         appearance_grid=QGridLayout();appearance_grid.setContentsMargins(0,0,0,0);appearance_grid.setSpacing(12)
         appearance_blocks=[]
         for label,combo,choices in (('主题外观',self.theme_combo,('浅色','暗色')),
                                    ('默认总览布局',self.view_combo,('列表','卡片视图'))):
-            block=QWidget(appearance);block_layout=QVBoxLayout(block);block_layout.setContentsMargins(0,0,0,0);block_layout.setSpacing(6)
+            block=_SettingsParamCell(appearance,role='subcard',radius=16);block_layout=QVBoxLayout(block);block_layout.setContentsMargins(12,10,12,12);block_layout.setSpacing(8)
             text=QLabel(label,block);text.setObjectName('settingsDetail');block_layout.addWidget(text)
             block_layout.addWidget(self._reference_segment(combo,choices));appearance_blocks.append(block)
             appearance_grid.addWidget(block,0,len(appearance_blocks)-1)
         for column in range(2):appearance_grid.setColumnStretch(column,1)
         al.addLayout(appearance_grid);self._appearance_grid=(appearance_grid,appearance_blocks)
+        al.addWidget(_SettingsDivider(appearance))
         accent=QHBoxLayout();accent.setSpacing(8);accent.addWidget(QLabel('主题色',appearance),1)
         self.accent_color_button=_SettingsButton(appearance);self.accent_color_button.setObjectName('settingsColorButton')
         self.accent_color_button.setAccessibleName('自定义主题色');self.accent_color_button.setAutoDefault(False)
@@ -1814,6 +2010,7 @@ class SettingsDialog(QDialog):
         self.accent_reset_button.setAccessibleName('恢复默认黑色主题');self.accent_reset_button.setAutoDefault(False)
         self.accent_reset_button.setFixedHeight(28);self.accent_reset_button.clicked.connect(lambda:self._set_accent_color('#000000'))
         accent.addWidget(self.accent_reset_button);al.addLayout(accent)
+        al.addWidget(_SettingsDivider(appearance))
         from accent_presets import AccentSwatch,PRESETS
         preset_row=QHBoxLayout();preset_row.setSpacing(8);preset_row.addWidget(QLabel('预设',appearance))
         self.accent_presets={}
@@ -1859,7 +2056,7 @@ class SettingsDialog(QDialog):
         self.shake_sensitivity_spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons);self.shake_sensitivity_spin.setFixedSize(64,28)
         sl.addWidget(self.shake_sensitivity_spin);self.shake_sensitivity_reset_button.setFixedSize(28,28);sl.addWidget(self.shake_sensitivity_reset_button)
         dl.addWidget(sensitivity_panel);self.dock_position_hint.hide();self.shake_effort_label.hide();self.body_layout.addWidget(dock)
-        kl=shortcuts.layout();self._empty_layout(kl);kl.setContentsMargins(16,16,16,16);kl.setSpacing(12)
+        kl=shortcuts.layout();self._empty_layout(kl);kl.setContentsMargins(18,16,18,16);kl.setSpacing(10)
         kl.setAlignment(Qt.AlignmentFlag.AlignTop)
         self._pointer_paste_panel=shortcuts
         kh=QHBoxLayout();title=QLabel('全局快捷键',shortcuts);title.setToolTip('点击快捷键直接修改');title.setObjectName('settingsSection');kh.addWidget(title,1)
@@ -1867,17 +2064,20 @@ class SettingsDialog(QDialog):
         reset.clicked.connect(lambda:(self.shelf_shortcut_edit.setKeySequence(QKeySequence(SHELF_SHORTCUT)),self.overview_shortcut_edit.setKeySequence(QKeySequence(OVERVIEW_SHORTCUT))))
         kh.addWidget(reset);kl.addLayout(kh)
         for label,editor in (('打开小搁架',self.shelf_shortcut_edit),('打开内容总览',self.overview_shortcut_edit)):
+            kl.addWidget(_SettingsDivider(shortcuts))
             row=QHBoxLayout();row.setSpacing(8);row.addWidget(QLabel(label,shortcuts),1)
             editor.setMinimumHeight(30);editor.setMaximumHeight(30);editor.setFixedWidth(175);row.addWidget(editor);kl.addLayout(row)
         self._empty_layout(startup.layout());startup.hide()
+        kl.addWidget(_SettingsDivider(shortcuts))
         kl.addWidget(self._reference_toggle(self.startup_checkbox,'登录系统时自动启动',shortcuts))
         self.automatic_updates_checkbox=SettingsToggleSwitch('自动更新',shortcuts)
         self.automatic_updates_checkbox.setAccessibleName('自动检查并后台下载更新')
         self.automatic_updates_checkbox.setToolTip('后台下载更新，空闲时自动安装并重启；正在进行的传输完成后再更新。')
         self.automatic_updates_checkbox.toggled.connect(self._automatic_updates_changed)
         updates=self._card();ul=QVBoxLayout(updates);ul.setContentsMargins(16,16,16,16);ul.setSpacing(12)
-        updates_title=QLabel('更新与关于',updates);updates_title.setObjectName('settingsSection');ul.addWidget(updates_title)
+        updates_title=QLabel('更新',updates);updates_title.setObjectName('settingsSection');ul.addWidget(updates_title)
         ul.addWidget(self._reference_toggle(self.automatic_updates_checkbox,'自动更新',updates))
+        ul.addWidget(_SettingsDivider(updates))
         self.update_body_button=_SettingsButton('检查更新',updates)
         self.update_body_button.setObjectName('settingsBrowse');self.update_body_button.setAutoDefault(False)
         self.update_body_button.setAccessibleName('检查更新');self.update_body_button.clicked.connect(self.update_requested.emit)
@@ -1896,12 +2096,13 @@ class SettingsDialog(QDialog):
         release=QLabel('FlickDock '+APP_VERSION,updates);release.setObjectName('settingsDetail');ul.addWidget(release)
         self.startup_status_label.setParent(shortcuts);self.startup_status_label.hide()
         self._pointer_paste_permission=None
-        cl=cloud.layout();self._empty_layout(cl);cl.setContentsMargins(16,16,16,16);cl.setSpacing(10)
+        cl=cloud.layout();self._empty_layout(cl);cl.setContentsMargins(18,16,18,16);cl.setSpacing(8)
         cl.setAlignment(Qt.AlignmentFlag.AlignTop)
         ch=QLabel('云同步与存储',cloud);ch.setObjectName('settingsSection');cl.addWidget(ch)
-        for control,label in ((self.sync_upload_checkbox,'上传本机搁架到云端'),(self.sync_receive_checkbox,'接收云端与其他设备内容'),
+        for idx,(control,label) in enumerate(((self.sync_upload_checkbox,'上传本机搁架到云端'),(self.sync_receive_checkbox,'接收云端与其他设备内容'),
                               (self.clipboard_sync_checkbox,'剪贴板同步（小于 20 MB）'),
-                              (self.clipboard_success_checkbox,'剪贴板复制提示')):
+                              (self.clipboard_success_checkbox,'剪贴板复制提示'))):
+            if idx>0:cl.addWidget(_SettingsDivider(cloud))
             cl.addWidget(self._reference_toggle(control,label,cloud))
         sl=storage.layout();self._empty_layout(sl);sl.setContentsMargins(16,16,16,16);sl.setSpacing(12)
         storage_title=QLabel('文件与保存',storage);storage_title.setObjectName('settingsSection');sl.addWidget(storage_title)
@@ -1917,6 +2118,7 @@ class SettingsDialog(QDialog):
         self.translation_switch=SettingsToggleSwitch('复制文字时提示翻译',translation)
         self.translation_switch.setChecked(self.store.translation_enabled)
         tl.addWidget(self._reference_toggle(self.translation_switch,'复制文字时提示翻译',translation))
+        tl.addWidget(_SettingsDivider(translation))
         target_row=QHBoxLayout();target_row.addWidget(QLabel('目标语言',translation),1)
         self.translation_language=SettingsComboBox(translation)
         self.translation_language.setAccessibleName('翻译目标语言')
@@ -1927,7 +2129,16 @@ class SettingsDialog(QDialog):
         self.translation_switch.toggled.connect(lambda enabled:self._translation_preference(translation_enabled=enabled))
         self.translation_language.currentIndexChanged.connect(lambda _:self._translation_preference(translation_target=self.translation_language.currentData()))
         self.store.changed.connect(self._refresh_translation_preferences)
-        self.setting_categories=(('常规',(shortcuts,)),('账号与设备',(self.account_slot,)),('外观与交互',(appearance,dock)),('同步与剪贴板',(cloud,)),('文件与保存',(storage,)),('视频解析',(video,)),('翻译',(translation,)),('更新与关于',(updates,)))
+        about=self._card()
+        self.footer_frame=about
+        about_layout=QVBoxLayout(about);about_layout.setContentsMargins(16,16,16,16);about_layout.setSpacing(8)
+        about_title=QLabel('关于与第三方许可',about);about_title.setObjectName('settingsSection');about_layout.addWidget(about_title)
+        about_row=QHBoxLayout()
+        self.author_button.setMinimumHeight(28);about_row.addWidget(self.author_button)
+        self.reference_about_button=_SettingsButton("关于与第三方许可",about);self.reference_about_button.setObjectName("settingsLink")
+        self.reference_about_button.clicked.connect(self.show_licenses);about_row.addWidget(self.reference_about_button);about_row.addStretch()
+        about.layout().addLayout(about_row)
+        self.setting_categories=(('常规',(shortcuts,)),('账号与设备',(self.account_slot,)),('外观与交互',(appearance,dock)),('同步与剪贴板',(cloud,)),('文件与保存',(storage,)),('视频解析',(video,)),('翻译',(translation,)),('更新',(updates,)),('关于与许可',(about,)))
         for label,sections in self.setting_categories:
             self.category_list.addItem(label)
             for section in sections:
@@ -1941,15 +2152,6 @@ class SettingsDialog(QDialog):
         self.scroll.viewport().installEventFilter(self)
         root.addWidget(self.error_label)
         root.addWidget(self.update_error_label)
-        footer_frame=QFrame(self.surface);self.footer_frame=footer_frame
-        footer_frame.setObjectName('settingsFooter');footer_frame.setFixedHeight(52)
-        footer_frame.setAttribute(Qt.WidgetAttribute.WA_StyledBackground,True)
-        footer=QHBoxLayout(footer_frame);footer.setContentsMargins(20,0,20,0);footer.setSpacing(10)
-        self.author_button.setMinimumHeight(28);footer.addWidget(self.author_button)
-        dot=QLabel('·',footer_frame);dot.setObjectName('settingsDetail');footer.addWidget(dot)
-        self.reference_about_button=_SettingsButton('关于与第三方许可',footer_frame);self.reference_about_button.setObjectName('settingsLink')
-        self.reference_about_button.clicked.connect(self.show_author);footer.addWidget(self.reference_about_button);footer.addStretch()
-        root.addWidget(footer_frame)
         self._show_layout(root);self._show_layout(self.body_layout)
         self.display_trigger_editor.load_values()
         self.update_activity.setVisible(self.update_activity.active)
@@ -2077,7 +2279,7 @@ class SettingsDialog(QDialog):
         painter.fillRect(event.rect(),Qt.GlobalColor.transparent)
         painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
         paint_surface_shadow(painter,QRectF(self.surface.geometry()),self._shadow_cache,
-            blur=14,offset=QPointF(0,3),color=QColor(0,0,0,64))
+            radius=RADIUS_WINDOW_PX,blur=28,offset=QPointF(0,4),color=QColor(0,0,0,40))
         painter.end()
 
     def set_lan_panel(self, widget):
@@ -2501,6 +2703,7 @@ class SettingsDialog(QDialog):
     def changeEvent(self,event):
         super().changeEvent(event)
         if event.type()==QEvent.WindowStateChange and self.isMinimized():
+            self._commit_pending_theme()
             self._finish_preview()
 
     def done(self, result):
@@ -2511,7 +2714,7 @@ class SettingsDialog(QDialog):
         super().done(result)
 
     def hideEvent(self, event):
-        self._commit_pending_theme();self._theme_transition.finish()
+        self._commit_pending_theme()
         self._finish_preview()
         super().hideEvent(event)
 
@@ -2522,8 +2725,13 @@ class SettingsDialog(QDialog):
             self._queue_preferences(capture_dir=chosen)
 
     def _connect_live_preferences(self):
+        self._pending_theme=None
+        self._theme_commit_timer=QTimer(self)
+        self._theme_commit_timer.setSingleShot(True)
+        self._theme_commit_timer.timeout.connect(self._commit_pending_theme)
+        self._theme_segment.selection_settled.connect(self._schedule_theme_commit)
         self.magnetic_editor.changed.connect(lambda:self._queue_preferences(magnetic_edges=self.magnetic_editor.values()))
-        for control,key in ((self.theme_combo,'theme'),(self.view_combo,'view_mode'),
+        for control,key in ((self.view_combo,'view_mode'),
                             (self.capture_mode_combo,'capture_mode'),(self.trigger_view_combo,'trigger_view')):
             control.currentIndexChanged.connect(lambda _,control=control,key=key:self._queue_preferences(**{key:control.currentData()}))
         for control,key in ((self.startup_checkbox,'autostart'),(self.keep_empty_handle_checkbox,'keep_empty_handle')):
@@ -2537,6 +2745,26 @@ class SettingsDialog(QDialog):
         self.folder_edit.editingFinished.connect(lambda:self._queue_preferences(capture_dir=self.folder_edit.text()))
         for editor in (self.shelf_shortcut_edit,self.overview_shortcut_edit):
             editor.editingFinished.connect(self._commit_shortcuts)
+
+    def _request_theme(self,*_):
+        if self._loading_values:return
+        self._theme_commit_timer.stop()
+        self._pending_theme=self.theme_combo.currentData()
+        if not self._theme_segment.selection_is_moving():
+            self._commit_pending_theme()
+
+    def _schedule_theme_commit(self):
+        if self._pending_theme is not None:
+            # Give Qt a frame to present the settled pill before repolishing the window.
+            self._theme_commit_timer.start(16)
+
+    def _commit_pending_theme(self):
+        theme=getattr(self,'_pending_theme',None)
+        if theme is None:return
+        self._pending_theme=None
+        self._theme_commit_timer.stop()
+        self.apply_theme(theme)
+        self._queue_preferences(theme=theme)
 
     def _queue_dock_preferences(self,*_):
         if not self._loading_values:self._queue_preferences(**self._dock_values())
@@ -2574,12 +2802,12 @@ class SettingsDialog(QDialog):
             self.error_label.setText(error);self.error_label.show()
         else:self.error_label.clear();self.error_label.hide()
         if not self._preference_writer.busy:
-            if 'theme' in keys:
-                blocked=self.theme_combo.blockSignals(True)
-                self.theme_combo.setCurrentIndex(1 if self.store.theme=='dark' else 0)
-                self.theme_combo.blockSignals(blocked)
+            if error and 'theme' in keys and self._pending_theme is None:
+                self._loading_values=True
+                try:self.theme_combo.setCurrentIndex(1 if self.store.theme=='dark' else 0)
+                finally:self._loading_values=False
             self._sync_direction_controls();self._refresh_translation_preferences()
-            if set(keys)-{'magnetic_edges'}:self.apply_theme(self.store.theme)
+            if set(keys)-{'magnetic_edges'} and self._pending_theme is None:self.apply_theme(self.store.theme)
 
     def save(self):
         """Compatibility entry point: apply edited values without closing."""
@@ -2618,8 +2846,14 @@ class SettingsDialog(QDialog):
             return
         self._applied_settings_theme=theme
         self._applied_settings_accent=current()
+        if hasattr(self,'scroll'):
+            from settings_navigation import _stop_bounce
+            _stop_bounce(self.scroll)
+            edge=getattr(self.scroll,'_flickdock_edge_fade',None)
+            if edge is not None:edge.sync()
         dark = theme == "dark"
         self.category_list.set_selection_theme(theme)
+        if hasattr(self,'category_rail'):self.category_rail.dark=dark;self.category_rail.update()
         self.surface.dark = dark
         self.surface.update()
         if hasattr(self,'display_trigger_editor'):self.display_trigger_editor.apply_theme(theme)
@@ -2650,7 +2884,7 @@ class SettingsDialog(QDialog):
         for button in self.findChildren(QPushButton,'settingsSegmentButton'):
             button.setProperty('referenceTheme',theme)
             if button.property('segmentGlyph'):
-                tint=('#F5F5F7' if dark else '#1D1D1F') if button.isChecked() else ('#A1A1AA' if dark else '#68686D')
+                tint=('#0E0F11' if dark else '#FAFAFC') if button.isChecked() else ('#A1A5B2' if dark else '#5C5F6A')
                 button.setIcon(segment_icon(button.property('segmentGlyph'),tint))
         self.trigger_visible_checkbox.dark = dark
         self.trigger_visible_checkbox.update()
@@ -2730,7 +2964,7 @@ class SettingsDialog(QDialog):
             QFrame#settingsInset {{background:transparent;border:0;}}
             QFrame#settingsSegment {{background:transparent;border:0;}}
             QDialog#flickdockSettings QPushButton#settingsSegmentButton {{background:transparent;border:0;border-radius:{semantic['radius_control']}px;padding:4px 3px;font-size:12px;color:{secondary};}}
-            QDialog#flickdockSettings QPushButton#settingsSegmentButton:checked {{background:{semantic['card']};border:1px solid {semantic['border']};color:{semantic['text']};font-weight:400;}}
+            QDialog#flickdockSettings QPushButton#settingsSegmentButton:checked {{background:transparent;border:0;color:{semantic['segment_selected_ink']};font-weight:500;}}
             QDialog#flickdockSettings QPushButton#settingsSegmentButton:hover:enabled {{background:{'#3A3A3A' if dark else '#DCDCDC'};color:{semantic['text']};}}
             QDialog#flickdockSettings QPushButton#settingsSegmentButton:checked:hover:enabled {{background:{'#404040' if dark else '#E5E5E5'};border:1px solid {semantic['hover_border']};}}
             QDialog#flickdockSettings QPushButton#settingsSegmentButton[segmentHover="true"]:enabled {{background:{'#3A3A3A' if dark else '#DCDCDC'};color:{semantic['text']};}}
@@ -2753,7 +2987,7 @@ class SettingsDialog(QDialog):
             QDialog#flickdockSettings QKeySequenceEdit {{background:transparent;border:0;font-size:12px;}}
             QDialog#flickdockSettings QKeySequenceEdit QLineEdit {{padding:2px 5px;}}
             QDialog#flickdockSettings QPushButton {{font-size:12px;padding:4px 10px;background:{ref_control};border:0;}}
-            QFrame#settingsFooter {{border-top:1px solid {ref_edge};background:{ui_colors(theme)['dialog_surface']};border-bottom-left-radius:{RADIUS_WINDOW_PX}px;border-bottom-right-radius:{RADIUS_WINDOW_PX}px;}}
+            QFrame#settingsFooter {{border-top:1px solid {ref_edge};background:transparent;border-bottom-left-radius:{RADIUS_WINDOW_PX}px;border-bottom-right-radius:{RADIUS_WINDOW_PX}px;}}
         '''
         for switch in self.findChildren(SettingsToggleSwitch):switch.dark=dark;switch.update()
         style+=f'''
@@ -2786,8 +3020,8 @@ class SettingsDialog(QDialog):
             QDialog#flickdockSettings QPushButton#settingsSegmentButton:checked:disabled {{background:transparent;border-color:transparent;}}
             QDialog#flickdockSettings QPushButton#settingsSegmentButton:checked[keyboardFocus="true"] {{border:1px solid {semantic['ring']};}}
             QDialog#flickdockSettings QLineEdit[settingsRoundedField="true"],
-            QDialog#flickdockSettings QComboBox[settingsRoundedField="true"],
-            QDialog#flickdockSettings QSpinBox[settingsRoundedField="true"] {{background:transparent;border:0;padding:4px 9px;}}
+            QDialog#flickdockSettings QSpinBox[settingsRoundedField="true"] {{background:transparent;border:0;padding:4px 10px;}}
+            QDialog#flickdockSettings QComboBox[settingsRoundedField="true"] {{background:transparent;border:0;padding:4px 32px 4px 12px;}}
             QDialog#flickdockSettings QLineEdit[settingsRoundedField="true"]:focus,
             QDialog#flickdockSettings QComboBox[settingsRoundedField="true"]:focus,
             QDialog#flickdockSettings QSpinBox[settingsRoundedField="true"]:focus,

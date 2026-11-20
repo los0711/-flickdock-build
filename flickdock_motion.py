@@ -73,6 +73,11 @@ class Spring(QObject):
         self._velocities = {k: 0.0 for k in self.values}
         self._on_update(dict(self.values))
 
+    def animate_physical(self, values, stiffness, damping):
+        """Use mass-one spring coefficients with the existing display clock."""
+        frequency=math.sqrt(stiffness)
+        self.animate(values,response=math.tau/frequency,damping=damping/(2*frequency))
+
     def kick(self, velocities: dict[str, float]) -> None:
         from native_ui_common import reduced_motion
         if self.motion and not reduced_motion():

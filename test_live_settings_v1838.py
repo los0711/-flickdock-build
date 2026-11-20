@@ -16,6 +16,7 @@ from test_html_native_workspace import APP,flush,until,contrast_colors
 
 
 def settle_preferences(dialog):
+    until(lambda:dialog._pending_theme is None)
     dialog._preference_writer.flush()
     until(lambda:not dialog._preference_writer.busy)
     flush()
@@ -79,40 +80,50 @@ class LiveSettingsTests(unittest.TestCase):
             self.assertEqual(SettingsStore(self.store.base).accent_color,'#000000')
         finally:release.set();timer.stop()
 
-    def test_theme_button_finishes_feedback_before_crossfade_and_rapid_reversal(self):
+    def test_theme_button_slides_before_recoloring_and_rapid_reversal_keeps_latest(self):
         self.dialog.show();flush();dialog=self.dialog
         buttons=dialog._theme_segment._selection_buttons
         with patch('ui_transitions.motion_allowed',return_value=True),patch('native_ui_common.reduced_motion',return_value=False):
-            buttons[1].click()
-            self.assertTrue(buttons[1].isChecked());self.assertEqual(dialog.theme_combo.currentData(),'light')
-            buttons[0].click();QTest.qWait(700);flush()
-            self.assertEqual(dialog.theme_combo.currentData(),'light');self.assertIsNone(dialog._pending_theme_index)
-            with patch.object(dialog._theme_transition,'change',wraps=dialog._theme_transition.change) as fade:
+            with patch.object(dialog,'apply_theme',wraps=dialog.apply_theme) as apply:
                 buttons[1].click()
+                self.assertTrue(buttons[1].isChecked())
+                self.assertEqual(dialog.theme_combo.currentData(),'dark')
+                self.assertTrue(dialog._theme_segment.selection_is_moving())
+                self.assertFalse(dialog.surface.dark)
+                self.assertEqual(self.store.theme,'light')
+                buttons[0].click()
                 self.assertEqual(dialog.theme_combo.currentData(),'light')
-                until(lambda:dialog.theme_combo.currentData()=='dark')
-                self.assertTrue(fade.called)
-            settle_preferences(dialog)
+                buttons[1].click()
+                apply.assert_not_called()
+                until(lambda:dialog.surface.dark)
+                self.assertFalse(dialog._theme_segment.selection_is_moving())
+                self.assertEqual(dialog._theme_segment._selection_rect,dialog._theme_segment._selection_target)
+                self.assertTrue(all(call.args==('dark',) for call in apply.call_args_list))
+                settle_preferences(dialog)
             self.assertEqual(SettingsStore(self.store.base).theme,'dark')
 
-    def test_closing_settings_commits_pending_theme_selection(self):
+    def test_theme_button_under_reduced_motion_recolors_immediately(self):
+        self.dialog.show();flush()
+        with patch('ui_transitions.motion_allowed',return_value=False):
+            self.dialog._theme_segment._selection_buttons[1].click()
+            self.assertFalse(self.dialog._theme_segment.selection_is_moving())
+            self.assertTrue(self.dialog.surface.dark)
+
+    def test_closing_settings_persists_the_selected_theme(self):
         self.dialog.show();flush();dialog=self.dialog
         with patch('ui_transitions.motion_allowed',return_value=True),patch('native_ui_common.reduced_motion',return_value=False):
             dialog._theme_segment._selection_buttons[1].click();dialog.close()
             settle_preferences(dialog)
         self.assertEqual(SettingsStore(self.store.base).theme,'dark')
 
-    def test_theme_crossfade_has_intermediate_frame_without_resizing_window(self):
+    def test_theme_change_has_no_snapshot_and_does_not_resize_window(self):
+        from ui_transitions import SnapshotFade
         self.dialog.show();flush();dialog=self.dialog;geometry=dialog.geometry()
         with patch('ui_transitions.motion_allowed',return_value=True),patch('native_ui_common.reduced_motion',return_value=False):
             dialog._theme_segment._selection_buttons[1].click()
-            until(lambda:dialog.theme_combo.currentData()=='dark')
-            fade=dialog._theme_transition
-            self.assertIsNotNone(fade.snapshot);self.assertTrue(fade.isVisible())
-            fade.animation.setCurrentTime(fade.animation.duration()//2)
-            self.assertGreater(fade.alpha,0.);self.assertLess(fade.alpha,1.)
+            self.assertEqual(dialog.theme_combo.currentData(),'dark')
+            self.assertIsNone(dialog.surface.findChild(SnapshotFade))
             self.assertEqual(dialog.geometry(),geometry)
-            fade.finish()
         settle_preferences(dialog)
 
     def test_chooser_surface_labels_and_first_change_button_and_progress_contrast(self):

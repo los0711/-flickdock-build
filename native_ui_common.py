@@ -16,7 +16,7 @@ from collections import OrderedDict
 from pathlib import Path
 
 from PySide6.QtCore import QByteArray, QEasingCurve, QEvent, QObject, QPointF, QRectF, QSize, Qt, QVariantAnimation, QTranslator
-from PySide6.QtGui import QBrush, QColor, QFont, QFontDatabase, QIcon, QIconEngine, QPainter, QPainterPath, QPen, QPixmap, QGuiApplication
+from PySide6.QtGui import QBrush, QColor, QFont, QFontDatabase, QIcon, QIconEngine, QPainter, QPainterPath, QPen, QPixmap, QGuiApplication, QRadialGradient, QRegion, QTransform
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import QApplication, QAbstractButton, QFrame, QHBoxLayout, QLabel, QProgressBar, QPushButton, QScrollBar, QWidget
 
@@ -25,33 +25,54 @@ FONT_WEIGHT_AXIS=QFont.Tag('wght')
 FONT_TABULAR_NUMBERS=QFont.Tag('tnum')
 TECHNICAL_FONT_FAMILY='JetBrains Mono'
 BUNDLED_FONT_FILES=('JetBrainsMono-Regular.ttf','JetBrainsMono-Medium.ttf')
-RADIUS_SMALL_PX = 4
-RADIUS_SUBCONTROL_PX = 6
-RADIUS_CONTROL_PX = 8
-RADIUS_CARD_PX = 12
-RADIUS_PANEL_PX = 16
-RADIUS_WINDOW_PX = 22
+RADIUS_SMALL_PX = 6
+RADIUS_SUBCONTROL_PX = 8
+RADIUS_CONTROL_PX = 12
+RADIUS_CARD_PX = 20
+RADIUS_PANEL_PX = 24
+RADIUS_WINDOW_PX = 28
+SEGMENT_INSET_PX = 3
 SHELF_HEADER_BUTTON_SIZE_PX = 32
 SHELF_HEADER_BUTTON_GAP_PX = 6
 SHELF_HEADER_RIGHT_MARGIN_PX = 16
 SHELF_COMPACT_HEADER_HEIGHT_PX = 48
 SHELF_OVERVIEW_HEADER_HEIGHT_PX = 53
-DROP_DASH_CYCLE_PX = 8
-DROP_HOVER_FILL_ALPHA = 13
+DROP_DOT_SPACING_PX = 9
 
 
 class DropBorderMotion(QObject):
-    """Stationary dashes with finite, interruptible hover-color transitions."""
+    """Shared dotted drop surface with pointer tracking and a short landing pulse."""
+
+    LANDING_MS=240
+
     def __init__(self,widget):
         super().__init__(widget)
         from display_frames import DisplayAnimation
+        from flickdock_motion import Spring
         from ui_transitions import DROP_HOVER_TRANSITION_MS
-        self.widget=widget;self.active=False;self.progress=0.
+        self.widget=widget
+        self.active=False
+        self.dragging=False
+        self.progress=0.
+        self.landing_progress=0.
+        self._has_pointer=False
+        self._dots_key=None
+        self._dot_field=QPixmap()
+        self._columns=self._rows=()
         self.animation=DisplayAnimation(self)
         self.animation.setDuration(DROP_HOVER_TRANSITION_MS)
         self.animation.setEasingCurve(QEasingCurve.OutCubic)
         self.animation.valueChanged.connect(self._changed)
+        self.pointer=Spring(self,{'x':0.,'y':0.},self._update)
+        self.landing=DisplayAnimation(self)
+        self.landing.setDuration(self.LANDING_MS)
+        self.landing.setStartValue(1.);self.landing.setEndValue(0.)
+        self.landing.setEasingCurve(QEasingCurve.OutCubic)
+        self.landing.valueChanged.connect(self._landing_frame)
         widget.installEventFilter(self)
+
+    def _update(self,_=None):
+        self.widget.update()
 
     def set_active(self,active):
         active=bool(active)
@@ -60,8 +81,37 @@ class DropBorderMotion(QObject):
         if not self.widget.isVisible() or reduced_motion():self._changed(target);return
         self.animation.setStartValue(self.progress);self.animation.setEndValue(target);self.animation.start()
 
+    def move_drag(self,point):
+        first=not self.dragging
+        self.dragging=True
+        if first:
+            self.landing.stop()
+            self.landing_progress=0.
+        target={'x':float(point.x()),'y':float(point.y())}
+        if not self._has_pointer or reduced_motion():self.pointer.jump(target)
+        elif target!=self.pointer._targets:self.pointer.animate_physical(target,560,44)
+        self._has_pointer=True
+        self.set_active(True)
+
+    def end_drag(self,*,accepted=False,hovered=False):
+        was_dragging=self.dragging
+        self.dragging=False
+        self._has_pointer=False
+        self.pointer.stop()
+        self.set_active(hovered)
+        if accepted and was_dragging and self.widget.isVisible() and not reduced_motion():
+            self._landing_frame(1.)
+            self.landing.start()
+
+    def reset(self):
+        self.pointer.stop();self.landing.stop();self.animation.stop()
+        self._has_pointer=False;self.dragging=False;self.active=False
+        self.progress=self.landing_progress=0.
+        self._update()
+
     def eventFilter(self,watched,event):
-        if event.type() in (QEvent.Hide,QEvent.Show):
+        if event.type()==QEvent.Hide:self.reset()
+        elif event.type()==QEvent.Show:
             self.animation.stop();self._changed(float(self.active))
         return False
 
@@ -69,37 +119,129 @@ class DropBorderMotion(QObject):
         if reduced_motion() and self.animation.state()==self.animation.Running:
             self.animation.stop();value=float(self.active)
         self.progress=float(value)
-        self.widget.update()
+        self._update()
+
+    def _landing_frame(self,value):
+        self.landing_progress=float(value)
+        self._update()
 
     def color(self,first,last):
         return QColor.fromRgbF(*(a+(b-a)*self.progress for a,b in zip(QColor(first).getRgbF(),QColor(last).getRgbF())))
 
-    def paint(self,painter,path,*,dark,radius,width=1.,idle_fill=None):
+    @staticmethod
+    def _axis(start,extent):
+        step=DROP_DOT_SPACING_PX
+        count=max(0,math.floor((extent-12)/step)+1)
+        first=start+(extent-max(0,count-1)*step)/2
+        return tuple(first+index*step for index in range(count))
+
+    def _field(self,rect,dpr,ink,quiet):
+        key=(rect,dpr,ink.rgba(),quiet)
+        if self._dots_key==key:return self._dot_field
+        self._dots_key=key
+        self._columns=self._axis(rect.left(),rect.width())
+        self._rows=self._axis(rect.top(),rect.height())
+        field=QPixmap(math.ceil(rect.width()*dpr),math.ceil(rect.height()*dpr))
+        field.setDevicePixelRatio(dpr);field.fill(Qt.transparent)
+
+        # Reuse one antialiased dot across the grid. Only redo this bitmap when
+        # geometry, density or color changes, never on a pointer/landing frame.
+        side=max(3,math.ceil(3*dpr))
+        stamp=QPixmap(side,side)
+        stamp.setDevicePixelRatio(dpr);stamp.fill(Qt.transparent)
+        half=side/(2*dpr)
+        painter=QPainter(stamp);painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(Qt.NoPen);painter.setBrush(ink)
+        painter.drawEllipse(QPointF(half,half),.68,.68)
+        painter.end()
+
+        painter=QPainter(field)
+        for y in self._rows:
+            for x in self._columns:
+                painter.drawPixmap(QPointF(x-rect.left()-half,y-rect.top()-half),stamp)
+        if quiet:
+            centre=QPointF(rect.width()/2,rect.height()/2)
+            mist=QRadialGradient(centre,min(98.,max(29.,rect.width()*.30)))
+            mist.setColorAt(0.,QColor(0,0,0,56));mist.setColorAt(.5,QColor(0,0,0,56))
+            mist.setColorAt(1.,QColor(0,0,0,255))
+            painter.setCompositionMode(QPainter.CompositionMode_DestinationIn)
+            painter.fillRect(QRectF(0,0,rect.width(),rect.height()),mist)
+        painter.end()
+        self._dot_field=field
+        return field
+
+    def _paint_pointer_dots(self,painter,point,ink,centre,quiet):
+        gain=self.progress if self.dragging else self.landing_progress
+        if gain<=0.:return
+        radius=76. if self.dragging else 46.+52.*(1.-gain)
+        levels=[QPainterPath() for _ in range(4)]
+        px,py=point.x(),point.y()
+        for y in self._rows:
+            dy=y-py
+            if abs(dy)>=radius:continue
+            for x in self._columns:
+                distance=math.hypot(x-px,dy)
+                if distance>=radius:continue
+                strength=(1.-distance/radius)**1.6
+                if quiet:
+                    text_distance=math.hypot((x-centre.x())*.65,y-centre.y())
+                    strength*=min(1.,.18+text_distance/40.)
+                level=min(3,int(strength*4))
+                dot=.75+strength*1.5*gain
+                levels[level].addEllipse(QPointF(x,y),dot,dot)
+        for level,path in enumerate(levels):
+            shade=QColor(ink);shade.setAlpha(round(gain*(28+level*42)))
+            painter.fillPath(path,shade)
+
+    def paint(self,painter,path,*,dark,radius,width=1.,idle_fill=None,quiet=True):
+        bounds=path.boundingRect()
+        if bounds.isEmpty():return
+        theme=colors('dark' if dark else 'light')
+        ink=qss_color(theme['text'])
+        accent=qss_color(theme['action'])
+        fill=qss_color(theme['card']) if idle_fill is None else QColor(idle_fill)
+        outline=QColor(ink);outline.setAlpha(38 if dark else 44)
+        active_edge=QColor(accent);active_edge.setAlpha(148 if dark else 168)
+        hover_edge=QColor(ink);hover_edge.setAlpha(82 if dark else 83)
+        point=QPointF(self.pointer.values['x'],self.pointer.values['y'])
+        centre=bounds.center()
+        gain=self.progress if self.dragging else self.landing_progress
         scale=abs(painter.deviceTransform().m11()) or 1.
-        rect,width=pixel_aligned_border(painter,path.boundingRect(),width/scale)
+        rect,width=pixel_aligned_border(painter,bounds,width/scale)
         radius=min(round(radius*scale)/scale,rect.width()/2,rect.height()/2)
-        aligned=QPainterPath();aligned.addRoundedRect(rect,radius,radius);path=aligned
-        active=QColor(colors('dark' if dark else 'light')['action'])
-        idle=QColor(idle_fill) if idle_fill is not None else QColor(0,0,0,0)
-        active_fill=QColor(active);active_fill.setAlpha(DROP_HOVER_FILL_ALPHA)
-        painter.fillPath(path,self.color(idle,active_fill))
-        pen=QPen(self.color(QColor(255,255,255,55) if dark else QColor(0,0,0,48),active),width)
-        length=path.length();cycle=length/max(1,round(length/DROP_DASH_CYCLE_PX))
-        pen.setDashPattern([cycle*.52/width,cycle*.48/width])
-        pen.setCapStyle(Qt.FlatCap);pen.setJoinStyle(Qt.RoundJoin)
+        path=QPainterPath();path.addRoundedRect(rect,radius,radius)
+        painter.save()
+        painter.setRenderHint(QPainter.Antialiasing)
+        if gain>0. and not reduced_motion():
+            # Keep the moving appearance inside the fixed native hit area.
+            transform=QTransform()
+            dx=max(-1.,min(1.,(point.x()-centre.x())/max(1.,bounds.width()/2)))
+            dy=max(-1.,min(1.,(point.y()-centre.y())/max(1.,bounds.height()/2)))
+            transform.translate(centre.x(),centre.y())
+            transform.scale(1.-.028*gain,1.-.04*gain)
+            transform.shear(-.027*dy*gain,-.019*dx*gain)
+            transform.translate(-centre.x(),-centre.y())
+            painter.setWorldTransform(transform,True)
+        painter.save()
+        painter.setClipPath(path,Qt.IntersectClip)
+        painter.fillPath(path,fill)
+        dot=QColor(ink);dot.setAlpha(53 if dark else 51)
+        dpr=painter.device().devicePixelRatioF()
+        painter.setRenderHint(QPainter.SmoothPixmapTransform)
+        painter.drawPixmap(bounds.topLeft(),self._field(bounds,dpr,dot,quiet))
+        self._paint_pointer_dots(painter,point,accent,centre,quiet)
+        painter.restore()
+        pen=QPen(self.color(outline,active_edge if self.dragging else hover_edge),width)
         painter.setPen(pen);painter.setBrush(Qt.NoBrush);painter.drawPath(path)
-        reveal=getattr(QApplication.instance(),'_flickdock_border_reveal',None)
-        if reveal is not None:reveal.paint_stroke(painter,path,width,pen=pen)
+        painter.restore()
 
 
 class PopupChevronMotion(QObject):
     """Interruptible, display-synchronised rotation for popup indicators."""
     def __init__(self,widget):
         super().__init__(widget);self.widget=widget;self.angle=0.;self.popup=None
-        from display_frames import DisplayAnimation
-        self.animation=DisplayAnimation(self);self.animation.setDuration(160)
-        self.animation.setEasingCurve(QEasingCurve.OutCubic)
-        self.animation.valueChanged.connect(self._changed)
+        from flickdock_motion import Spring
+        self.animation=Spring(self,{'angle':0.},lambda values:self._changed(values['angle']))
 
     def attach(self,popup):
         if self.popup is popup:return
@@ -107,42 +249,56 @@ class PopupChevronMotion(QObject):
             try:self.popup.removeEventFilter(self)
             except RuntimeError:pass
         self.popup=popup
-        if popup is not None:popup.installEventFilter(self)
+        if popup is not None:
+            popup._dropdown_anchor=self.widget
+            popup.installEventFilter(self)
         else:self._transition(False)
 
     def _changed(self,value):self.angle=float(value);self.widget.update()
 
     def _transition(self,opened):
         target=180. if opened else 0.
-        self.animation.stop()
-        if not self.widget.isVisible() or reduced_motion():self._changed(target);return
-        self.animation.setStartValue(self.angle);self.animation.setEndValue(target);self.animation.start()
+        if not self.widget.isVisible() or reduced_motion():self.animation.jump({'angle':target});return
+        self.animation.animate_physical({'angle':target},300,18)
 
     def eventFilter(self,watched,event):
-        if watched is self.popup:
+        if watched is getattr(self,'popup',None):
             if event.type()==QEvent.Show:self._transition(True)
             elif event.type()==QEvent.Hide:self._transition(False)
         return False
 
 
 class _TranslucentPopup(QObject):
-    """Ensure native popup recreation never reinstates an opaque mask."""
+    """Clip native item-view containers even when their alpha backing is opaque."""
+    def sync_mask(self, popup):
+        radius=getattr(popup,'_popup_clip_radius',None)
+        if radius is None:
+            if not popup.mask().isEmpty():popup.clearMask()
+            return
+        path=QPainterPath()
+        path.addRoundedRect(QRectF(popup.rect()),radius,radius)
+        region=QRegion(path.toFillPolygon().toPolygon())
+        if region!=popup.mask():popup.setMask(region)
+
     def eventFilter(self, watched, event):
         if event.type() in (QEvent.Type.Resize, QEvent.Type.Show):
-            if not watched.mask().isEmpty():watched.clearMask()
+            self.sync_mask(watched)
         return False
 
 
-def rounded_popup(popup):
+def rounded_popup(popup, *, clip_radius=None):
     """Keep native popup behavior while its surface paints antialiased alpha."""
     if not hasattr(popup, '_translucent_popup'):
-        popup.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground,True)
+        popup.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground,clip_radius is None)
         popup.setWindowFlag(Qt.WindowType.NoDropShadowWindowHint, True)
         popup.setWindowFlag(Qt.WindowType.FramelessWindowHint,True)
         popup.setAutoFillBackground(False)
         popup._translucent_popup=_TranslucentPopup(popup)
         popup.installEventFilter(popup._translucent_popup)
-    if not popup.mask().isEmpty():popup.clearMask()
+        from dropdown_motion import install_dropdown_motion
+        install_dropdown_motion(popup)
+    if clip_radius is not None:popup._popup_clip_radius=clip_radius
+    popup._translucent_popup.sync_mask(popup)
 
 
 def screen_for_widget(widget):
@@ -193,41 +349,54 @@ def flat_qss(source):
     return re.sub(r'([^{}]+)\{([^{}]*)\}',block,source)
 
 
+_RE_FONT_WEIGHT=re.compile(r'(font-weight\s*:\s*)([1-9]00|bold|normal)\b',re.I)
+_RE_FONT_SHORT_W=re.compile(r'(font\s*:\s*)([1-9]00)(?=\s+\d+px)',re.I)
+_RE_FONT_SIZE=re.compile(r'(font-size\s*:\s*)(\d+)(px)')
+_RE_FONT_SHORT_S=re.compile(r'(font\s*:\s*(?:[1-9]00\s+)?)(\d+)(px)')
+
+
 def readable_qss(source):
     """Apply the shared type scale and reduce emphasis once per stylesheet."""
-    # Card and control borders are part of the shadcn visual hierarchy.  The
-    # former flat_qss pass erased them, including useful focus boundaries.
     if 'flickdock-readable-type' in source:return source
     def weight(match):
         value=match[2].lower()
         return match[1]+str(_ui_weight(700 if value=='bold' else 400 if value=='normal' else int(value)))
-    source=re.sub(r'(font-weight\s*:\s*)([1-9]00|bold|normal)\b',weight,source,flags=re.I)
-    source=re.sub(r'(font\s*:\s*)([1-9]00)(?=\s+\d+px)',weight,source,flags=re.I)
+    source=_RE_FONT_WEIGHT.sub(weight,source)
+    source=_RE_FONT_SHORT_W.sub(weight,source)
     if sys.platform == 'win32':
-        source=re.sub(r'(font-size\s*:\s*)(\d+)(px)',lambda m:m[1]+str(readable_size(m[2]))+m[3],source)
-        source=re.sub(r'(font\s*:\s*(?:[1-9]00\s+)?)(\d+)(px)',lambda m:m[1]+str(readable_size(m[2]))+m[3],source)
+        source=_RE_FONT_SIZE.sub(lambda m:m[1]+str(readable_size(m[2]))+m[3],source)
+        source=_RE_FONT_SHORT_S.sub(lambda m:m[1]+str(readable_size(m[2]))+m[3],source)
     return source+'\n/* flickdock-readable-type */'
 
 
+_REDUCED_MOTION_CACHE=(0.0,False)
+
+
 def reduced_motion():
-    """Read the platform preference without starting native hooks or prompts."""
+    """Read the platform preference with a short TTL cache to avoid per-frame OS syscalls."""
+    global _REDUCED_MOTION_CACHE
     if any(os.environ.get(key,'').lower() in ('1','true','yes','on')
            for key in ('FLICKDOCK_REDUCE_MOTION','FLICKDOCK_LOW_PERFORMANCE')):return True
+    now=time.monotonic()
+    if now-_REDUCED_MOTION_CACHE[0]<3.0:
+        return _REDUCED_MOTION_CACHE[1]
+    result=False
     if sys.platform == 'darwin':
         try:
             from AppKit import NSWorkspace
-            return bool(NSWorkspace.sharedWorkspace().accessibilityDisplayShouldReduceMotion())
+            result=bool(NSWorkspace.sharedWorkspace().accessibilityDisplayShouldReduceMotion())
         except Exception:
-            return False
-    if sys.platform == 'win32':
+            result=False
+    elif sys.platform == 'win32':
         try:
             import ctypes
             value = ctypes.c_int(1)
             ok = ctypes.windll.user32.SystemParametersInfoW(0x1042, 0, ctypes.byref(value), 0)
-            return bool(ok and not value.value)
+            result=bool(ok and not value.value)
         except (AttributeError, OSError):
-            return False
-    return False
+            result=False
+    _REDUCED_MOTION_CACHE=(now,result)
+    return result
 
 
 def keyboard_focus_visible(widget):
@@ -317,7 +486,7 @@ class RoundedSurfaceFrame(QFrame):
 
 class RoundedPopupBackdrop(QWidget):
     """Antialiased backing for native popup containers and their child views."""
-    def __init__(self,popup,radius=RADIUS_CARD_PX):
+    def __init__(self,popup,radius=RADIUS_CONTROL_PX):
         super().__init__(popup);self.radius=radius;self.fill='#FFFFFF';self.stroke='#D8D8D8'
         self.setAttribute(Qt.WA_TransparentForMouseEvents);self.setAttribute(Qt.WA_NoSystemBackground)
         popup.installEventFilter(self);self.setGeometry(popup.rect());self.lower()
@@ -335,6 +504,79 @@ class RoundedPopupBackdrop(QWidget):
         paint_rounded_surface(painter,self.rect(),self.radius,qss_color(self.fill),
                               None if self.stroke is None else qss_color(self.stroke))
         painter.end()
+
+
+def prepare_combo_popup(popup, view, colors, *, margin):
+    """Paint the native combo backing and the row view with a single palette."""
+    from PySide6.QtGui import QPalette
+    rounded_popup(popup)
+    popup.setObjectName('flickdockComboPopup')
+    fill=colors['popup_surface']
+    popup.setProperty('dropdownTheme','light' if qss_color(fill).lightness()>128 else 'dark')
+    view.setProperty('scrollBackdropColor',fill)
+    from dropdown_motion import install_item_highlight
+    install_item_highlight(view,(5,2,-5,-2) if margin>1 else (0,1,0,-1))
+    for part in (popup,view,view.viewport()):
+        palette=part.palette()
+        palette.setColor(QPalette.Window,qss_color(fill))
+        palette.setColor(QPalette.Base,qss_color(fill))
+        part.setPalette(palette)
+        part.setAutoFillBackground(False)
+    popup.setStyleSheet(
+        'QFrame#flickdockComboPopup {background:transparent;border:0;} '
+        'QAbstractItemView{background:transparent;border:0;outline:0;}')
+    if popup.layout() is not None:
+        popup.layout().setContentsMargins(margin,margin,margin,margin)
+    if not hasattr(popup,'_rounded_backdrop'):
+        popup._rounded_backdrop=RoundedPopupBackdrop(popup)
+    backdrop=popup._rounded_backdrop
+    backdrop.fill=fill
+    backdrop.stroke=colors['input_border']
+    backdrop.setGeometry(popup.rect())
+    backdrop.show()
+    backdrop.lower()
+    backdrop.update()
+
+
+def show_rounded_combo(combo,show,*,gap=0):
+    """Use the shared popup spring in place of the native rectangular roll."""
+    animate=QGuiApplication.platformName()=='windows' and QApplication.isEffectEnabled(Qt.UI_AnimateCombo)
+    if animate:QApplication.setEffectEnabled(Qt.UI_AnimateCombo,False)
+    try:
+        show()
+        _fit_combo_popup(combo,gap)
+    finally:
+        if animate:QApplication.setEffectEnabled(Qt.UI_AnimateCombo,True)
+
+
+def _fit_combo_popup(combo,gap):
+    """Fit complete rows and round insets before the first animation frame."""
+    view=combo.view();popup=view.window()
+    count=min(combo.count(),combo.maxVisibleItems())
+    if not count or not popup.isVisible():return
+    if popup.layout() is not None:popup.layout().activate()
+    view.doItemsLayout()
+    rows=sum(max(0,view.sizeHintForRow(index)) for index in range(count))
+    viewport_margin=popup.height()-view.viewport().height()
+    wanted=max(popup.height(),rows+viewport_margin)
+    anchor=combo.mapToGlobal(combo.rect().topLeft())
+    screen=QGuiApplication.screenAt(anchor) or screen_for_widget(combo)
+    if screen is None:return
+    area=screen.availableGeometry()
+    top=anchor.y()-gap
+    bottom=anchor.y()+combo.height()+gap
+    above=max(0,top-area.top())
+    below=max(0,area.bottom()+1-bottom)
+    prefer_above=popup.geometry().bottom()<top
+    if wanted>min(above,below):
+        if wanted<=above:prefer_above=True
+        elif wanted<=below:prefer_above=False
+        else:prefer_above=above>below
+    height=min(wanted,above if prefer_above else below)
+    y=top-height if prefer_above else bottom
+    if height<=0:return
+    x=max(area.left(),min(popup.x(),area.right()-popup.width()+1))
+    popup.setGeometry(x,y,popup.width(),height)
 
 
 class RoundedScrollBar(QScrollBar):
@@ -385,8 +627,16 @@ class RoundedProgressBar(QProgressBar):
 
     def paintEvent(self,event):
         c=self.surface_colors();painter=QPainter(self);rect=QRectF(self.rect())
-        radius=min(RADIUS_SMALL_PX,rect.height()/2)
-        paint_rounded_surface(painter,rect,radius,qss_color(c['control']))
+        radius=rect.height()/2.0
+        path=QPainterPath();path.addRoundedRect(rect,radius,radius)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.fillPath(path,qss_color(c['subcard']))
+        painter.save();painter.setClipPath(path)
+        painter.setPen(QPen(qss_color(c['hatch']),1.2))
+        step=7.0;h=rect.height()+2.0;x=rect.left()-h
+        while x<rect.right()+h:
+            painter.drawLine(QPointF(x,rect.bottom()+1),QPointF(x+h,rect.top()-1))
+            x+=step
         minimum,maximum=self.minimum(),self.maximum()
         if minimum==maximum==0:
             phase=.5 if reduced_motion() else (time.monotonic()%1.4)/1.4
@@ -396,9 +646,8 @@ class RoundedProgressBar(QProgressBar):
             fraction=max(0.,min(1.,(self.value()-minimum)/max(1,maximum-minimum)))
             chunk=QRectF(0,0,rect.width()*fraction,rect.height())
         if not chunk.isEmpty():
-            path=QPainterPath();path.addRoundedRect(rect,radius,radius)
-            painter.setRenderHint(QPainter.Antialiasing);painter.setClipPath(path)
-            paint_rounded_surface(painter,chunk,radius,qss_color(c['action']))
+            paint_rounded_surface(painter,chunk,radius,qss_color(c['brand_accent']))
+        painter.restore()
         painter.end()
 
 
@@ -492,14 +741,21 @@ def apply_widget_theme_style(widget,style):
         for child in [widget,*widget.findChildren(QWidget)]:normalizer.eventFilter(child,event)
 
 
+_FONT_STACK_CACHE={}
+
+
 def font_css_stack(*,technical=False):
-    """Keep the script fallback when a stylesheet specifies a font."""
+    """Keep the script fallback when a stylesheet specifies a font (cached)."""
     app=QApplication.instance()
-    families=QApplication.font().families() if app else []
-    if technical:
-        families=[TECHNICAL_FONT_FAMILY]+families
+    raw=tuple(QApplication.font().families()) if app else ()
+    key=(bool(technical),raw)
+    cached=_FONT_STACK_CACHE.get(key)
+    if cached is not None:return cached
+    families=([TECHNICAL_FONT_FAMILY]+list(raw)) if technical else list(raw)
     families=list(dict.fromkeys(families))
-    return ', '.join("'"+name.replace("'",'')+"'" for name in families) or "'sans-serif'"
+    value=', '.join("'"+name.replace("'",'')+"'" for name in families) or "'sans-serif'"
+    _FONT_STACK_CACHE[key]=value
+    return value
 
 
 def technical_font(base=None):
@@ -564,49 +820,55 @@ def configure_reference_font(app):
 
 
 _DARK = {
-    'background': '#0A0A0A', 'surface': '#0A0A0A',
-    'dialog_surface': '#121212', 'popup_surface': '#202020',
-    'sidebar': '#171717', 'preview': '#0A0A0A',
-    'glass_border': 'rgba(255,255,255,26)', 'divider': 'rgba(255,255,255,20)',
-    'highlight': 'rgba(255,255,255,36)', 'card': '#171717',
-    'segment_selected': '#080808', 'segment_border': '#525252',
-    'file_card': '#171717', 'file_card_hover': '#262626', 'file_card_selected': '#333333',
-    'file_card_selected_focus': '#404040',
-    'grid_selected': '#333333', 'grid_selected_text': '#FAFAFA',
-    'grid_selected_secondary': '#A3A3A3', 'grid_selected_border': '#737373',
-    'grid_unchecked_border': '#555555', 'grid_unchecked_hover_border': '#8C8C8C',
-    'stack_cards': ('#171717','#202020','#292929','#323232','#3B3B3B'),
-    'border': 'rgba(255,255,255,26)', 'card_hover': '#262626',
-    'hover_border': 'rgba(255,255,255,38)', 'selected': '#333333',
-    'selected_border': '#737373', 'control': '#262626',
-    'hover': '#262626', 'input': '#171717', 'transfer_progress_fill':'#404040', 'transfer_status_text':'#B7B7BD',
-    'input_border': 'rgba(255,255,255,38)', 'text': '#FAFAFA',
-    'secondary': '#A3A3A3', 'muted': '#A3A3A3', 'file_description':'#828287', 'icon': '#E5E5E5',
-    'sort_arrow_idle': '#737373', 'sort_arrow_active': '#FAFAFA',
-    'qt_border': '#303030', 'media_track': '#404040',
+    'background': '#121317', 'surface': '#121317',
+    'dialog_surface': '#121317', 'window_backdrop': '#0E0F11', 'popup_surface': '#1D1F23',
+    'sidebar': '#050506', 'rail': '#050506', 'preview': '#0E0F11',
+    'rail_item': '#1B1C20', 'rail_item_hover': '#272930', 'rail_item_ink': '#A1A5B2',
+    'rail_active': '#FAFAFC', 'rail_active_ink': '#0A0A0B',
+    'brand_lime': '#A8EF54', 'brand_lime_ink': '#0A0A0B', 'hatch': '#363942',
+    'glass_border': 'rgba(255,255,255,22)', 'divider': 'rgba(255,255,255,18)',
+    'highlight': 'rgba(255,255,255,30)', 'card': '#17181B', 'subcard': '#1F2126',
+    'segment_selected': '#F5F6F8', 'segment_selected_ink': '#0E0F11', 'segment_border': '#F5F6F8',
+    'file_card': '#1F2126', 'file_card_hover': '#262930', 'file_card_selected': '#2B2E35',
+    'file_card_selected_focus': '#323640',
+    'grid_selected': '#2B2E35', 'grid_selected_text': '#F5F6F8',
+    'grid_selected_secondary': '#A1A5B2', 'grid_selected_border': 'rgba(255,255,255,56)',
+    'grid_unchecked_border': '#4A4E59', 'grid_unchecked_hover_border': '#8A8F9E',
+    'stack_cards': ('#17181B','#1F2126','#24262B','#2C2F36','#353942'),
+    'border': 'rgba(255,255,255,18)', 'card_hover': '#262930',
+    'hover_border': 'rgba(255,255,255,34)', 'selected': '#2B2E35',
+    'selected_border': 'rgba(255,255,255,56)', 'control': '#24262B',
+    'hover': '#2A2D34', 'input': '#1E2024', 'transfer_progress_fill': 'rgba(168,239,84,88)', 'transfer_status_text': '#C8CCD6',
+    'input_border': 'rgba(255,255,255,33)', 'text': '#F5F6F8',
+    'secondary': '#A1A5B2', 'muted': '#969BA8', 'file_description': '#8D92A0', 'icon': '#E2E4EA',
+    'shelf_pin': '#E9AF20', 'sort_arrow_idle': '#7C808E', 'sort_arrow_active': '#0E0F11',
+    'qt_border': '#2A2D34', 'media_track': '#363942',
     'shadow': 'rgba(0,0,0,191)', 'shadow_blur': 64, 'shadow_y': 28,
 }
 _LIGHT = {
-    'background': '#FFFFFF', 'surface': '#FFFFFF',
-    'dialog_surface': '#FFFFFF', 'popup_surface': '#FFFFFF',
-    'sidebar': '#FAFAFA', 'preview': '#FFFFFF',
-    'glass_border': '#E5E5E5', 'divider': '#EDEDED',
-    'highlight': '#FFFFFF', 'card': '#FFFFFF',
-    'segment_selected': '#FFFFFF', 'segment_border': '#D4D4D4',
-    'file_card': '#FFFFFF', 'file_card_hover': '#F5F5F5', 'file_card_selected': '#EDEDED',
-    'file_card_selected_focus': '#E5E5E5',
-    'grid_selected': '#EDEDED', 'grid_selected_text': '#0A0A0A',
-    'grid_selected_secondary': '#6B6B6B', 'grid_selected_border': '#A3A3A3',
-    'grid_unchecked_border': '#CCCCCC', 'grid_unchecked_hover_border': '#A3A3A3',
-    'stack_cards': ('#FFFFFF','#F5F5F5','#EBEBEB','#E1E1E1','#D7D7D7'),
-    'border': '#E5E5E5', 'card_hover': '#F5F5F5',
-    'hover_border': '#D4D4D4', 'selected': '#E5E5E5',
-    'selected_border': '#A3A3A3', 'control': '#F5F5F5',
-    'hover': '#F5F5F5', 'input': '#FFFFFF', 'transfer_progress_fill':'#DEDEDE', 'transfer_status_text':'#59595F',
-    'input_border': '#E5E5E5', 'text': '#0A0A0A',
-    'secondary': '#6B6B6B', 'muted': '#6B6B6B', 'file_description':'#808085', 'icon': '#404040',
-    'sort_arrow_idle': '#A3A3A3', 'sort_arrow_active': '#000000',
-    'qt_border': '#E5E5E5', 'media_track': '#E5E5E5',
+    'background': '#EAEBEF', 'surface': '#EAEBEF',
+    'dialog_surface': '#E3E4E8', 'window_backdrop': '#E3E4E8', 'popup_surface': '#FFFFFF',
+    'sidebar': '#0A0A0B', 'rail': '#0A0A0B', 'preview': '#E3E4E8',
+    'rail_item': '#26262A', 'rail_item_hover': '#35353B', 'rail_item_ink': '#D4D4D8',
+    'rail_active': '#FFFFFF', 'rail_active_ink': '#0A0A0B',
+    'brand_lime': '#A8EF54', 'brand_lime_ink': '#0A0A0B', 'hatch': '#C8CBD3',
+    'glass_border': 'rgba(255,255,255,244)', 'divider': '#DCDFE6',
+    'highlight': '#FFFFFF', 'card': '#FAFAFC', 'subcard': '#F2F3F6',
+    'segment_selected': '#111114', 'segment_selected_ink': '#FAFAFC', 'segment_border': '#111114',
+    'file_card': '#F2F3F6', 'file_card_hover': '#ECEEF2', 'file_card_selected': '#FFFFFF',
+    'file_card_selected_focus': '#FFFFFF',
+    'grid_selected': '#FFFFFF', 'grid_selected_text': '#111114',
+    'grid_selected_secondary': '#5C5F6A', 'grid_selected_border': '#CBD0DA',
+    'grid_unchecked_border': '#C4C7D0', 'grid_unchecked_hover_border': '#868A96',
+    'stack_cards': ('#FAFAFC','#F2F3F6','#ECEEF2','#E3E5EB','#D7DAE2'),
+    'border': '#E6E7EC', 'card_hover': '#ECEEF2',
+    'hover_border': '#CFD2DC', 'selected': '#E8EAEF',
+    'selected_border': '#CBD0DA', 'control': '#ECEEF2',
+    'hover': '#ECEEF2', 'input': '#FAFAFC', 'transfer_progress_fill': 'rgba(168,239,84,118)', 'transfer_status_text': '#4D505A',
+    'input_border': '#C8CCD6', 'text': '#111114',
+    'secondary': '#5C5F6A', 'muted': '#636773', 'file_description': '#636773', 'icon': '#2E3038',
+    'shelf_pin': '#956200', 'sort_arrow_idle': '#8C909C', 'sort_arrow_active': '#FAFAFC',
+    'qt_border': '#DCDFE6', 'media_track': '#D6D8E0',
     'shadow': 'rgba(15,23,42,41)', 'shadow_blur': 56, 'shadow_y': 24,
 }
 _SEMANTIC = {
@@ -615,20 +877,28 @@ _SEMANTIC = {
 }
 
 
+_COLORS_CACHE={}
+
+
 def colors(theme='dark', platform=None):
-    result = dict(_LIGHT if str(theme).lower() == 'light' else _DARK)
+    from theme_accent import current as _accent_now
+    light = str(theme).lower() == 'light'
+    cache_key = (light, _accent_now())
+    cached = _COLORS_CACHE.get(cache_key)
+    if cached is not None:
+        return dict(cached)
+    result = dict(_LIGHT if light else _DARK)
     result.update(_SEMANTIC)
     light = str(theme).lower() == 'light'
-    result.update(action='#171717' if light else '#E5E5E5',
-                  action_hover='#404040' if light else '#D4D4D4',
-                  action_pressed='#525252' if light else '#C4C4C4',
-                  control_hover='#E5E5E5' if light else '#333333',
-                  control_pressed='#D4D4D4' if light else '#404040',
-                  on_action='#FAFAFA' if light else '#171717',
-                  danger_action='#C62828' if light else '#F87171',
-                  danger_on_action='#FFFFFF' if light else '#171717',
-                  link='#404040' if light else '#D4D4D4',
-                  ring='#A3A3A3' if light else '#737373')
+    result.update(action='#111114' if light else '#F5F6F8',
+                  action_hover='#27282E' if light else '#E2E4EA',
+                  action_pressed='#3A3C44' if light else '#CFD2DC',
+                  control_hover='#E3E5EB' if light else '#2E3138',
+                  control_pressed='#D7DAE2' if light else '#383C44',
+                  on_action='#FAFAFC' if light else '#0E0F11',
+                  danger_action='#DC2626' if light else '#F87171',
+                  danger_on_action='#FFFFFF' if light else '#111114',
+                  link='#27282E' if light else '#D4D7E0')
     if str(theme).lower() == 'light':
         result.update(green='#167D3D', red='#BD2C25', orange='#9D5800')
     is_mac = str(platform or ('mac' if sys.platform == 'darwin' else 'win')).lower() in ('mac', 'macos', 'darwin')
@@ -637,8 +907,12 @@ def colors(theme='dark', platform=None):
                   radius_card=RADIUS_CARD_PX, radius_panel=RADIUS_PANEL_PX)
     from theme_accent import action_tokens
     result.update(action_tokens('light' if light else 'dark'))
-    result['transfer_progress_fill']=result['action']
+    result['brand_accent']=result['action']
+    result['brand_accent_ink']=result['on_action']
+    _ac=QColor(result['action'])
+    result['transfer_progress_fill']=f'rgba({_ac.red()},{_ac.green()},{_ac.blue()},{42 if light else 54})'
     result.update(primary=result['action'], accent=result['action'], danger=result['red'], success=result['green'])
+    _COLORS_CACHE[cache_key] = dict(result)
     return result
 
 

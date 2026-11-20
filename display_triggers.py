@@ -75,10 +75,10 @@ class DisplayGroup(QFrame):
     changed=Signal()
     geometry_changed=Signal()
     def __init__(self,name,values,expanded,parent,screen=None):
-        from app_settings import SettingsToggleSwitch,SettingsComboBox,SettingsSpinBox,SettingsSlider
+        from app_settings import SettingsToggleSwitch,SettingsComboBox,SettingsSpinBox,SettingsSlider,_SettingsDivider,_SettingsParamCell
         super().__init__(parent);self.setObjectName('settingsInset');self.expanded=expanded;self.controls={};self.sliders={};self.color=values['dock_color']
         self.display=screen or QGuiApplication.primaryScreen();self._percent_mode=False;self._pixels_mode=False;self._loading=False
-        box=QVBoxLayout(self);box.setContentsMargins(12,10,12,12);box.setSpacing(12)
+        box=QVBoxLayout(self);box.setContentsMargins(14,12,14,14);box.setSpacing(12)
         self.header=_Header(self);line=QHBoxLayout(self.header);line.setContentsMargins(0,0,0,0);line.setSpacing(10)
         self.name=QLabel(name,self.header);self.name.setWordWrap(True);self.name.setAttribute(Qt.WA_TransparentForMouseEvents);line.addWidget(self.name,1)
         self.toggle=SettingsToggleSwitch('',self.header);self.toggle.setMinimumSize(44,32);self.toggle.setMaximumSize(44,32);self.toggle.setAccessibleName(name+'启用触发条');line.addWidget(self.toggle)
@@ -86,29 +86,38 @@ class DisplayGroup(QFrame):
         self.arrow=IconTextButton('',self.header);self.arrow.setFixedSize(28,28);self.arrow.setAutoDefault(False);self.arrow.setObjectName('settingsLink');self.arrow.setAccessibleName(name+'展开或收起参数');line.addWidget(self.arrow)
         self.header.activated.connect(lambda:self.set_expanded(not self.expanded));self.arrow.clicked.connect(lambda:self.set_expanded(not self.expanded))
         box.addWidget(self.header)
-        self.details=QWidget(self);details=QVBoxLayout(self.details);details.setContentsMargins(0,0,0,0);details.setSpacing(14)
+        self.details=QWidget(self);details=QVBoxLayout(self.details);details.setContentsMargins(0,0,0,0);details.setSpacing(12)
+        details.addWidget(_SettingsDivider(self.details))
         from monitor_diagram import MonitorDiagram
         self.diagram=MonitorDiagram(self.details);details.addWidget(self.diagram)
         self.diagram.edge_clicked.connect(self.choose_edge)
-        top=QHBoxLayout();top.setSpacing(12);top.addWidget(QLabel('停靠在',self.details))
-        self.edge=SettingsComboBox(self.details)
+        details.addWidget(_SettingsDivider(self.details))
+        top=QGridLayout();top.setContentsMargins(0,0,0,0);top.setSpacing(10)
+        edge_cell=_SettingsParamCell(self.details,role='card',radius=14);edge_row=QHBoxLayout(edge_cell);edge_row.setContentsMargins(12,8,12,8);edge_row.setSpacing(8)
+        edge_lbl=QLabel('停靠边缘',edge_cell);edge_lbl.setObjectName('settingsDetail');edge_row.addWidget(edge_lbl,1)
+        self.edge=SettingsComboBox(edge_cell)
         for label,key in (('左侧','left'),('右侧','right'),('顶部','top'),('底部','bottom')):self.edge.addItem(label,key)
-        self.edge.setMinimumWidth(78);top.addWidget(self.edge);top.addStretch();top.addWidget(QLabel('标记颜色',self.details))
-        self.color_button=QPushButton(self.details);self.color_button.setObjectName('settingsColorButton');self.color_button.setAutoDefault(False);self.color_button.setFixedSize(108,28);self.color_button.clicked.connect(self.pick_color);top.addWidget(self.color_button);details.addLayout(top)
-        self.grid=QGridLayout();self.grid.setSpacing(12);self.panels=[]
+        self.edge.setMinimumWidth(96);edge_row.addWidget(self.edge)
+        color_cell=_SettingsParamCell(self.details,role='card',radius=14);color_row=QHBoxLayout(color_cell);color_row.setContentsMargins(12,8,12,8);color_row.setSpacing(8)
+        color_lbl=QLabel('标记颜色',color_cell);color_lbl.setObjectName('settingsDetail');color_row.addWidget(color_lbl,1)
+        self.color_button=QPushButton(color_cell);self.color_button.setObjectName('settingsColorButton');self.color_button.setAutoDefault(False);self.color_button.setFixedSize(108,28);self.color_button.clicked.connect(self.pick_color);color_row.addWidget(self.color_button)
+        top.addWidget(edge_cell,0,0);top.addWidget(color_cell,0,1);top.setColumnStretch(0,1);top.setColumnStretch(1,1);details.addLayout(top)
+        self.grid=QGridLayout();self.grid.setSpacing(10);self.panels=[]
         for key,label,unit in (('position','边缘位置',' %'),('length','触发条长度',' px'),('thickness','触发条厚度',' px'),('opacity','不透明度',' %')):
-            panel=QWidget(self.details);col=QVBoxLayout(panel);col.setContentsMargins(0,0,0,0);col.setSpacing(8);row=QHBoxLayout();row.addWidget(QLabel(label,panel),1)
+            panel=_SettingsParamCell(self.details,role='card',radius=14);col=QVBoxLayout(panel);col.setContentsMargins(12,10,12,10);col.setSpacing(8);row=QHBoxLayout();row.addWidget(QLabel(label,panel),1)
             limits=(1,max(self.display.geometry().width(),self.display.geometry().height())) if key=='length' else RANGES[key]
-            spin=SettingsSpinBox(panel);spin.setRange(*limits);spin.setSuffix(unit);spin.setButtonSymbols(QAbstractSpinBox.NoButtons);spin.setFixedSize(88,28);spin.lineEdit().setMinimumSize(60,18);spin.setAccessibleName(name+label);row.addWidget(spin);col.addLayout(row)
+            spin=SettingsSpinBox(panel);spin.setRange(*limits);spin.setSuffix(unit);spin.setButtonSymbols(QAbstractSpinBox.NoButtons);spin.setFixedSize(84,28);spin.lineEdit().setMinimumSize(56,18);spin.setAccessibleName(name+label);row.addWidget(spin);col.addLayout(row)
             slider=SettingsSlider(Qt.Horizontal,panel);slider.setRange(*limits);slider.setAccessibleName(name+label);col.addWidget(slider)
+            slider.valueCaption=lambda value,unit=unit:f'{value}{unit}'
             spin.valueChanged.connect(slider.setValue);slider.valueChanged.connect(spin.setValue);spin.valueChanged.connect(self.changed)
             self.controls[key]=spin;self.sliders[key]=slider;self.panels.append(panel)
         self._legacy_length_panel=self.panels[1];self._legacy_length_panel.hide()
-        percent_panel=QWidget(self.details);pct_layout=QVBoxLayout(percent_panel);pct_layout.setContentsMargins(0,0,0,0);pct_layout.setSpacing(8)
+        percent_panel=_SettingsParamCell(self.details,role='card',radius=14);pct_layout=QVBoxLayout(percent_panel);pct_layout.setContentsMargins(12,10,12,10);pct_layout.setSpacing(8)
         pct_row=QHBoxLayout();pct_row.addWidget(QLabel('触发区域长度',percent_panel),1)
-        self.length_percent=SettingsSpinBox(percent_panel);self.length_percent.setRange(1,100);self.length_percent.setSuffix(' %');self.length_percent.setFixedSize(88,28)
+        self.length_percent=SettingsSpinBox(percent_panel);self.length_percent.setRange(1,100);self.length_percent.setSuffix(' %');self.length_percent.setFixedSize(84,28)
         self.length_percent.setButtonSymbols(QAbstractSpinBox.NoButtons);self.length_percent.setAccessibleName(name+'触发区域长度百分比');pct_row.addWidget(self.length_percent);pct_layout.addLayout(pct_row)
         self.percent_slider=SettingsSlider(Qt.Horizontal,percent_panel);self.percent_slider.setRange(1,100);pct_layout.addWidget(self.percent_slider)
+        self.percent_slider.valueCaption=lambda value:f'{value}%'
         self.length_percent.valueChanged.connect(self.percent_slider.setValue);self.percent_slider.valueChanged.connect(self.length_percent.setValue)
         self.length_percent.valueChanged.connect(self.percent_changed);self.controls['length'].valueChanged.connect(self.legacy_length_changed)
         self._legacy_length_panel.layout().itemAt(0).layout().removeWidget(self.controls['length'])
@@ -236,6 +245,12 @@ class DisplayGroup(QFrame):
         self._columns=columns
         for i,panel in enumerate(self.panels):self.grid.removeWidget(panel);self.grid.addWidget(panel,i//columns,i%columns)
         if hasattr(self,'_height_timer'):self._height_timer.start(0)
+
+    def paintEvent(self,event):
+        from native_ui_common import colors as ui_colors,paint_rounded_surface,qss_color
+        theme=getattr(self.window(),'_applied_settings_theme','light')
+        c=ui_colors(theme);p=QPainter(self)
+        paint_rounded_surface(p,self.rect(),18,qss_color(c['subcard']),qss_color(c['border']));p.end()
 
     def apply_theme(self,theme):
         self.dark=theme=='dark'

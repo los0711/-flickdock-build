@@ -25,6 +25,7 @@ assets += [(root / 'licenses' / name, 'licenses') for name in (
     'GPL-3.0.txt', 'PyInstaller-COPYING.txt','OpenSSL-LICENSE.txt','Cloud-Client-LICENSES.txt',
     'Lucide-LICENSE.txt','Release-Crypto-LICENSES.txt','Video-LICENSES.txt','WebRTC-LICENSES.txt','Flag-Icons-LICENSE.txt','FASTTEXT-LICENSE.txt','FASTTEXT-MODEL-ATTRIBUTION.txt','Paper-Notice-Motion-LICENSE.txt','JetBrainsMono-OFL.txt')]
 assets += [(root / 'THIRD_PARTY_NOTICES.md', '.')]
+assets += [(root / 'licenses/KokonutUI-MIT.txt', 'licenses')]
 assets += [(path,'assets/flags') for path in (root/'assets/flags').glob('*.svg')]
 for path, destination in assets:
     if not path.is_file():

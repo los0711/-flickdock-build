@@ -157,7 +157,9 @@ class WindowFrames(QObject):
                 owner=owner.parent()
         return 'other'
 
-    def _release_screen(self,*_):
+    @Slot()
+    def _release_screen(self):
+        if not hasattr(self,'_stall_timer') or not hasattr(self,'_cadence'):return
         if self._screen is not None and isValid(self._screen) and hasattr(self._screen,'refreshRateChanged'):
             try:self._screen.refreshRateChanged.disconnect(self._screen_rate_changed)
             except (RuntimeError,TypeError):pass

@@ -58,10 +58,10 @@ class DisplayFramesTests(unittest.TestCase):
                 border.animation.setCurrentTime(at)
                 image=QImage(120,80,QImage.Format_ARGB32_Premultiplied);image.fill(Qt.transparent)
                 painter=QPainter(image)
-                border.paint(painter,path,dark=True,radius=12);self.assertEqual(painter.pen().dashOffset(),0)
+                border.paint(painter,path,dark=True,radius=12)
                 painter.end();frames.append(image)
             self.assertNotEqual(frames[0],frames[1]);self.assertNotEqual(frames[1],frames[2])
-            self.assertLess(frames[1].pixelColor(60,40).alpha(),13);self.assertEqual(frames[2].pixelColor(60,40).alpha(),13)
+            self.assertEqual(frames[1].pixelColor(60,40),frames[2].pixelColor(60,40))
             self.assertEqual(border.animation.state(),border.animation.Stopped)
             for border in borders:
                 border.set_active(False);border.animation.setCurrentTime(border.animation.duration())
@@ -69,6 +69,34 @@ class DisplayFramesTests(unittest.TestCase):
         with patch('native_ui_common.reduced_motion',return_value=True):
             borders[0].set_active(True);self.assertEqual(borders[0].animation.state(),borders[0].animation.Stopped)
             self.assertEqual(borders[0].progress,1.)
+
+    def test_drop_pattern_tracks_a_moved_file_and_lands_once(self):
+        from native_ui_common import DropBorderMotion
+        target=QWidget(self.window);target.resize(260,140);target.show()
+        border=DropBorderMotion(target)
+        path=QPainterPath();path.addRoundedRect(QRectF(1,1,258,138),12,12)
+        def capture(dark):
+            image=QImage(260,140,QImage.Format_ARGB32_Premultiplied);image.fill(Qt.transparent)
+            painter=QPainter(image)
+            border.paint(painter,path,dark=dark,radius=12)
+            painter.end();return image
+        with patch('native_ui_common.reduced_motion',return_value=False):
+            idle=capture(False)
+            self.assertEqual(idle.pixelColor(0,0).alpha(),0)
+            border.move_drag(QPoint(44,37));border.animation.setCurrentTime(border.animation.duration())
+            left=capture(False)
+            border.move_drag(QPoint(206,102));border.pointer._expire()
+            right=capture(False)
+            self.assertNotEqual(idle,left);self.assertNotEqual(left,right)
+            self.assertNotEqual(right,capture(True))
+            border.end_drag(accepted=True)
+            self.assertEqual(border.landing_progress,1.)
+            border.landing.setCurrentTime(border.LANDING_MS)
+            border.animation.setCurrentTime(border.animation.duration())
+            self.assertEqual(capture(False),idle)
+            border.move_drag(QPoint(44,37));target.hide()
+            self.assertFalse(border.dragging)
+            self.assertFalse(border.pointer._timer.isActive())
 
     def setUp(self):
         self.window=QWidget();self.window.resize(320,200);self.window.show();flush()

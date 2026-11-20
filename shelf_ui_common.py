@@ -22,7 +22,6 @@ FILE_ROW_HEIGHT_PX=64
 OVERVIEW_FULL_TOOLBAR_MIN_WIDTH_PX=484
 
 
-OVERVIEW_SECTION_OFFSETS_PX = (('header',(0,-8)),('sidebar',(-18,0)),('middle',(0,14)),('preview',(18,0)))
 
 
 OVERVIEW_TRANSITION_MAX_ITEMS = 24
@@ -67,6 +66,20 @@ class RoundedMenu(QMenu):
         super().__init__(parent)
         self.surface_theme=None
         self.selection_inset=(6,1)
+        from dropdown_motion import StretchHighlight
+        self._highlight=StretchHighlight(self)
+        self.hovered.connect(self._hover_action)
+        self.aboutToHide.connect(self._reset_highlight)
+
+    def _hover_action(self, action):
+        if not action or action.isSeparator() or not action.isEnabled():
+            self._reset_highlight()
+            return
+        dx,dy=self.selection_inset
+        self._highlight.move(QRectF(self.actionGeometry(action)).adjusted(dx,dy,-dx,-dy))
+
+    def _reset_highlight(self):
+        self._highlight.move(QRectF())
 
     def paintEvent(self,event):
         from native_ui_common import colors,paint_rounded_surface,qss_color,RADIUS_CARD_PX,RADIUS_SUBCONTROL_PX
@@ -77,7 +90,8 @@ class RoundedMenu(QMenu):
         painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
         paint_rounded_surface(painter,self.rect(),RADIUS_CARD_PX,qss_color(c['popup_surface']),qss_color(c['border']))
         active=self.activeAction()
-        if active is not None and active.isEnabled() and not active.isSeparator():
+        highlighted=self._highlight.paint(painter,qss_color(c['hover']),RADIUS_SUBCONTROL_PX)
+        if not highlighted and active is not None and active.isEnabled() and not active.isSeparator():
             dx,dy=self.selection_inset
             rect=QRectF(self.actionGeometry(active)).adjusted(dx,dy,-dx,-dy)
             paint_rounded_surface(painter,rect,RADIUS_SUBCONTROL_PX,qss_color(c['hover']))
@@ -94,6 +108,9 @@ class AnimatedMenu(RoundedMenu):
         self.fade.setEasingCurve(QEasingCurve.Type.OutCubic)
 
     def showEvent(self, event):
+        if hasattr(self,'_dropdown_motion'):
+            super().showEvent(event)
+            return
         self.fade.stop()
         from native_ui_common import reduced_motion
         if reduced_motion():
@@ -105,7 +122,9 @@ class AnimatedMenu(RoundedMenu):
         self.fade.start()
 
     def hideEvent(self,event):
-        self.fade.stop();self.setWindowOpacity(1);super().hideEvent(event)
+        self.fade.stop()
+        if not hasattr(self,'_dropdown_motion'):self.setWindowOpacity(1)
+        super().hideEvent(event)
 
 
 def style_menu(menu: RoundedMenu) -> None:
