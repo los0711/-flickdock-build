@@ -1,6 +1,7 @@
 """Exercise the native dropdown spring and the compact shelf's file fan."""
 import os
 import unittest
+from unittest.mock import patch
 
 os.environ.setdefault('QT_QPA_PLATFORM','offscreen')
 
@@ -22,7 +23,9 @@ class DropdownFanTests(unittest.TestCase):
         finally:
             menu.close()
 
-    def test_popup_reopens_from_its_current_animation_and_releases_the_layer(self):
+    @patch('native_ui_common.reduced_motion',return_value=False)
+    def test_popup_reopens_from_its_current_animation_and_releases_the_layer(self,_reduced_motion):
+        from test_html_native_workspace import until
         app=QApplication.instance() or QApplication([])
         parent=QWidget()
         parent.show()
@@ -35,7 +38,7 @@ class DropdownFanTests(unittest.TestCase):
             menu.popup(point)
             motion.enabled=True
             motion._open()
-            QTest.qWait(100)
+            until(lambda:motion.height.values['height']>=.5)
             self.assertEqual(len(motion.rows),3)
             self.assertTrue(motion.presentation.isVisible())
             original=motion.presentation
@@ -48,11 +51,11 @@ class DropdownFanTests(unittest.TestCase):
             motion._open()
             self.assertIs(motion.presentation,original)
             self.assertAlmostEqual(motion.height.values['height'],before,places=4)
-            QTest.qWait(720)
+            until(lambda:original.isHidden())
             self.assertTrue(menu.isVisible())
             self.assertFalse(original.isVisible())
             menu.hide()
-            QTest.qWait(720)
+            until(lambda:motion.presentation is None)
             self.assertIsNone(motion.presentation)
         finally:
             parent.close()

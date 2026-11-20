@@ -221,6 +221,9 @@ class OverviewMotionTests(unittest.TestCase):
         animation=patch('ui_transitions.motion_allowed',return_value=True)
         animation.start()
         self.addCleanup(animation.stop)
+        spring=patch('native_ui_common.reduced_motion',return_value=False)
+        spring.start()
+        self.addCleanup(spring.stop)
 
     def test_sidebar_reverses_and_keeps_icon_buttons_usable(self):
         from test_html_native_workspace import until
@@ -228,7 +231,7 @@ class OverviewMotionTests(unittest.TestCase):
         view=self.view;motion=view._sidebar_collapse
         wide=view.sidebar.width()
         view.sidebar_toggle.click()
-        QTest.qWait(85)
+        until(lambda: view.sidebar.width()!=wide)
         self.assertLess(view.sidebar.width(),wide)
         self.assertGreater(view.sidebar.width(),motion.RAIL_WIDTH)
         view.sidebar_toggle.click()
@@ -336,7 +339,7 @@ class OverviewMotionTests(unittest.TestCase):
         view=self.view;bar=view.type_body
         first=QRectF(view.type_buttons['all'].geometry())
         view.type_buttons['audio'].click()
-        QTest.qWait(63)
+        until(lambda: bar._selection_rect!=first)
         mid=QRectF(bar._selection_rect)
         self.assertGreater(mid.width(),first.width())
         self.assertGreater(mid.right()-first.right(),mid.left()-first.left())

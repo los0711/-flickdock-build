@@ -437,7 +437,7 @@ class _WindowZoomOverlay(QWidget):
         self.snapshot=QPixmap();self.scale=1.;self.opacity=1.;self.hide()
 
     def clear(self):
-        self.snapshot=QPixmap();self.scale=1.;self.opacity=1.;self.hide()
+        self.snapshot=QPixmap();self.scale=1.;self.opacity=1.;self.hide();self.setEnabled(False)
 
     def capture(self,window):
         self.setGeometry(window.rect())
@@ -496,9 +496,8 @@ class WindowFade(QObject):
         if event.type()==QEvent.Show and not self.window.isMinimized():
             self.pending=None;self.animation.stop()
             if self.enabled() and not event.spontaneous():
-                # The snapshot arrives one event-loop turn later. Hide the live
-                # window for that turn so it cannot flash at full size first.
-                self.window.setWindowOpacity(0.0)
+                # The overlay captures synchronously after the Show event.
+                # Keep the native window visible while the overlay animates.
                 self.scale=WINDOW_MIN_SCALE;self.opacity=WINDOW_OPEN_OPACITY;self._start(1.0)
             else:self._reset_zoom();self.window.setWindowOpacity(1.0)
         elif event.type()==QEvent.Hide:
@@ -521,7 +520,7 @@ class WindowFade(QObject):
         if self.zoom.snapshot.isNull() and not self.zoom.capture(self.window):
             self._capture_expired();return
         self.zoom.scale=self.scale;self.zoom.opacity=self.opacity
-        self.zoom.show();self.zoom.raise_();self.zoom.update()
+        self.zoom.setEnabled(True);self.zoom.show();self.zoom.raise_();self.zoom.update()
         self.animation.start()
 
     def _capture_expired(self):
