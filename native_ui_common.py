@@ -509,6 +509,10 @@ class RoundedPopupBackdrop(QWidget):
 def prepare_combo_popup(popup, view, colors, *, margin):
     """Paint the native combo backing and the row view with a single palette."""
     from PySide6.QtGui import QPalette
+    if QGuiApplication.platformName()=='cocoa':
+        # A second native window during the opening spring can interfere with
+        # Cocoa's popup tracking. Composite into the existing popup instead.
+        popup.setProperty('flickdockInlineDropdown',True)
     rounded_popup(popup)
     popup.setObjectName('flickdockComboPopup')
     fill=colors['popup_surface']
@@ -540,7 +544,7 @@ def prepare_combo_popup(popup, view, colors, *, margin):
 
 def show_rounded_combo(combo,show,*,gap=0):
     """Use the shared popup spring in place of the native rectangular roll."""
-    animate=QGuiApplication.platformName()=='windows' and QApplication.isEffectEnabled(Qt.UI_AnimateCombo)
+    animate=QGuiApplication.platformName() in ('windows','cocoa') and QApplication.isEffectEnabled(Qt.UI_AnimateCombo)
     if animate:QApplication.setEffectEnabled(Qt.UI_AnimateCombo,False)
     try:
         show()
@@ -867,7 +871,7 @@ _LIGHT = {
     'hover': '#ECEEF2', 'input': '#FAFAFC', 'transfer_progress_fill': 'rgba(168,239,84,118)', 'transfer_status_text': '#4D505A',
     'input_border': '#C8CCD6', 'text': '#111114',
     'secondary': '#5C5F6A', 'muted': '#636773', 'file_description': '#636773', 'icon': '#2E3038',
-    'shelf_pin': '#956200', 'sort_arrow_idle': '#8C909C', 'sort_arrow_active': '#FAFAFC',
+    'shelf_pin': '#956200', 'shelf_pin_fill': '#FFAE33', 'sort_arrow_idle': '#8C909C', 'sort_arrow_active': '#FAFAFC',
     'qt_border': '#DCDFE6', 'media_track': '#D6D8E0',
     'shadow': 'rgba(15,23,42,41)', 'shadow_blur': 56, 'shadow_y': 24,
 }
@@ -924,6 +928,7 @@ _SVG_BODY = {
     'speaker': '<path d="M3 9h4l5-4v14l-5-4H3V9ZM16 8a6 6 0 0 1 0 8M19 5a10 10 0 0 1 0 14"/>',
     'star': '<path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-3-5.6 3 1.1-6.2L3 9.6l6.2-.9L12 3Z"/>',
     'star-filled': '<path fill="currentColor" stroke="none" d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-3-5.6 3 1.1-6.2L3 9.6l6.2-.9L12 3Z"/>',
+    'star-shelf-light': '<path fill="currentColor" stroke="#956200" stroke-width="1.35" d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-3-5.6 3 1.1-6.2L3 9.6l6.2-.9L12 3Z"/>',
     'swap': '<path d="M3 7h18m-4-4 4 4-4 4M21 17H3m4-4-4 4 4 4"/>',
     'undo': '<path d="m8 5-5 5 5 5M3 10h11a6 6 0 0 1 0 12"/>',
     'compare': '<path d="M12 3v18M8 6H3v12h5M16 6h5v12h-5"/>',

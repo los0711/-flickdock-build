@@ -310,6 +310,10 @@ class OverviewMotionTests(unittest.TestCase):
         self.assertTrue(control.property('shelfPin'))
         palette=colors('light')
         self.assertGreaterEqual(contrast_colors(QColor(palette['shelf_pin']),QColor(palette['file_card_selected'])),4.5)
+        from native_ui_common import icon
+        from reference_widgets import _shelf_pin_glyph
+        star=icon(*_shelf_pin_glyph(palette)).pixmap(16,16).toImage()
+        self.assertEqual(star.pixelColor(8,8),QColor('#FFAE33'))
 
     def test_sort_animates_only_a_real_reorder_with_spring_overshoot(self):
         from time import perf_counter

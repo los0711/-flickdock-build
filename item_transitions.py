@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field
+from functools import lru_cache
 
 from PySide6.QtCore import QEvent, QEasingCurve, QObject, QPoint, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QFontInfo, QFontMetricsF, QPainter, QPainterPath, QPen, QPixmap, QRegion
@@ -66,24 +67,39 @@ class SharedText:
     font: QFont
     ink: QColor
     align: float=0.
+    _pixels: int=field(init=False,repr=False,compare=False)
 
-    def between(self,other,t):
-        font=QFont(other.font)
-        first=self.font.pixelSize() if self.font.pixelSize()>0 else QFontInfo(self.font).pixelSize()
-        last=font.pixelSize() if font.pixelSize()>0 else QFontInfo(font).pixelSize()
-        font.setPixelSize(max(1,round(_between(first,last,t))))
-        return SharedText(_rect_between(self.rect,other.rect,t),other.text if t>=.5 else self.text,
+    def __post_init__(self):
+        pixels=self.font.pixelSize()
+        object.__setattr__(self,'_pixels',pixels if pixels>0 else QFontInfo(self.font).pixelSize())
+
+    def between(self,other,t,offset):
+        pixels=max(1,round(_between(self._pixels,other._pixels,t)))
+        font=other.font if other.font.pixelSize()==pixels else _transition_font(other.font,pixels)
+        return SharedText(_rect_between(self.rect,other.rect,t).translated(offset),other.text if t>=.5 else self.text,
                           font,_ink_between(self.ink,other.ink,t),_between(self.align,other.align,t))
 
     def paint(self,painter,available):
         rect=self.rect.intersected(available)
         if not self.text or rect.isEmpty():return
-        metrics=QFontMetricsF(self.font)
+        metrics=_transition_metrics(self.font)
         value=metrics.elidedText(self.text,Qt.ElideRight,rect.width())
         left=rect.left()+(rect.width()-metrics.horizontalAdvance(value))*self.align
         baseline=self.rect.center().y()+(metrics.ascent()-metrics.descent())/2
         painter.setFont(self.font);painter.setPen(self.ink)
         painter.drawText(QPointF(left,baseline),value)
+
+
+@lru_cache(maxsize=96)
+def _transition_font(base,pixels):
+    font=QFont(base)
+    font.setPixelSize(pixels)
+    return font
+
+
+@lru_cache(maxsize=96)
+def _transition_metrics(font):
+    return QFontMetricsF(font)
 
 
 @dataclass(frozen=True)
@@ -93,8 +109,8 @@ class FileSelection:
     edge: QColor
     tick: QColor
 
-    def between(self,other,t):
-        return FileSelection(_rect_between(self.rect,other.rect,t),_selection_ink(self.fill,other.fill,t),
+    def between(self,other,t,offset=QPointF()):
+        return FileSelection(_rect_between(self.rect,other.rect,t).translated(offset),_selection_ink(self.fill,other.fill,t),
                              _selection_ink(self.edge,other.edge,t),_selection_ink(self.tick,other.tick,t))
 
     def paint(self,painter):
@@ -132,15 +148,13 @@ class FilePose:
         bounds=QRectF(origin.x(),origin.y(),max(1.,_between(self.bounds.width(),other.bounds.width(),width)),
                       max(1.,_between(self.bounds.height(),other.bounds.height(),height)))
         art=self.art if self.art.width()>=other.art.width() else other.art
-        title=self.title.between(other.title,shape)
-        summary=self.summary.between(other.summary,shape)
-        stamp=self.stamp.between(other.stamp,shape)
-        selection=self.selection.between(other.selection,shape)
-        selection=replace(selection,rect=selection.rect.translated(delta))
+        title=self.title.between(other.title,shape,delta)
+        summary=self.summary.between(other.summary,shape,delta)
+        stamp=self.stamp.between(other.stamp,shape,delta)
+        selection=self.selection.between(other.selection,shape,delta)
         return FilePose(bounds,_rect_between(self.thumbnail,other.thumbnail,shape).translated(delta),
                         _rect_between(self.badge,other.badge,shape).translated(delta),art,other.status,other.transfer,
-                        replace(title,rect=title.rect.translated(delta)),replace(summary,rect=summary.rect.translated(delta)),
-                        replace(stamp,rect=stamp.rect.translated(delta)),_ink_between(self.fill,other.fill,shape),
+                        title,summary,stamp,_ink_between(self.fill,other.fill,shape),
                         _ink_between(self.stroke,other.stroke,shape),_between(self.radius,other.radius,shape),selection,
                         _faded(self.decorations,1-min(1.,shape*4),origin-self.bounds.topLeft())+
                         _faded(other.decorations,details,origin-other.bounds.topLeft()))
@@ -173,6 +187,7 @@ def _rect_between(a,b,t):
 
 
 def _ink_between(a,b,t):
+    if a==b:return a
     t=max(0.,min(1.,t))
     return QColor.fromRgbF(*(_between(x,y,t) for x,y in zip(a.getRgbF(),b.getRgbF())))
 
@@ -180,6 +195,7 @@ def _ink_between(a,b,t):
 def _selection_ink(a,b,t):
     # Interpolate premultiplied color so Qt.transparent does not inject black
     # into the moving circle, border or tick as it fades in or out.
+    if a==b:return a
     t=max(0.,min(1.,t))
     start,end=a.getRgbF(),b.getRgbF()
     alpha=_between(start[3],end[3],t)
@@ -293,23 +309,24 @@ class ItemTransitions(QObject):
         position=spring_progress(t,300,26)
         detail=max(0.,min(1.,spring_progress(max(0.,t-.16),260,28)))
         arrival=max(0.,min(1.,spring_progress(t,300,30)))
+        sorting=self.mode=='sort'
+        if sorting:
+            shift=spring_progress(t,*CARD_REBOUND_SPRING)
+        else:
+            # A list-to-grid or grid-to-list frame is shared by all files.
+            to_grid=(shape_at(.075),move_at(.02),move_at(.18),shape_at(0),shape_at(.145))
+            to_list=(shape_at(.085),move_at(.15),move_at(0),shape_at(.17),shape_at(0))
         for ref in dict.fromkeys((*self.mode_from,*self.mode_to)):
             old=self.mode_from.get(ref);new=self.mode_to.get(ref)
             if old and new:
-                if self.mode=='sort':
-                    shift=spring_progress(t,*CARD_REBOUND_SPRING)
+                if sorting:
                     detail=1. if old.bounds==new.bounds else arrival
                     yield ref,old.between(new,arrival,shift,shift,1.,1.,detail),1.,0.
                     continue
                 # Move the compact footprint before widening long rows.
                 # Collapsing list widths early leaves room for neighboring cards.
-                grid=new.bounds.width()<=old.bounds.width()
-                width=shape_at(0 if grid else .17)
-                height=shape_at(.145 if grid else 0)
-                shape=shape_at(.075 if grid else .085)
-                horizontal=move_at(.02 if grid else .15)
-                vertical=move_at(.18 if grid else 0)
-                yield ref,old.between(new,shape,horizontal,vertical,width,height,detail),1.,0.
+                easing=to_grid if new.bounds.width()<=old.bounds.width() else to_list
+                yield ref,old.between(new,*easing,detail),1.,0.
             elif old:yield ref,old,1.-arrival,10*position
             elif new:yield ref,new,arrival,10*(1-position)
 

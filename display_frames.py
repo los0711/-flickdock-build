@@ -243,7 +243,8 @@ class WindowFrames(QObject):
 
     def _cadence_fired(self):
         now=time.perf_counter()
-        if not self.pulses or not self.display_period() or not self.window.isVisible() or self.window.isMinimized():
+        period=self.display_period()
+        if not self.pulses or not period or not self.window.isVisible() or self.window.isMinimized():
             self._next_frame_at=0.0
             return
         if self._next_frame_at and now<self._next_frame_at-.0005:
@@ -258,9 +259,18 @@ class WindowFrames(QObject):
         if self.trace is not None:
             self.trace.update_request(self._trace_phase(),capped=_on_battery or self._reduced_motion)
             self.trace.dispatched()
+        deadline=self._next_frame_at
         self._last_dispatch=now
         self._dispatch_pulses()
-        self._next_frame_at=now+self.display_period()
+        if not self.pulses:return
+        if self._next_frame_at!=deadline or self.display_period()!=period:
+            self.schedule()
+            return
+        due=deadline or now
+        # Keep the next deadline on the display cadence. Adding a full period
+        # to the actual callback time accumulates the timer's rounding error.
+        completed=time.perf_counter()
+        self._next_frame_at=due+max(1,math.floor((completed-due)/period)+1)*period
         self._arm_cadence_timer()
 
     def timerEvent(self, event):

@@ -119,6 +119,29 @@ def main():
             assert store.theme=='light'
         report['theme_transition']=dict(selection_first=True,recolored_after_settling=True,native_geometry_unchanged=True)
         settings.close();wait(lambda:not settings.isVisible())
+        if sys.platform=='darwin':
+            transfer.show();wait(transfer.isVisible)
+            panel=transfer.panel;combo=panel.devices
+            peers=[dict(id='fixture-a',name='第一台设备',platform='macos'),dict(id='fixture-b',name='第二台设备',platform='windows')]
+            service.peers_changed.emit(peers)
+            with patch('native_ui_common.reduced_motion',return_value=False):
+                combo.showPopup()
+                popup=combo.view().window()
+                wait(lambda:popup._dropdown_motion.presentation is not None and popup._dropdown_motion.presentation.isVisible())
+                motion=popup._dropdown_motion
+                assert motion.presentation.parentWidget() is popup and not motion.presentation.isWindow()
+                opening=popup.geometry()
+                service.peers_changed.emit([peers[1]])
+                wait(lambda:not motion.presentation.isVisible())
+                assert popup.isVisible() and popup.geometry()==opening and combo.count()==2
+                combo.view().setCurrentIndex(combo.model().index(1,0))
+                QTest.keyClick(combo.view(),Qt.Key_Return)
+                wait(lambda:not popup.isVisible() and combo.count()==1)
+                assert combo.currentData()=='fixture-b'
+            assert panel.activity_scroll.verticalScrollBar().maximum()==0 and panel.active_rows_scroll is not None
+            report['cocoa_device_picker']=dict(stable_geometry=True,tracks_in_existing_popup=True,retains_selection=True)
+            report['cocoa_activity_cards_fixed']=True
+            transfer.close();wait(lambda:not transfer.isVisible())
         from types import SimpleNamespace
         from intake_notice import ClipboardNotice,COMPACT_SIDE_PX
         opened=[];notice_manager=SimpleNamespace(settings=store,shelf=transfer,show_video_dialog=opened.append)

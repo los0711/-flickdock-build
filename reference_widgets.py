@@ -662,6 +662,11 @@ def split_send_button(parent,height,*,preview=False):
     return frame,primary,arrow
 
 
+def _shelf_pin_glyph(colors):
+    if 'shelf_pin_fill' in colors:return 'star-shelf-light',colors['shelf_pin_fill']
+    return 'star-filled',colors['shelf_pin']
+
+
 class ToolbarButton(FeedbackButton):
     """Retain the existing interruptible press spring with the HTML glyphs."""
     def paintEvent(self,event):
@@ -683,7 +688,7 @@ class ToolbarButton(FeedbackButton):
         if not self.isEnabled():p.setOpacity(float(self.property('disabledOpacity') or .4))
         name={'pin-filled':'pin','check':'check'}.get(self.glyph,self.glyph)
         tint=self._glyph_tint or (c['action'] if self.isChecked() and name=='pin' else c['blue'] if self.isChecked() else c['secondary'])
-        if self.property('shelfPin') and name=='star-filled':tint=c['shelf_pin']
+        if self.property('shelfPin') and name=='star-filled':name,tint=_shelf_pin_glyph(c)
         p.save();p.setOpacity(p.opacity()*getattr(self,'_entry_alpha',1.));p.translate(getattr(self,'_entry_dx',0.),0.)
         if self.property('subtle'):p.setOpacity(p.opacity()*(.45+.4*v['hover']))
         hover=v['hover']
@@ -1319,7 +1324,8 @@ class ThumbnailLabel(TransferIconLabel):
         p.drawPixmap(0,0,art)
         draw_status(p,QRectF(size-18,size-18,18,18),self.cloud_status,self.repository.transfers.get(self.ref))
         pins=getattr(self.shelf,'file_pins',None)
-        if not self.property('suppressPinBadge') and pins and pins.contains(self.ref):icon('star-filled',palette()['shelf_pin']).paint(p,QRect(size-14,0,14,14))
+        if not self.property('suppressPinBadge') and pins and pins.contains(self.ref):
+            icon(*_shelf_pin_glyph(palette())).paint(p,QRect(size-14,0,14,14))
         p.end()
 
 

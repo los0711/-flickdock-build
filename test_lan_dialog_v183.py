@@ -142,6 +142,56 @@ class LanDialogTests(unittest.TestCase):
         self.assertEqual(self.service.sent,[('peer-1',[str(source)])])
         self.assertEqual(self.dialog.panel._queued_paths,[])
 
+    def test_device_updates_do_not_move_open_picker_rows_and_keep_selection(self):
+        panel=self.dialog.panel;combo=panel.devices
+        peers=self.service.peers()+[dict(id='peer-2',name='第二台')]
+        self.service.peers_changed.emit(peers)
+        combo.showPopup();APP.processEvents()
+        try:
+            popup=combo.view().window()
+            self.assertTrue(popup.isVisible())
+            geometry=popup.geometry()
+            self.service.peers_changed.emit([])
+            self.service.peers_changed.emit([peers[1],dict(id='peer-3',name='第三台')])
+            self.assertEqual(combo.count(),2)
+            self.assertEqual(combo.itemData(1),'peer-2')
+            self.assertEqual(popup.geometry(),geometry)
+            combo.setCurrentIndex(1)
+        finally:combo.hidePopup();APP.processEvents()
+        self.assertEqual(combo.currentData(),'peer-2')
+        self.assertEqual([combo.itemData(i) for i in range(combo.count())],['peer-2','peer-3'])
+        combo.showPopup();APP.processEvents()
+        self.service.peers_changed.emit([dict(id='peer-3',name='第三台')])
+        combo.hidePopup();APP.processEvents()
+        self.assertEqual(combo.currentIndex(),-1)
+
+    def test_mac_activity_cards_stay_fixed_while_history_scrolls(self):
+        from lan_panel import LanPanel
+        with patch('lan_panel.sys',SimpleNamespace(platform='darwin')):
+            panel=LanPanel(self.service,settings=self.settings)
+        try:
+            panel.setFixedSize(824,460);panel.show();APP.processEvents()
+            panel._history=[dict(name=f'测试{i}',peer='设备',state='完成',direction='receive',when='11-21 09:00') for i in range(12)]
+            panel._render_history()
+            for i in range(3):
+                panel.show_offer(dict(id=f'offer{i}',peer='测试设备',names=['sample.txt'],count=1,total=16))
+            from PySide6.QtTest import QTest
+            QTest.qWait(100)
+            slots=(panel.tasks_card.geometry(),panel.history_card.geometry())
+            outer=panel.activity_scroll.verticalScrollBar()
+            inner=panel.history_scroll.verticalScrollBar()
+            self.assertEqual(outer.maximum(),0)
+            self.assertGreater(inner.maximum(),0)
+            inner.setValue(inner.maximum());QTest.qWait(40)
+            self.assertEqual((panel.tasks_card.geometry(),panel.history_card.geometry()),slots)
+            self.assertEqual(outer.value(),0)
+            self.assertGreater(inner.value(),0)
+            self.assertTrue(panel.activity_scroll.viewport().rect().contains(panel.history_card.geometry()))
+            panel.focus_transfer('offer0');QTest.qWait(30)
+            self.assertEqual(outer.value(),0)
+            self.assertTrue(panel._rows['offer0']['frame'].isVisible())
+        finally:panel.close();panel.deleteLater();APP.processEvents()
+
     def test_transfer_mode_button_keeps_native_dialog_visible_and_emits_navigation(self):
         navigated=[];self.dialog.mode_selected.connect(lambda mode:navigated.append(mode))
         self.assertEqual(self.dialog.mode_buttons['wan'].text(),'远程传输')

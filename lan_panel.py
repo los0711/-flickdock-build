@@ -340,6 +340,7 @@ class _ScanIndicator(QWidget):
 
 class _DevicesCombo(QComboBox):
     remove_requested=Signal(str)
+    popup_closed=Signal()
     def __init__(self,parent=None):
         super().__init__(parent)
         from app_settings import _InlineComboStyle
@@ -354,6 +355,7 @@ class _DevicesCombo(QComboBox):
     def showPopup(self):
         view=self.view();popup=view.window()
         self._popup_chevron.attach(popup)
+        popup.installEventFilter(self)
         from native_ui_common import prepare_combo_popup,show_rounded_combo
         dark=bool(getattr(self.itemDelegate(),'dark',False))
         c=ui_colors('dark' if dark else 'light')
@@ -363,6 +365,9 @@ class _DevicesCombo(QComboBox):
         view.installEventFilter(self)
 
     def eventFilter(self,watched,event):
+        chevron=getattr(self,'_popup_chevron',None)
+        if chevron is not None and watched is chevron.popup and event.type()==QEvent.Hide:
+            self.popup_closed.emit()
         if watched in (self.view(),self.view().viewport()) and getattr(self,'removable',False):
             if event.type()==QEvent.KeyPress and event.key()==Qt.Key_Delete:
                 index=self.view().currentIndex();identifier=index.data(Qt.UserRole) if index.isValid() else None
@@ -1155,6 +1160,8 @@ class LanPanel(QFrame):
         self.devices.removable=self._wan;self.device_delegate.removable=self._wan
         self.devices.show_online=self._wan;self.device_delegate.show_online=self._wan
         self.devices.remove_requested.connect(self._remove_recent)
+        self._pending_peers=None
+        self.devices.popup_closed.connect(self._apply_pending_peers,Qt.QueuedConnection)
         send.addWidget(self.devices)
         self.nearby_hint=_TransferSurface(self.send_column,self,'route');self.nearby_hint.setObjectName('lanRouteHint');nearby_row=QHBoxLayout(self.nearby_hint)
         nearby_row.setContentsMargins(10,6,10,6);nearby_row.setSpacing(8)
@@ -1224,6 +1231,7 @@ class LanPanel(QFrame):
         left_outer.addWidget(self.send_button)
 
         self.activity_column = QFrame(self); self.activity_column.setObjectName('lanActivityColumn')
+        self._fixed_activity_cards=sys.platform=='darwin'
         self.activity_column.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Expanding)
         activity = QVBoxLayout(self.activity_column); activity.setContentsMargins(0,0,0,0); activity.setSpacing(WORKBENCH_GAP_PX)
         self.tasks_card=_TransferSurface(self.activity_column,self,'workbench');self.tasks_card.setObjectName('lanWorkbenchCard')
@@ -1241,7 +1249,19 @@ class LanPanel(QFrame):
         self.transfers_layout.setContentsMargins(3,3,3,3); self.transfers_layout.setSpacing(10)
         self.transfers_layout.addStretch(1)
         self.transfers_body.setMinimumHeight(76)
-        tasks.addWidget(self.transfers_body, 1)
+        self.active_rows_scroll=None
+        if self._fixed_activity_cards:
+            self.active_rows_scroll=QScrollArea(self.tasks_card)
+            self.active_rows_scroll.setObjectName('lanActiveRowsScroll')
+            self.active_rows_scroll.setFrameShape(QFrame.NoFrame)
+            self.active_rows_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            self.active_rows_scroll.setVerticalScrollBar(_TransferScrollBar(self.active_rows_scroll))
+            self.active_rows_scroll.setWidgetResizable(True)
+            self.active_rows_scroll.setFixedHeight(76)
+            self.active_rows_scroll.setWidget(self.transfers_body)
+            self.transfers_body.setAutoFillBackground(False)
+            self.transfers_layout.setSizeConstraint(QLayout.SetMinimumSize)
+        tasks.addWidget(self.active_rows_scroll if self._fixed_activity_cards else self.transfers_body,1)
         self.transfers_empty = _label('目前没有正在进行的传输', self.transfers_body, muted=True)
         self.transfers_empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.transfers_empty.setSizePolicy(QSizePolicy.Policy.Expanding,QSizePolicy.Policy.Expanding)
@@ -1312,7 +1332,13 @@ class LanPanel(QFrame):
         self.activity_scroll.setVerticalScrollBar(_TransferScrollBar(self.activity_scroll))
         self.activity_scroll.setFrameShape(QFrame.Shape.NoFrame);self.activity_scroll.setWidgetResizable(True)
         self.activity_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        activity.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
+        if self._fixed_activity_cards:
+            self.activity_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            self.activity_scroll.setWidgetResizable(False)
+            self.activity_scroll.setProperty('scrollEdgeBlur',False)
+            self.activity_column.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Ignored)
+            activity.setSizeConstraint(QLayout.SetNoConstraint)
+        else:activity.setSizeConstraint(QLayout.SetMinimumSize)
         self.activity_scroll.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Expanding)
         self.activity_scroll.setWidget(self.activity_column);columns.addWidget(self.activity_scroll,1)
         layout.addLayout(columns, 1)
@@ -1330,10 +1356,13 @@ class LanPanel(QFrame):
         self._activity_fit_timer=QTimer(self);self._activity_fit_timer.setSingleShot(True)
         self._activity_fit_timer.timeout.connect(self._fit_activity)
         self.tasks_card.installEventFilter(self)
+        if self._fixed_activity_cards:self.activity_scroll.viewport().installEventFilter(self)
         self._peers_changed(self.service.peers()); self.queue_paths([],replace=True); self.apply_theme(theme)
 
     def eventFilter(self,watched,event):
         if watched is self.tasks_card and event.type()==QEvent.LayoutRequest:self._activity_fit_timer.start(0)
+        if self._fixed_activity_cards and watched is self.activity_scroll.viewport() and event.type()==QEvent.Resize:
+            self._fit_activity()
         return super().eventFilter(watched,event)
 
     def resizeEvent(self,event):
@@ -1357,6 +1386,15 @@ class LanPanel(QFrame):
         if self.queue_area.minimumHeight()!=height or self.queue_area.maximumHeight()!=height:self.queue_area.setFixedHeight(height)
 
     def _fit_activity(self):
+        if self._fixed_activity_cards:
+            rows=self.active_rows_scroll
+            viewport=self.activity_scroll.viewport()
+            if self.activity_column.size()!=viewport.size():self.activity_column.setFixedSize(viewport.size())
+            chrome=self.tasks_card.minimumSizeHint().height()-rows.minimumHeight()
+            room=viewport.height()-WORKBENCH_GAP_PX-self.history_card.minimumSizeHint().height()-chrome
+            height=max(76,min(room,self.transfers_body.sizeHint().height()))
+            if rows.height()!=height:rows.setFixedHeight(height)
+            return
         width=max(1,self.activity_scroll.viewport().width())
         heights=[]
         for card in (self.tasks_card,self.history_card):
@@ -1656,9 +1694,10 @@ class LanPanel(QFrame):
             QFrame#lanPanel QLabel#lanHistoryState {{font-size:10px;}}
             QFrame#lanPanel QPushButton, QFrame#lanPanel QComboBox {{font-size:12px;}}
             QFrame#lanPanel QLineEdit {{font-size:11px;}}
-            QScrollArea#lanSendScroll, QScrollArea#lanActivityScroll, QScrollArea#lanQueueScroll, QScrollArea#lanHistoryScroll {{background:transparent;border:0;}}
+            QScrollArea#lanSendScroll, QScrollArea#lanActivityScroll, QScrollArea#lanQueueScroll, QScrollArea#lanHistoryScroll, QScrollArea#lanActiveRowsScroll {{background:transparent;border:0;}}
             QScrollArea#lanSendScroll > QWidget, QScrollArea#lanActivityScroll > QWidget {{background:transparent;}}
-            QScrollArea#lanQueueScroll > QWidget > QWidget, QScrollArea#lanHistoryScroll > QWidget > QWidget {{background:transparent;}}
+            QScrollArea#lanQueueScroll > QWidget > QWidget, QScrollArea#lanHistoryScroll > QWidget > QWidget,
+            QScrollArea#lanActiveRowsScroll > QWidget, QScrollArea#lanActiveRowsScroll > QWidget > QWidget {{background:transparent;}}
             QScrollBar:vertical {{background:transparent;width:6px;margin:2px 0;}}
             QScrollBar::handle:vertical {{background:transparent;min-height:24px;}}
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{height:0;}}
@@ -1683,47 +1722,65 @@ class LanPanel(QFrame):
         self.drop_zone.illustration.dark=self._dark;self.drop_zone.illustration.update()
         self.scan_indicator.dark=self._dark;self.scan_indicator.update()
 
+    def _apply_pending_peers(self):
+        if self._pending_peers is not None:
+            self._peers_changed(self._pending_peers)
+
     def _peers_changed(self, peers):
-        if self._wan:
-            selected=self.devices.currentData();scroll=self.devices.view().verticalScrollBar().value()
-            blocked=self.devices.blockSignals(True);wanted={peer['id'] for peer in peers}
+        # Discovery can change while the pointer is over a row. Keep the live
+        # model and geometry stable until the popup has finished handling it.
+        if self.devices.view().isVisible():
+            self._pending_peers=peers
+            return
+        deferred=self._pending_peers is not None
+        self._pending_peers=None
+        selected=self.devices.currentData()
+        had_unselected_list=self.devices.count()>0 and self.devices.currentIndex()<0
+        scrollbar=self.devices.view().verticalScrollBar()
+        scroll=scrollbar.value()
+        blocked=self.devices.blockSignals(True)
+        try:
+            wanted={peer['id'] for peer in peers}
+            if not self._wan and not peers:wanted.add('')
             for index in range(self.devices.count()-1,-1,-1):
                 if self.devices.itemData(index) not in wanted:self.devices.removeItem(index)
             for peer in peers:
                 name=str(peer.get('name') or '未命名设备')
+                host=str(peer.get('host') or '')
+                account_device=self._wan and bool(peer.get('account_device'))
                 index=self.devices.findData(peer['id'])
-                if index<0:self.devices.addItem('',peer['id']);index=self.devices.count()-1
-                self.devices.setItemText(index,name)
-                self.devices.setItemData(index,'',Qt.ItemDataRole.ToolTipRole)
-                self.devices.setItemData(index,peer.get('platform','unknown'),Qt.ItemDataRole.UserRole+1)
-                self.devices.setItemData(index,None,Qt.ItemDataRole.UserRole+2)
-                self.devices.setItemData(index,bool(peer.get('account_device')),Qt.ItemDataRole.UserRole+3)
-                self.devices.setItemData(index,name+('，同账号' if peer.get('account_device') else '')+'，发送时连接',Qt.AccessibleTextRole)
+                if index<0:
+                    self.devices.addItem('',peer['id'])
+                    index=self.devices.count()-1
+                self.devices.setItemText(index,name+(f' ({host})' if host and not self._wan else ''))
+                self.devices.setItemData(index,'' if self._wan else host or '局域网设备',Qt.ToolTipRole)
+                self.devices.setItemData(index,peer.get('platform','unknown'),Qt.UserRole+1)
+                self.devices.setItemData(index,None if self._wan else True,Qt.UserRole+2)
+                if self._wan:
+                    self.devices.setItemData(index,account_device,Qt.UserRole+3)
+                    self.devices.setItemData(index,name+('，同账号' if account_device else '')+'，发送时连接',Qt.AccessibleTextRole)
+            if not self._wan and not self.devices.count():self.devices.addItem('附近暂无设备','')
             index=self.devices.findData(selected)
-            self.devices.setCurrentIndex(index if index>=0 else 0 if peers else -1)
-            self.devices.blockSignals(blocked);self.devices.view().verticalScrollBar().setValue(scroll)
+            # If the chosen device disappeared during selection, require a new
+            # choice instead of making a different peer the send destination.
+            selection_lost=deferred and selected and selected not in wanted
+            if index<0 and not (had_unselected_list or selection_lost):
+                index=0 if self.devices.count() else -1
+            self.devices.setCurrentIndex(index)
+        finally:
+            self.devices.blockSignals(blocked)
+        scrollbar.setValue(scroll)
+        if self._wan:
             self.target_label.setText(('同账号与最近设备' if any(p.get('account_device') for p in peers) else '最近传输设备')+(f' ({len(peers)})' if peers else ''))
             self.peer_count.setText(f'{len(peers)} 台设备')
             self.scan_indicator.hide()
             self.scan_indicator.set_scanning(False);self.send_button.setEnabled(True)
             self._target_changed()
             return
-        selected = self.devices.currentData(); self.devices.clear()
-        for peer in peers:
-            name=str(peer.get('name') or '未命名设备')
-            host=str(peer.get('host') or '')
-            self.devices.addItem(name + (' ('+host+')' if host else ''), peer['id'])
-            self.devices.setItemData(self.devices.count()-1,str(peer.get('host') or '局域网设备'),Qt.ItemDataRole.ToolTipRole)
-            self.devices.setItemData(self.devices.count()-1,peer.get('platform','unknown'),Qt.ItemDataRole.UserRole+1)
-            self.devices.setItemData(self.devices.count()-1,True,Qt.ItemDataRole.UserRole+2)
-        if selected is not None:
-            index = self.devices.findData(selected)
-            if index >= 0: self.devices.setCurrentIndex(index)
         self.target_label.setText('发送到附近设备'+(f' ({len(peers)})' if peers else ''))
         self.peer_count.setText('正在搜索' if not peers else '')
         self.scan_indicator.setVisible(not peers);self.peer_count.setVisible(not peers)
         self.scan_indicator.set_scanning(not peers)
-        if not peers: self.devices.addItem('附近暂无设备', '')
         self.devices.setEnabled(bool(peers))
         self.send_button.setEnabled(bool(peers))
 
@@ -1813,10 +1870,12 @@ class LanPanel(QFrame):
         row=self._rows.get(identifier)
         if row is None:return
         if row.get('finished'):
-            self.activity_scroll.ensureWidgetVisible(self.history_card,8,8);return
+            if not self._fixed_activity_cards:self.activity_scroll.ensureWidgetVisible(self.history_card,8,8)
+            return
         rows=sorted((value for value in self._rows.values() if not value.get('finished')),key=lambda value:-value['sequence'])
         self._row_page=rows.index(row)//2;self._refresh_transfer_pages()
-        self.activity_scroll.ensureWidgetVisible(row['frame'],8,8)
+        scroll=self.active_rows_scroll if self._fixed_activity_cards else self.activity_scroll
+        scroll.ensureWidgetVisible(row['frame'],8,8)
 
     def _refresh_transfer_pages(self):
         # Terminal transfers belong in history; they never reserve active slots.

@@ -145,6 +145,22 @@ class DisplayFramesTests(unittest.TestCase):
                     now[0]+=1.
         finally:pulse.stop()
 
+    def test_late_callbacks_keep_cadence_phase_and_last_callback_stops_timer(self):
+        pulse=FramePulse(self.window);pulse.start();flush();clock=pulse.clock
+        clock._display_paced=True;clock._reduced_motion=False;clock.refresh_hz=60
+        clock._cancel_cadence_timer();clock._next_frame_at=100.
+        with patch('display_frames._on_battery',False), \
+             patch('display_frames.time.perf_counter',return_value=100.002), \
+             patch.object(clock.handle,'isExposed',return_value=True):
+            clock._cadence_fired()
+            self.assertAlmostEqual(clock._next_frame_at,100.+1/60)
+        pulse.timeout.connect(pulse.stop)
+        with patch('display_frames._on_battery',False), \
+             patch('display_frames.time.perf_counter',return_value=100.038), \
+             patch.object(clock.handle,'isExposed',return_value=True):
+            clock._cadence_fired()
+        self.assertFalse(clock._cadence.isActive())
+
     def test_hidden_window_has_no_frame_loop_and_show_resumes_it(self):
         delivered=[];pulse=FramePulse(self.window);pulse.timeout.connect(lambda:delivered.append(True))
         pulse.start();flush();clock=pulse.clock

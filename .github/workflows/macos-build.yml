@@ -123,6 +123,13 @@ jobs:
           build/macos-venv/bin/python -m unittest test_workbench_v1823 -q
       - name: Verify native utility windows and copy capsule lifecycle
         run: build/macos-venv/bin/python ci_utility_windows.py --output "../outputs/mac-utility-${{ matrix.arch }}.json"
+      - name: Check desktop motion, drag geometry and selection regressions
+        if: inputs.desktop_checks
+        run: >-
+          build/macos-venv/bin/python -m unittest test_display_frames test_tooltips_v1837
+          test_scroll_motion_v1837.ScrollTests test_edge_magnetic_v1839.FieldGeometryTests
+          test_lan_dialog_v183.LanDialogTests.test_mac_activity_cards_stay_fixed_while_history_scrolls
+          test_glass_ui_v1839.OverviewMotionTests.test_transparent_selection_endpoints_do_not_darken_the_shared_circle -q
       - name: Verify capsule styles and copied artwork from the frozen application
         run: QT_QPA_PLATFORM=cocoa dist/FlickDock.app/Contents/MacOS/FlickDock --verify-notices --verify-output "../outputs/mac-notices-${{ matrix.arch }}.json"
       - name: Measure verified local LAN loopback transfer
