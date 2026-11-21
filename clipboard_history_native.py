@@ -68,12 +68,37 @@ class _Input(ctypes.Structure):
     _fields_=[('kind',wintypes.DWORD),('value',_InputValue)]
 
 
-def _send_windows(text):
+class _GuiThreadInfo(ctypes.Structure):
+    _fields_=[('size',wintypes.DWORD),('flags',wintypes.DWORD),('active',wintypes.HWND),
+              ('focus',wintypes.HWND),('capture',wintypes.HWND),('menu',wintypes.HWND),
+              ('move',wintypes.HWND),('caret',wintypes.HWND),('caret_bounds',wintypes.RECT)]
+
+
+def _post_characters(user,target,units):
+    window,pid=target
+    owner=wintypes.DWORD()
+    thread=user.GetWindowThreadProcessId(window,ctypes.byref(owner))
+    if not thread or owner.value!=pid:return False
+    user.GetGUIThreadInfo.argtypes=(wintypes.DWORD,ctypes.POINTER(_GuiThreadInfo))
+    info=_GuiThreadInfo();info.size=ctypes.sizeof(info)
+    if not user.GetGUIThreadInfo(thread,ctypes.byref(info)) or not info.focus:return False
+    user.GetWindowThreadProcessId(info.focus,ctypes.byref(owner))
+    if owner.value!=pid or front_target()!=target:return False
+    user.PostMessageW.argtypes=(wintypes.HWND,wintypes.UINT,wintypes.WPARAM,wintypes.LPARAM)
+    # Deliver all UTF-16 units through the same queue. Mixing VK_PACKET
+    # key events with a synchronous IME commit for surrogates reorders emoji
+    # in Qt controls.
+    return all(user.PostMessageW(info.focus,0x0102,unit,1) for unit in units)
+
+
+def _send_windows(text,target):
     user=_windows()
     if any(user.GetAsyncKeyState(key)&0x8000 for key in (0x10,0x11,0x12,0x5B,0x5C)):
         return False
     encoded=text.encode('utf-16-le')
     units=[int.from_bytes(encoded[index:index+2],'little') for index in range(0,len(encoded),2)]
+    if any(0xD800<=unit<=0xDFFF for unit in units):
+        return _post_characters(user,target,units)
     events=(_Input*(2*len(units)))()
     for index,unit in enumerate(units):
         events[2*index]=_Input(1,_InputValue(keyboard=_Keyboard(0,unit,4,0,0)))
@@ -102,6 +127,6 @@ def _send_mac(text,target):
 def insert_text(text,target):
     if not text or len(text)>4096 or target is None or front_target()!=target:return False
     if any(ord(char)<32 and char not in ('\r','\n','\t') for char in text):return False
-    if sys.platform=='win32':return _send_windows(text)
+    if sys.platform=='win32':return _send_windows(text,target)
     if sys.platform=='darwin':return _send_mac(text,target)
     return False
