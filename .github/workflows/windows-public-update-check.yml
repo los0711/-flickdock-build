@@ -16,10 +16,10 @@ jobs:
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: FlickDock-Windows-x64-2191a5f1dde3f9fe4ee69776756543d2612dc6ee
+          name: FlickDock-Windows-x64-b659f6360410e65c84a8fab67a7e8b307af7db4c
           path: verified-build
           github-token: ${{ github.token }}
-          run-id: 44854311778
+          run-id: 44855631448
       - name: Verify the installer and its shipped updater on the public channel
         shell: pwsh
         run: |
