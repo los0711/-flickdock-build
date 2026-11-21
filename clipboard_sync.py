@@ -333,7 +333,7 @@ class ClipboardSync(QObject):
         self._history_file_roots=()
         self._history_check=None
         self._history_result=None
-        if sys.platform=='darwin':
+        if self._is_native and sys.platform=='darwin':
             directories=(Path(base)/'clipboard-history-files',Path(base)/'clipboard-cache')
             self._history_file_roots=tuple(Path(location.casefold()) for location in dict.fromkeys(
                 location for path in directories for location in (os.path.abspath(path),os.path.realpath(path))))
