@@ -86,6 +86,19 @@ def target(root):
         (root/'incoming.json').write_text(json.dumps(payload))
         (root/'incoming.json').replace(root/'target.json')
     editor.textChanged.connect(record)
+    if sys.platform=='darwin':
+        def activate_history_fixture():
+            request=root/'activate-history-fixture'
+            if not request.is_file():return
+            from AppKit import NSApplication,NSRunningApplication
+            owner=NSRunningApplication.runningApplicationWithProcessIdentifier_(int(request.read_text()))
+            request.unlink()
+            native_app=NSApplication.sharedApplication()
+            native_app.yieldActivationToApplication_(owner)
+            owner.activateFromApplication_options_(NSRunningApplication.currentApplication(),0)
+        activation=QTimer(editor)
+        activation.timeout.connect(activate_history_fixture)
+        activation.start(25)
     QTimer.singleShot(40000,app.quit)
     return app.exec()
 
@@ -190,7 +203,8 @@ def run(root):
         except Exception as error:
             paste_traces.append({'paste_error':repr(error)})
             raise
-        paste_traces.append({'paste_requested':result})
+        paste_traces.append({'paste_requested':bool(result),
+                             'outcome':getattr(result,'name','')})
         return result
     history.insert_image=insert
 
@@ -246,8 +260,9 @@ def run(root):
             anchor=QRect(475,105,332,232)
             front.setGeometry(anchor)
             configure_passive_cocoa_panel(front)
+            runtime.prepare_shelf_reveal()
             front.show()
-            runtime._foreground_target=front_target()
+            assert runtime._foreground_target==pid
             assert panel.place(anchor,app.primaryScreen().availableGeometry(),front=front)
             timer=QTimer(panel)
             timer.timeout.connect(lambda:panel.reconcile_pointer(QCursor.pos()))
@@ -309,8 +324,12 @@ def run(root):
         point=row_point(key)
         assert current_process()==pid
         if on_mac:
+            request=root/'activate-history-fixture'
+            request.write_text(str(os.getpid()))
+            wait_for(native.mac_owns_foreground)
             point=panel.mapToGlobal(point)
             cocoa_pointer(point,'move');QTest.qWait(65);cocoa_pointer(point,'click')
+            report['activation_handoff']=True
         else:QTest.mouseClick(panel,Qt.LeftButton,Qt.NoModifier,point)
         wait_for(lambda:len(activated)==2)
         assert activated[-1]==key,activated

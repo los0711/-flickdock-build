@@ -1366,6 +1366,9 @@ class ShelfWindow(QWidget):
     def _show_at(self, target, kind, offset, reserve=None):
         was_visible = self.isVisible()
         was_hiding=self.visible_state=='hiding'
+        history=getattr(self.manager,'clipboard_history',None)
+        if history is not None and kind=='dock' and not self.expanded and (not was_visible or was_hiding):
+            history.prepare_shelf_reveal()
         self._hide_fallback.stop()
         self.manager.activate_shelf(self)
         self.presentation_kind = kind
@@ -1408,7 +1411,6 @@ class ShelfWindow(QWidget):
         self.touch()
         from ui_transitions import SHELF_REVEAL_RESPONSE_SECONDS,SHELF_REVEAL_DAMPING
         self.presentation.animate({"sx": 1, "sy": 1, "alpha": 1, "dx": 0, "dy": 0},response=SHELF_REVEAL_RESPONSE_SECONDS,damping=SHELF_REVEAL_DAMPING)
-        history=getattr(self.manager,'clipboard_history',None)
         if history is not None and kind=='dock' and not self.expanded:
             history.sync(self)
         self.manager.update_handles()

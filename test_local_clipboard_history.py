@@ -299,6 +299,58 @@ class ClipboardHistoryPanelTests(unittest.TestCase):
 
 
 class ClipboardHistoryRuntimeTests(unittest.TestCase):
+    def test_mac_reveal_keeps_target_when_shelf_takes_foreground(self):
+        from clipboard_history_runtime import ClipboardHistory
+        from types import SimpleNamespace
+        from unittest.mock import ANY,Mock
+        from PySide6.QtCore import QObject,Signal
+        from PySide6.QtWidgets import QWidget
+
+        class Observation(QObject):
+            copy_observed=Signal(object)
+            set_local_observation=Mock()
+
+        card=QWidget()
+        card.setGeometry(310,24,332,232)
+        shelf=SimpleNamespace(card=card,isVisible=lambda:True,presentation_kind='dock',expanded=False,
+            _dock_drag_reveal=False,incoming_drop=False,geometry_morph=SimpleNamespace(active=False),
+            visible_state='floating',presentation=SimpleNamespace(values={
+                'alpha':1.,'dx':0.,'dy':0.,'sx':1.,'sy':1.}),
+            hide_animated=Mock())
+        manager=SimpleNamespace(app=APP,clipboard_sync=Observation(),shelf=shelf,settings_open=lambda:False,
+            settings=SimpleNamespace(theme='light'),outgoing_drag=False,
+            edge_file_drag=SimpleNamespace(prepared=False),motion=False,
+            edge=SimpleNamespace(display=APP.primaryScreen()))
+        with TemporaryDirectory() as directory,patch('clipboard_history_runtime.private_clipboard',return_value=False):
+            runtime=ClipboardHistory(manager,directory)
+            try:
+                runtime.set_enabled(True)
+                runtime.observe(('text',{'text':'Recovered external input'}))
+                sample_until(lambda:len(runtime.entries)==1)
+                runtime.panel._cocoa_hover=True
+                current=[913]
+                def restore(pid):
+                    current[0]=pid
+                    return True
+                with (patch('clipboard_history_runtime.front_target',side_effect=lambda:current[0]),
+                      patch('clipboard_history_runtime.mac_owns_foreground',return_value=True),
+                      patch('clipboard_history_runtime.mac_history_paste_blocker',return_value=None),
+                      patch('clipboard_history_runtime.restore_mac_target',side_effect=restore) as handoff,
+                      patch('clipboard_history_runtime.insert_text',return_value=True) as paste):
+                    with patch('clipboard_history_runtime.sys.platform','darwin'):
+                        runtime.prepare_shelf_reveal()
+                    current[0]=None
+                    runtime.sync(shelf)
+                    self.assertEqual(runtime._foreground_target,913)
+                    self.assertTrue(runtime.panel.isVisible())
+                    runtime.panel.activated.emit(runtime.entries[0]['id'])
+                    sample_until(lambda:shelf.hide_animated.called)
+                    handoff.assert_called_once_with(913)
+                    paste.assert_called_once_with('Recovered external input',913,cancel=ANY)
+            finally:
+                runtime.close()
+                card.close()
+
     def test_history_is_enabled_for_new_profiles_and_preserves_explicit_opt_out(self):
         from app_settings import SettingsStore
         with TemporaryDirectory() as directory:

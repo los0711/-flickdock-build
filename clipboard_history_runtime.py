@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 import time
 
 from PySide6.QtCore import QMimeData, QObject, QPoint, QRect, QThreadPool, QTimer, QUrl, Qt
@@ -10,7 +11,7 @@ from PySide6.QtWidgets import QApplication, QLineEdit, QPlainTextEdit, QTextEdit
 from shiboken6 import isValid
 
 from clipboard_history_native import (front_target, insert_files, insert_image, insert_text, mac_history_paste_blocker,
-                                      private_clipboard, restore_mac_target)
+                                      mac_owns_foreground, private_clipboard, restore_mac_target)
 from clipboard_history_panel import ClipboardHistoryPanel
 from clipboard_history_store import ClipboardHistoryStore, PAGE
 from sync_files import DiskWork
@@ -166,6 +167,14 @@ class ClipboardHistory(QObject):
             return alpha
         return 0. if closing else 1.
 
+    def prepare_shelf_reveal(self):
+        if self.enabled and sys.platform=='darwin':
+            self._foreground_target=front_target()
+
+    def _refresh_foreground_target(self):
+        target=front_target()
+        if target is not None:self._foreground_target=target
+
     def sync(self,shelf,point=None):
         if not self.enabled:return False
         valid=(shelf.isVisible() and shelf.presentation_kind=='dock' and not shelf.expanded
@@ -183,7 +192,7 @@ class ClipboardHistory(QObject):
         area=screen.availableGeometry()
         placement=(anchor,area)
         if placement!=self._placement or shelf is not self._companion_shelf:
-            if self.panel._cocoa_hover:self._foreground_target=front_target()
+            if self.panel._cocoa_hover:self._refresh_foreground_target()
             alpha=self._alpha(shelf.presentation.values['alpha'],False)
             if self.panel.place(anchor,area,shelf_alpha=alpha,motion=shelf.presentation.values,front=shelf):
                 self._placement=placement
@@ -192,11 +201,10 @@ class ClipboardHistory(QObject):
                 self._placement=None
                 self._companion_shelf=None
         if point is None:return False
-        self.panel.reconcile_pointer(point)
         inside=self.contains(point)
         if inside and not self._pointer_inside and self.panel._cocoa_hover:
-            current=front_target()
-            if current is not None:self._foreground_target=current
+            self._refresh_foreground_target()
+        self.panel.reconcile_pointer(point)
         self._pointer_inside=inside
         return inside
 
@@ -214,14 +222,23 @@ class ClipboardHistory(QObject):
         target=front_target()
         if self._insert_job is not None:self._insert_job.cancel.set()
         editor=QApplication.focusWidget() if target is None else None
-        recover_focus=(target is None and self.panel._cocoa_hover and
-                       not isinstance(editor,(QLineEdit,QPlainTextEdit,QTextEdit)))
-        if recover_focus:target=self._foreground_target
+        if not isinstance(editor,(QLineEdit,QPlainTextEdit,QTextEdit)) or not editor.isVisible():
+            editor=None
+        recover_focus=(target is None and self.panel._cocoa_hover and self._foreground_target is not None
+                       and mac_owns_foreground())
+        if recover_focus:
+            target=self._foreground_target
+            editor=None
         self._action_epoch+=1; epoch=self._action_epoch
         def complete(pasted,kind):
             if epoch!=self._action_epoch or not self.panel.isVisible():return
             if pasted:
                 self.manager.shelf.hide_animated(explicit=True)
+            elif self.panel._cocoa_hover:
+                from clipboard_history_native import MacPasteResult
+                reason=pasted if isinstance(pasted,MacPasteResult) else MacPasteResult.FOCUS
+                LOG.info('Mac history paste did not complete (%s)',reason.name)
+                self.panel.feedback(reason.value)
             elif kind in ('image','file'):self.panel.feedback('拖入目标窗口')
             else:self.panel.feedback('请先聚焦目标输入框，或拖放')
         def ready(value):
@@ -253,8 +270,11 @@ class ClipboardHistory(QObject):
                         if self._insert_job is job:self._insert_job=None
                         complete(pasted,kind)
                     self._insert_job=self._work(job,'insert',finished)
-                waiting=recover_focus and front_target() is None and restore_mac_target(target)
-                dispatch(time.monotonic()+(.40 if waiting else 0.))
+                if recover_focus and front_target() is None:
+                    if not restore_mac_target(target):
+                        complete(False,kind);return
+                    dispatch(time.monotonic()+.75)
+                else:dispatch(0.)
         self._submit('payload',(key,),ready)
 
     @staticmethod

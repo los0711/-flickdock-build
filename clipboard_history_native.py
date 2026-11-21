@@ -5,6 +5,7 @@ import ctypes
 from collections import deque
 from contextlib import contextmanager
 from ctypes import wintypes
+from enum import Enum
 from functools import lru_cache
 from itertools import groupby
 import os
@@ -36,6 +37,23 @@ _MAC_IMAGE_TYPES={'public.png':'image/png','public.tiff':'image/tiff','public.jp
                   'org.webmproject.webp':'image/webp','public.heic':'image/heic',
                   'com.microsoft.bmp':'image/bmp','com.compuserve.gif':'image/gif'}
 _MAX_NATIVE_IMAGE_BYTES=128*1024*1024
+
+
+class MacPasteResult(Enum):
+    INSERTED='已粘贴'
+    FOCUS='未能回到原窗口，请先点一下目标输入框'
+    ACCESSIBILITY='请在 Mac 权限设置中允许辅助功能'
+    CLIPBOARD_PERMISSION='请在 Mac 权限设置中将剪贴板设为始终允许'
+    PRIVATE_CLIPBOARD='当前剪贴板包含受保护内容，已保留原内容'
+    BACKUP_UNAVAILABLE='当前剪贴板无法完整备份，已保留原内容'
+    CLIPBOARD_CHANGED='剪贴板刚刚更新，请再点击一次'
+    DESTINATION_DID_NOT_READ='目标应用未读取这次粘贴，请检查插入位置是否支持此内容'
+    BUSY='上一次粘贴正在结束，请稍后再试'
+    UNAVAILABLE='这条历史内容暂时无法粘贴'
+    CANCELLED='粘贴已取消'
+
+    def __bool__(self):
+        return self is MacPasteResult.INSERTED
 
 
 def mac_clipboard_image(board):
@@ -76,12 +94,24 @@ def front_target():
     return None
 
 
+def mac_owns_foreground():
+    from AppKit import NSWorkspace
+    front=NSWorkspace.sharedWorkspace().frontmostApplication()
+    return front is not None and front.processIdentifier()==os.getpid()
+
+
 def restore_mac_target(pid):
-    from AppKit import NSRunningApplication
+    from AppKit import NSApplication, NSApplicationActivateIgnoringOtherApps, NSRunningApplication
     current=NSRunningApplication.currentApplication()
     target=NSRunningApplication.runningApplicationWithProcessIdentifier_(pid)
-    if not current.isActive() or target is None or target.isTerminated():return False
-    return bool(target.activateWithOptions_(0))
+    if not mac_owns_foreground() or target is None or target.isTerminated():return False
+    application=NSApplication.sharedApplication()
+    yield_activation=getattr(application,'yieldActivationToApplication_',None)
+    activate_from=getattr(target,'activateFromApplication_options_',None)
+    if yield_activation is not None and activate_from is not None:
+        yield_activation(target)
+        return bool(activate_from(current,0))
+    return bool(target.activateWithOptions_(NSApplicationActivateIgnoringOtherApps))
 
 
 def mac_paste_allowed():
@@ -141,14 +171,12 @@ def _send_windows(text,target,cancel):
 
 
 def insert_text(text,target,*,cancel=None):
+    if sys.platform=='darwin':
+        return _insert_mac_history(text,target,cancel=cancel)
     if not text or target is None or front_target()!=target:return False
     if any(ord(char)<32 and char not in ('\r','\n','\t') for char in text):return False
     cancel=cancel or Event()
     if sys.platform=='win32':return len(text)<=4096 and _send_windows(text,target,cancel)
-    if sys.platform=='darwin':
-        if cancel.is_set() or not _IMAGE_PASTE_LOCK.acquire(blocking=False):return False
-        try:return _paste_mac_payload(text,target,cancel,image=False)
-        finally:_IMAGE_PASTE_LOCK.release()
     return False
 
 # Native Clipboard observers use the OS change number. A temporary paste and
@@ -408,20 +436,25 @@ def _paste_mac_payload(payload,target,cancel,*,image=False,files=False):
 
     # Restoring the user's clipboard requires reading it first. Gate that
     # read before touching any data so repeated card clicks cannot prompt TCC.
-    if mac_history_paste_blocker() is not None:return False
+    reason=mac_history_paste_blocker()
+    if reason=='accessibility':return MacPasteResult.ACCESSIBILITY
+    if reason=='clipboard':return MacPasteResult.CLIPBOARD_PERMISSION
     with objc.autorelease_pool():
         board=NSPasteboard.generalPasteboard()
         baseline=board.changeCount()
-        if private_clipboard(image=True):return False
+        if private_clipboard(image=True):return MacPasteResult.PRIVATE_CLIPBOARD
         original=[]
         total=0
-        for item in board.pasteboardItems() or ():
+        existing=board.pasteboardItems()
+        if not existing and board.types():return MacPasteResult.BACKUP_UNAVAILABLE
+        for item in existing or ():
             backup=NSPasteboardItem.alloc().init()
             for fmt in item.types():
                 data=item.dataForType_(fmt)
-                if data is None:return False
+                if data is None:return MacPasteResult.BACKUP_UNAVAILABLE
                 total+=data.length()
-                if total>_MAX_BACKUP_BYTES or not backup.setData_forType_(data,fmt):return False
+                if total>_MAX_BACKUP_BYTES or not backup.setData_forType_(data,fmt):
+                    return MacPasteResult.BACKUP_UNAVAILABLE
             original.append(backup)
         formats={}
         if files:
@@ -447,31 +480,37 @@ def _paste_mac_payload(payload,target,cancel,*,image=False,files=False):
             provider.received=received
             provider.error=None
             provider.finished=False
-            if not item.setDataProvider_forTypes_(provider,list(entry)):return False
-            if not item.setData_forType_(NSData.data(),'org.nspasteboard.TransientType'):return False
+            if not item.setDataProvider_forTypes_(provider,list(entry)):return MacPasteResult.UNAVAILABLE
+            if not item.setData_forType_(NSData.data(),'org.nspasteboard.TransientType'):return MacPasteResult.UNAVAILABLE
             items.append(item);providers.append(provider)
         down=Quartz.CGEventCreateKeyboardEvent(None,9,True)  # kVK_ANSI_V
         up=Quartz.CGEventCreateKeyboardEvent(None,9,False)
-        if down is None or up is None or cancel.is_set() or front_target()!=target or board.changeCount()!=baseline:
-            return False
+        if down is None or up is None:return MacPasteResult.UNAVAILABLE
+        if cancel.is_set():return MacPasteResult.CANCELLED
+        if front_target()!=target:return MacPasteResult.FOCUS
+        if board.changeCount()!=baseline:return MacPasteResult.CLIPBOARD_CHANGED
         sequence=board.clearContents()
         _mark_paste_change(sequence)
         try:
             installed=board.writeObjects_(items)
             sequence=board.changeCount()
             _mark_paste_change(sequence)
-            if not installed or cancel.is_set() or front_target()!=target:return False
+            if not installed:return MacPasteResult.UNAVAILABLE
+            if cancel.is_set():return MacPasteResult.CANCELLED
+            if front_target()!=target:return MacPasteResult.FOCUS
             for event in (down,up):
                 Quartz.CGEventSetFlags(event,Quartz.kCGEventFlagMaskCommand)
                 Quartz.CGEventPostToPid(target,event)
-            if not _wait_mac_paste_read(providers[0],board,sequence):return False
+            if not _wait_mac_paste_read(providers[0],board,sequence):
+                if board.changeCount()!=sequence:return MacPasteResult.CLIPBOARD_CHANGED
+                return MacPasteResult.DESTINATION_DID_NOT_READ
             # Cocoa/Qt may read file URL data while checking supported types,
             # before the receiving app handles an asynchronous Paste action.
             # Give file consumers time after that first read as well.
             time.sleep(_MAC_FILE_PASTE_GRACE_SECONDS if files else _PASTE_GRACE_SECONDS)
             for provider in providers:
                 if provider.error is not None:raise provider.error
-            return True
+            return MacPasteResult.INSERTED
         finally:
             if board.changeCount()==sequence:
                 _mark_paste_change(board.clearContents())
@@ -479,8 +518,29 @@ def _paste_mac_payload(payload,target,cancel,*,image=False,files=False):
                 _mark_paste_change(board.changeCount())
 
 
+def _insert_mac_history(payload,target,*,cancel=None,image=False,files=False):
+    if not payload:return MacPasteResult.UNAVAILABLE
+    if target is None or front_target()!=target:return MacPasteResult.FOCUS
+    cancel=cancel or Event()
+    if cancel.is_set():return MacPasteResult.CANCELLED
+    if not _IMAGE_PASTE_LOCK.acquire(blocking=False):return MacPasteResult.BUSY
+    try:
+        if image:
+            from PySide6.QtGui import QImage
+            from clipboard_history_store import encode_png
+            decoded=QImage.fromData(payload)
+            if decoded.isNull() or decoded.sizeInBytes()>_MAX_BACKUP_BYTES:return MacPasteResult.UNAVAILABLE
+            if not payload.startswith(b'\x89PNG\r\n\x1a\n'):payload=encode_png(decoded)
+        if files and not all(Path(path).is_absolute() and Path(path).exists() for path in payload):
+            return MacPasteResult.UNAVAILABLE
+        return _paste_mac_payload(payload,target,cancel,image=image,files=files)
+    finally:
+        _IMAGE_PASTE_LOCK.release()
+
+
 def insert_image(png,target,*,cancel=None):
     """Paste an image while preserving a snapshot of the user's clipboard."""
+    if sys.platform=='darwin':return _insert_mac_history(png,target,cancel=cancel,image=True)
     if not png or target is None or front_target()!=target:
         return False
     cancel=cancel or Event()
@@ -495,7 +555,6 @@ def insert_image(png,target,*,cancel=None):
         if not png.startswith(b'\x89PNG\r\n\x1a\n'):
             png=encode_png(image)
         if sys.platform=='win32':return _paste_windows_image(png,image,target,cancel)
-        if sys.platform=='darwin':return _paste_mac_payload(png,target,cancel,image=True)
         return False
     finally:
         _IMAGE_PASTE_LOCK.release()
@@ -503,6 +562,7 @@ def insert_image(png,target,*,cancel=None):
 
 def insert_files(paths,target,*,cancel=None):
     """Send native Paste with file URLs, then restore the clipboard snapshot."""
+    if sys.platform=='darwin':return _insert_mac_history(paths,target,cancel=cancel,files=True)
     cancel=cancel or Event()
     if not paths or target is None or front_target()!=target or cancel.is_set():return False
     if not all(Path(path).is_absolute() and Path(path).exists() for path in paths):return False
@@ -510,7 +570,6 @@ def insert_files(paths,target,*,cancel=None):
     try:
         if sys.platform=='win32':
             return _paste_windows_formats(((15,_windows_file_drop(paths)),('Preferred DropEffect',struct.pack('<I',1))),target,cancel)
-        if sys.platform=='darwin':return _paste_mac_payload(paths,target,cancel,files=True)
         return False
     finally:
         _IMAGE_PASTE_LOCK.release()
