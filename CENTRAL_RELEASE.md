@@ -11,7 +11,7 @@
 在仓库 Settings → Environments → `flickdock-release` 配置：
 
 * `FLICKDOCK_RELEASE_SIGNING_KEY`：旧客户端已经信任的 Ed25519 原始私钥，Base64 编码。
-* `GITEE_RELEASE_TOKEN`：能访问私有源码仓库和公开安装包归档仓库的令牌；优先使用权限受限的专用令牌。
+* `GITEE_RELEASE_TOKEN` 用于访问私有源码仓库。安装包归档使用工作流的 GitHub 令牌。
 * `CLOUDFLARE_API_TOKEN`：受限于 FlickDock 账号和 `flickdock.cc.cd` 的 Workers/R2 发布令牌。
 
 这些值由 GitHub 加密保存。不要在多台发布电脑分发签名私钥。轮换签名密钥时，
@@ -33,7 +33,7 @@
 
 发布步骤先验证并归档安装包，部署保留旧更新索引的下载网关，再验证公开下载、生成签名，
 记录匹配的私有 Gitee 源码和 GitHub 发布元数据，最后更新官网与线上索引并读回校验。
-最近三版保留 R2；更早版本只在对应公开归档下载可用并通过哈希校验后才移出 R2。
+新发布的安装包归档到 GitHub Releases。最近三版保留在 R2，更早版本只有在公开归档通过匿名下载和哈希校验后才从 R2 移除。
 不同服务之间无法进行单一事务：失败时检查 Actions 中具体失败步骤，核对已存在的归档、
 标签和索引，不要强推标签或覆盖同版本安装包。确认没有其他发布在运行后再处理。
 

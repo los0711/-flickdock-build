@@ -161,7 +161,7 @@ jobs:
       - name: Archive and stage verified packages
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          GITEE_RELEASE_TOKEN: ${{ secrets.GITEE_RELEASE_TOKEN }}
+          FLICKDOCK_VERIFIED_WINDOWS_SHA: ${{ needs.authorization.outputs.windows_artifact_sha }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           FLICKDOCK_RELEASE_NOTES: ${{ inputs.notes }}
         run: python release_pipeline.py stage

@@ -274,8 +274,9 @@ def stage():
     setup,win_report,mac_files,build,cloud = _verified_builds()
     packages = [setup,*mac_files] if setup else mac_files
     notes = os.environ['FLICKDOCK_RELEASE_NOTES'].strip()
-    assets = publish_archives(packages,APP_VERSION,context(),notes,
-        gitee_token=os.environ.get('GITEE_RELEASE_TOKEN',''),github_token=os.environ.get('GITHUB_TOKEN',''))
+    build_sha = os.environ.get('FLICKDOCK_VERIFIED_WINDOWS_SHA') or context()
+    assets = publish_archives(packages,APP_VERSION,build_sha,notes,
+        github_token=os.environ.get('GITHUB_TOKEN',''))
     for path,asset in zip(packages,assets,strict=True):
         _upload_origin(path,asset)
     folder = work()
