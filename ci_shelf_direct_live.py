@@ -90,6 +90,29 @@ def run(root,side,credentials):
         return next((row for row in shelf.state['entries'].values()
                      if row['name']==name and not row.get('deleted')),None) if shelf.state else None
 
+    def name_device(status):
+        call('PATCH','/v1/devices/'+account.device_id,data={'name':'FlickDock-shelf-QA-'+side+'-'+status})
+
+    def wait_peer_status(peer_id,status):
+        next_check=0.
+        def matching():
+            nonlocal next_check
+            if time.monotonic()<next_check:return False
+            next_check=time.monotonic()+.75
+            return any(item['id']==peer_id and item['name']=='FlickDock-shelf-QA-'+other+'-'+status
+                       for item in call('GET','/v1/devices')['devices'])
+        wait_for(matching,40)
+
+    def drop(name,which):
+        source=root/name;source.write_bytes(fixture(which))
+        direct.mark_drop([str(source)])
+        adapter.view['permanent'].append(str(source))
+        shelf.local_changed()
+        shelf.request_refresh()
+
+    def matches(row,which):
+        return hashlib.sha256(Path(row['ref']).read_bytes()).digest()==hashlib.sha256(fixture(which)).digest()
+
     try:
         account.login(credentials['username'],credentials['password'])
         wait_for(lambda:account.signed_in or not account.busy,35)
@@ -103,11 +126,7 @@ def run(root,side,credentials):
                  and peer() is not None and not shelf.catching_up)
         peer_id=peer()['account_device_id']
         report['phase']='drop'
-        source=root/mine;source.write_bytes(fixture(side))
-        direct.mark_drop([str(source)])
-        adapter.view['permanent'].append(str(source))
-        shelf.local_changed()
-        shelf.request_refresh()
+        drop(mine,side)
         report['phase']='transfer'
         def saved():
             local,remote=entry(mine),entry(theirs)
@@ -121,26 +140,39 @@ def run(root,side,credentials):
                           item.get('direction')=='receive' and item.get('paths') for item in completed),
                       cloud_backup=local['version']>=1,
                       redundant_cloud_downloads=downloads.count(theirs),
-                      matching_sha256=hashlib.sha256(Path(remote['ref']).read_bytes()).digest()==
-                                      hashlib.sha256(fixture(other)).digest())
-        report['phase']='peer_confirmed'
-        done='FlickDock-shelf-QA-'+side+'-done'
-        call('PATCH','/v1/devices/'+account.device_id,data={'name':done})
-        next_check=0.
-        def peer_confirmed():
-            nonlocal next_check
-            if time.monotonic()<next_check:return False
-            next_check=time.monotonic()+.75
-            return any(item['id']==peer_id and item['name']=='FlickDock-shelf-QA-'+other+'-done'
-                       for item in call('GET','/v1/devices')['devices'])
-        wait_for(peer_confirmed,25)
+                      matching_sha256=matches(remote,other))
+        report['phase']='offline_cloud_fallback'
+        offline_name='FlickDock-direct-offline.bin'
         if side=='A':
+            wait_peer_status(peer_id,'offline')
+            wait_for(lambda:not any(item.get('account_device_id')==peer_id and item.get('online')
+                                    for item in wan.peers()),25)
+            drop(offline_name,'offline')
+            wait_for(lambda:entry(offline_name) and entry(offline_name)['version']==1,65)
+            name_device('backed-up')
+            wait_peer_status(peer_id,'restored')
+            report['offline_backup']=True
             # Remove just the known synthetic fixture objects from the QA account.
-            for row in (local,remote):shelf.delete_cloud_copy(row['ref'])
+            for row in (local,remote,entry(offline_name)):shelf.delete_cloud_copy(row['ref'])
             wait_for(lambda:not shelf.cloud_copy_operations,15)
         else:
-            until=time.monotonic()+4
-            wait_for(lambda:time.monotonic()>=until,7)
+            shelf.set_directions(False,False)
+            wan.set_signaling_allowed(False)
+            name_device('offline')
+            wait_peer_status(peer_id,'backed-up')
+            assert entry(offline_name) is None
+            shelf.set_directions(True,True)
+            wan.set_signaling_allowed(True);wan.start()
+            shelf.request_refresh()
+            wait_for(lambda:entry(offline_name),55)
+            restored=entry(offline_name)
+            report['offline_fallback']=matches(restored,'offline') and downloads.count(offline_name)==1
+            assert report['offline_fallback']
+            name_device('restored')
+            # Keep the cloud session valid while the sender reads the
+            # completion and retires the three known test objects.
+            until=time.monotonic()+6
+            wait_for(lambda:time.monotonic()>=until,8)
         report['ok']=all(report[key] for key in ('automatic_offer','authenticated_transfer_completed',
                         'cloud_backup','matching_sha256')) and not report['redundant_cloud_downloads'] and not errors
         report['phase']='complete'
