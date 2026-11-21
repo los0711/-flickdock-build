@@ -5,6 +5,7 @@ from itertools import product
 from pathlib import Path
 import tempfile
 import time
+from types import SimpleNamespace
 import unittest
 import zipfile
 from unittest.mock import patch
@@ -120,6 +121,38 @@ class TriggerReliabilityTests(unittest.TestCase):
         self.assertEqual(visible_during_show, [True])
         self.assertTrue(manager.shelf.isVisible())
         self.assertFalse(manager.edge.isVisible())
+
+    def test_cocoa_magnetic_drop_cannot_reveal_shelf_in_the_gap_beyond_the_trigger(self):
+        import dock_handle
+
+        manager = self.manager
+        edge = manager.edge
+        manager.settings.update(dock_edge='right', keep_empty_handle=True)
+        manager.update_handles()
+        # A display's Dock can leave some pixels between availableGeometry's
+        # trigger strip and the physical edge where the magnetic band accepts.
+        edge.move(edge.x() - 48, edge.y())
+        trigger = edge.geometry().center()
+        magnetic_only = trigger + QPoint(40, 0)
+        darwin = SimpleNamespace(platform='darwin')
+        with patch.object(flickdock, 'sys', darwin), patch.object(dock_handle, 'sys', darwin), \
+             patch.object(flickdock, 'native_input_available', return_value=False), \
+             patch.object(flickdock, 'mouse_buttons_mask', return_value=1) as buttons, \
+             patch.object(flickdock.QCursor, 'pos', return_value=magnetic_only) as pointer, \
+             patch.object(manager, 'show_docked') as reveal:
+            self.assertFalse(edge.file_preview_region().contains(magnetic_only))
+            self.assertTrue(edge.activation_region().contains(magnetic_only))
+            # The native drag destination may still be preparing when polling
+            # sees the pointer. No earlier or later release poll may reveal it.
+            self.assertFalse(manager.edge_file_drag.prepared)
+            manager.poll()
+            buttons.return_value = 0
+            manager.poll()
+            manager.poll()
+            reveal.assert_not_called()
+            pointer.return_value = trigger
+            manager.poll()
+            reveal.assert_called_once_with()
 
     def test_shake_keeps_empty_trigger_and_edge_drag_hands_off_the_same_shelf(self):
         manager=self.manager;manager.motion=False;manager.settings.update(trigger_view='compact')
