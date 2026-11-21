@@ -467,6 +467,8 @@ class WindowFade(QObject):
         self.animation.setEasingCurve(exit_curve())
         self.animation.valueChanged.connect(self._frame)
         self.animation.finished.connect(self._finished);window.installEventFilter(self)
+        self._capture_queued=False
+        self._capturing=False
         self._capture_deadline=QTimer(self);self._capture_deadline.setSingleShot(True)
         self._capture_deadline.timeout.connect(self._capture_expired)
 
@@ -500,6 +502,11 @@ class WindowFade(QObject):
                 # Keep the native window visible while the overlay animates.
                 self.scale=WINDOW_MIN_SCALE;self.opacity=WINDOW_OPEN_OPACITY;self._start(1.0)
             else:self._reset_zoom();self.window.setWindowOpacity(1.0)
+        elif event.type()==QEvent.Paint and self._awaiting_capture and not self._capturing and not self._capture_queued:
+            # Capture after the pending paint has returned, never recursively
+            # from the first Show/Paint callback.
+            self._capture_queued=True
+            QTimer.singleShot(0,self,self._capture_after_paint)
         elif event.type()==QEvent.Hide:
             self.animation.stop();self.pending=None;self._reset_zoom();self.window.setWindowOpacity(1.0)
         elif event.type()==QEvent.Resize and self.zoom is not None and self.zoom.isVisible():
@@ -514,14 +521,30 @@ class WindowFade(QObject):
         if target==0 and self.zoom.snapshot.isNull():self.zoom.capture(self.window)
         self.zoom.setGeometry(self.window.rect())
         self.zoom.scale=self.scale;self.zoom.opacity=self.opacity
-        self.animation.setStartValue(QPointF(self.opacity,1. if not target else self.scale))
+        self.animation.setStartValue(QPointF(self.opacity,self.scale))
         self.animation.setEndValue(QPointF(target,1.))
+        if target and self.zoom.snapshot.isNull():
+            self._awaiting_capture=True
+            self._capture_deadline.start(240)
+            self.window.update()
+            return
         self._awaiting_capture=False
         if self.zoom.snapshot.isNull() and not self.zoom.capture(self.window):
-            self._capture_expired();return
+            self._finished();return
         self.zoom.scale=self.scale;self.zoom.opacity=self.opacity
         self.zoom.setEnabled(True);self.zoom.show();self.zoom.raise_();self.zoom.update()
         self.animation.start()
+
+    def _capture_after_paint(self):
+        self._capture_queued=False
+        if not self._awaiting_capture or not isValid(self.window) or not self.window.isVisible():return
+        self._capturing=True
+        try:captured=self.zoom.capture(self.window)
+        finally:self._capturing=False
+        if captured:
+            self.zoom.scale=self.scale;self.zoom.opacity=self.opacity
+            self.zoom.setEnabled(True);self.zoom.show();self.zoom.raise_();self.zoom.update()
+            self._captured()
 
     def _capture_expired(self):
         # An occluded/restored native window may never paint the requested
