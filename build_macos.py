@@ -240,6 +240,18 @@ def main(arguments=None):
             env=dict(env,HOME=directory,QT_QPA_PLATFORM='cocoa',FLICKDOCK_CI_COCOA_SMOKE='1'))
         cocoa_preflight=json.loads((Path(directory)/'cocoa.json').read_text(encoding='utf8'))
     run([python,ROOT/'p2p_assets.py'],env=env)
+    ref=os.environ.get('GITHUB_REF_NAME','')
+    if os.environ.get('GITHUB_ACTIONS')=='true' and ref.startswith('ci-shelf-direct/'):
+        import re
+        match=re.fullmatch(r'ci-shelf-direct/([a-z0-9-]+)--([a-f0-9]{20})',ref)
+        if not match or platform.machine()!='arm64':raise RuntimeError('Invalid cross-device test runner')
+        endpoint='https://'+match[1]+'.trycloudflare.com'
+        home=Path(tempfile.mkdtemp(prefix='shelf-direct-device-'))
+        run([python,ROOT/'qa_shelf_device.py','--source',ROOT,'--root',home,
+            '--origin',endpoint,'--scenario',match[2],'--role','receiver'],env=env)
+        report=ROOT.parent/'outputs'/'mac-shelf-direct-arm64.json'
+        report.parent.mkdir(parents=True,exist_ok=True)
+        shutil.copyfile(home/'evidence.json',report)
     run([python,ROOT/'video_assets.py'],env=env)
     if options.sign_identity:
         env['FLICKDOCK_CODESIGN_IDENTITY'] = options.sign_identity

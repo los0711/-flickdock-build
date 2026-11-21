@@ -18,6 +18,15 @@ APP=QApplication.instance() or QApplication([])
 
 
 class MacNativeEntry(unittest.TestCase):
+    def test_icon_helper_never_activates_the_primary_instance(self):
+        import mac_entry
+        with patch('edge_native_icons.helper_main',return_value=0) as worker, \
+             patch('flickdock.main') as application:
+            self.assertEqual(mac_entry.main(['--edge-icon','request.json']),0)
+            worker.assert_called_once_with('request.json')
+            self.assertEqual(mac_entry.main(['--edge-icon']),2)
+            application.assert_not_called()
+
     def test_manager_uses_carbon_dispatch_and_meta_on_cocoa(self):
         carbon,events=Carbon(),[]
         factory=platform_native.MacHotkeyBackend

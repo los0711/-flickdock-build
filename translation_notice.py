@@ -1,7 +1,7 @@
 """Translation capsule sharing the existing notice host and motion infrastructure."""
 import math
 from pathlib import Path
-from PySide6.QtCore import QEasingCurve, QEvent, QPoint, QPointF, QRectF, QSize, Qt, QTimer
+from PySide6.QtCore import QEasingCurve, QEvent, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer
 from PySide6.QtGui import QColor, QCursor, QFontMetricsF, QIcon, QPainter, QPainterPath, QPen, QPixmap, QTextCharFormat, QTextCursor, QTextDocument
 from PySide6.QtWidgets import QApplication, QAbstractItemView, QFrame, QListWidget, QListWidgetItem, QMenu, QPlainTextEdit, QPushButton, QWidgetAction
 from PySide6.QtSvg import QSvgRenderer
@@ -9,6 +9,7 @@ from intake_notice import CapsuleNotice, COMPACT_SIDE_PX, PILL_HEIGHT_PX, NOTICE
 from native_ui_common import colors, icon, rounded_popup, screen_for_widget, RADIUS_CARD_PX, RADIUS_SUBCONTROL_PX
 from translation_languages import LANGUAGES, TARGETS
 from transfer_visuals import draw_ring
+from translation_focus import avoid_input
 import notice_cluster
 
 EXPANDED_HEIGHT_PX = 300
@@ -63,6 +64,7 @@ class TranslationNotice(CapsuleNotice):
         self._document_theme = None
         self._translation_position = None
         self._locate_translation_pending = False
+        self._swipe_origin = None
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowDoesNotAcceptFocus)
         self.setWindowTitle('FlickDock · 翻译')
         self.editor = QPlainTextEdit(self)
@@ -81,6 +83,7 @@ class TranslationNotice(CapsuleNotice):
             button.setStyleSheet('QPushButton{background:transparent;border:0;border-radius:16px;} QPushButton:hover,QPushButton:focus{background:rgba(127,127,127,28);} QPushButton:pressed{background:rgba(127,127,127,46);}')
             button.setCursor(Qt.PointingHandCursor)
             button.setAutoDefault(False)
+            button.installEventFilter(self)
         self.flag_button.clicked.connect(self.show_languages)
         self.middle_button.clicked.connect(self.toggle_content)
         self.action_button.clicked.connect(self._action)
@@ -91,6 +94,7 @@ class TranslationNotice(CapsuleNotice):
 
     def present(self):
         self._stop_content_watch()
+        self._swipe_origin=None
         self.expanded = False
         self._close_languages()
         self.editor.hide()
@@ -99,6 +103,12 @@ class TranslationNotice(CapsuleNotice):
         self._begin_presentation(screen.availableGeometry())
         self.refresh()
         self._start_idle_timeout()
+
+    def placement_point(self,point,area):
+        height=min(self.height()-4,self._expanded_height if self.expanded else PILL_HEIGHT_PX)
+        width=min(self.width()-4,EXPANDED_WIDTH_PX if self.expanded else self._full_width)
+        bubble=QRect((self.width()-width)//2,self.height()-height-10,width,height)
+        return avoid_input(point,area,bubble,self._focus_probe.rect)
 
     def _start_idle_timeout(self):
         self.timer.start(TRANSLATION_NOTICE_DURATION_MS)
@@ -252,6 +262,16 @@ class TranslationNotice(CapsuleNotice):
 
     def eventFilter(self, watched, event):
         kind = event.type()
+        controls=(self.flag_button,self.middle_button,self.action_button)
+        if not self.expanded and watched in controls:
+            if kind==QEvent.MouseButtonPress and event.button()==Qt.LeftButton:
+                self._swipe_origin=event.globalPosition()
+            elif kind==QEvent.MouseMove and self._swipe_origin is not None and event.buttons() & Qt.LeftButton:
+                delta=event.globalPosition()-self._swipe_origin
+                if delta.y()>=26 and abs(delta.x())<delta.y():
+                    self._swipe_origin=None;watched.setDown(False);self.dismiss();return True
+            elif kind==QEvent.MouseButtonRelease:
+                self._swipe_origin=None
         if kind in (QEvent.MouseButtonPress, QEvent.MouseButtonDblClick, QEvent.NonClientAreaMouseButtonPress):
             point = event.globalPosition().toPoint()
             if self.language_menu is not None and watched is self.language_menu:
@@ -391,7 +411,10 @@ class TranslationNotice(CapsuleNotice):
         menu.addAction(action)
         def select(item):
             menu.hide()
-            self.manager.settings.update(translation_target=item.data(Qt.UserRole))
+            code=item.data(Qt.UserRole)
+            select_target=getattr(self.controller,'select_target',None)
+            if select_target is not None:select_target(code)
+            else:self.manager.settings.update(translation_target=code)
         languages.itemClicked.connect(select)
         languages.itemActivated.connect(select)
         menu.aboutToHide.connect(self._languages_hidden)

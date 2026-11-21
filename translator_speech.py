@@ -7,6 +7,7 @@ from bisect import bisect_right
 from pathlib import Path
 import re
 
+from translation_languages import voice_language_matches
 from PySide6.QtCore import QByteArray, QBuffer, QIODevice, QObject, Qt, QTimer, QUrl, Signal
 
 
@@ -39,7 +40,7 @@ class TranslatorSpeech(QObject):
         self.rate=1.;self.pitch=1.;self.voice_key='';self.language='en';self.catalog=[];self.pitch_supported=False
         self.epoch=0;self.voice_epoch=0;self.closed=False;self.parts=[];self.index=0;self.ready={};self.inflight=None;self.current=None
         self._device=None;self._retired=[];self._switching=False;self._options=None
-        self._catalogs={};self._pitch_support={};self._available={};self._voice_jobs={};self._browse_language=None
+        self._catalogs={};self._pitch_support={};self._voice_jobs={};self._browse_language=None
         self._export=None;self._export_epoch=0
         self.audition_key='';self._durations={};self._seek_fraction=None
         self.finished=False;self.completed_side=None;self.completed_text='';self.completed_duration=0.
@@ -82,7 +83,7 @@ class TranslatorSpeech(QObject):
         return self._catalogs.get(language)
     def _prepare_catalog(self,language,purpose):
         if purpose=='play' and language in self._catalogs:
-            if self._available.get(language):self._request_next()
+            if self._catalogs[language]:self._request_next()
             else:self._fail('当前语言没有可用的 BreezeBlue 音色，请更换语言或音色。')
             return
         for token,(kind,code) in tuple(self._voice_jobs.items()):
@@ -99,13 +100,13 @@ class TranslatorSpeech(QObject):
             if purpose=='play':self._fail(error)
             else:self.error.emit(error)
             return
-        self._catalogs[language]=[dict(key=row['voice_id'],name=row['name'],meta=dict(row)) for row in value['voices']]
+        self._catalogs[language]=[dict(key=row['voice_id'],name=row['name'],meta=dict(row)) for row in value['voices']
+            if voice_language_matches(language,row.get('language_code'))]
         self._pitch_support[language]=value.get('pitch_supported') is True
-        self._available[language]=value.get('default_available',bool(self._catalogs[language]))
         if self._browse_language==language:
             self.catalog=self._catalogs[language];self.pitch_supported=self._pitch_support[language];self.voices_changed.emit()
         if self.active and self.language==language:
-            if not self._available[language]:self._fail('当前语言没有可用的 BreezeBlue 音色，请更换语言或音色。')
+            if not self._catalogs[language]:self._fail('当前语言没有可用的 BreezeBlue 音色，请更换语言或音色。')
             else:self._request_next()
     def configure(self,*,rate=1.,pitch=1.,voice=''):
         self.rate=max(.5,min(2.,float(rate)));self.pitch=max(.8,min(1.2,float(pitch)));self.voice_key=str(voice)
@@ -127,8 +128,11 @@ class TranslatorSpeech(QObject):
             self._export=SpeechExporter(self.api.fork(self),self);self._export.error.connect(self.error)
         selected=self.voice_key if voice is None else voice
         catalog=self.catalog_for(language)
-        # The server validates IDs if the catalog has not yet been loaded.
-        voice=selected if catalog is None or any(row['key']==selected for row in catalog) else ''
+        if catalog==[]:
+            self.error.emit('当前语言没有可用的 BreezeBlue 音色。')
+            return False
+        choices=[row['key'] for row in catalog or ()]
+        voice=selected if catalog is None or selected in choices else choices[0]
         return self._export.start(path,[part for part in split_speech_text(text) if part.strip()],language,voice,self.rate,
             self.pitch if self._pitch_support.get(language,False) else 1.,callback)
 
@@ -138,9 +142,9 @@ class TranslatorSpeech(QObject):
         wanted=next((index for index in range(self.index,min(len(self.parts),self.index+2))
                      if index not in self.ready and not (index==self.index and self.current is not None)),None)
         if wanted is None:return
-        self.inflight=wanted;choices={row['key'] for row in self._catalogs[self.language]}
+        self.inflight=wanted;choices=[row['key'] for row in self._catalogs[self.language]]
         selected=self._options['voice']
-        voice=selected if selected in choices else ''
+        voice=selected if selected in choices else choices[0]
         pitch=self._options['pitch'] if self._pitch_support.get(self.language,False) else 1.
         self.api.synthesize(self.epoch,self.parts[wanted],self.language,voice,self._options['rate'],pitch)
     def _generated(self,epoch,value,error):
@@ -315,7 +319,7 @@ class TranslatorSpeech(QObject):
         if self.active:self._fail('语音音频无法播放，请重试或检查音频设备。')
     def _fail(self,message):self.stop();self.error.emit(message)
     def _account_reset(self):
-        self.catalog=[];self._catalogs.clear();self._pitch_support.clear();self._available.clear();self._voice_jobs.clear();self.voice_epoch+=1;self.stop();self.voices_changed.emit()
+        self.catalog=[];self._catalogs.clear();self._pitch_support.clear();self._voice_jobs.clear();self.voice_epoch+=1;self.stop();self.voices_changed.emit()
     def stop(self,*,completed=False):
         self.finished=completed
         if completed:self.completed_side=self.side;self.completed_text=self.text;self.completed_duration=self.total_duration

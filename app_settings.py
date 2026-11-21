@@ -810,6 +810,9 @@ class SettingsStore(QObject):
     @property
     def translation_target(self):return self._data['translation_target']
 
+    @property
+    def translation_rules(self):return dict(self._data['translation_rules'])
+
     def __init__(self, base: Path, parent: QObject | None = None):
         super().__init__(parent)
         self._write_lock=threading.RLock()
@@ -822,8 +825,10 @@ class SettingsStore(QObject):
                       "capture_mode": "reference", "keep_empty_handle": True,
                       "sync_upload_enabled": True, "sync_receive_enabled": True,
                       "clipboard_sync_enabled": True, "clipboard_notice_seen": False, "clipboard_success_notice": True,
+                      "clipboard_history_enabled": True,
                       "video_link_prompt": True, "video_download_dir": str(self.base / "videos"),
                       "translation_enabled": True, "translation_target": "zh",
+                      "translation_rules": {},
                       "trigger_view": "compact", "shake_sensitivity": DEFAULT_SHAKE_SENSITIVITY,
                       "view_mode": "list", "shelf_shortcut": SHELF_SHORTCUT,
                       "overview_shortcut": OVERVIEW_SHORTCUT, "dock_edge": "right",
@@ -862,10 +867,12 @@ class SettingsStore(QObject):
                 if isinstance(video_directory,str) and video_directory.strip():
                     candidate=Path(os.path.expandvars(video_directory)).expanduser()
                     if candidate.is_absolute():self._data['video_download_dir']=str(candidate)
-                from translation_languages import TARGETS
+                from translation_languages import TARGETS, translation_rules
+                try:self._data['translation_rules']=translation_rules(data.get('translation_rules',{}))
+                except ValueError:self._data['translation_rules']={}
                 target=data.get('translation_target')
                 if isinstance(target,str) and target in TARGETS:self._data['translation_target']=target
-                for name in ("sync_upload_enabled", "sync_receive_enabled", "clipboard_sync_enabled", "clipboard_notice_seen", "clipboard_success_notice", "automatic_updates", "video_link_prompt", "translation_enabled"):
+                for name in ("sync_upload_enabled", "sync_receive_enabled", "clipboard_sync_enabled", "clipboard_notice_seen", "clipboard_success_notice", "clipboard_history_enabled", "automatic_updates", "video_link_prompt", "translation_enabled"):
                     if isinstance(data.get(name), bool):
                         self._data[name] = data[name]
                 if data.get("capture_mode") in CAPTURE_MODES:
@@ -962,6 +969,10 @@ class SettingsStore(QObject):
     @property
     def clipboard_success_notice(self) -> bool:
         return self._data["clipboard_success_notice"]
+
+    @property
+    def clipboard_history_enabled(self) -> bool:
+        return self._data["clipboard_history_enabled"]
 
     @property
     def clipboard_notice_seen(self) -> bool:
@@ -1069,7 +1080,9 @@ class SettingsStore(QObject):
                trigger_visible=None, dock_color=None, dock_opacity=None,
                capture_mode=None, keep_empty_handle=None, trigger_view=None,
                shake_sensitivity=None, sync_upload_enabled=None, translation_enabled=None, translation_target=None,
-               sync_receive_enabled=None, clipboard_sync_enabled=None, clipboard_notice_seen=None, clipboard_success_notice=None, display_triggers=None, automatic_updates=None, video_link_prompt=None, video_download_dir=None, magnetic_edges=None) -> bool:
+               translation_rules=None,
+               sync_receive_enabled=None, clipboard_sync_enabled=None, clipboard_notice_seen=None, clipboard_success_notice=None,
+               clipboard_history_enabled=None, display_triggers=None, automatic_updates=None, video_link_prompt=None, video_download_dir=None, magnetic_edges=None) -> bool:
         candidate = dict(self._data)
         if magnetic_edges is not None:
             from magnetic_settings import validate as validate_magnetic
@@ -1077,6 +1090,9 @@ class SettingsStore(QObject):
         if accent_color is not None:
             from theme_accent import normalize
             candidate['accent_color']=normalize(accent_color)
+        if translation_rules is not None:
+            from translation_languages import translation_rules as validate_rules
+            candidate['translation_rules']=validate_rules(translation_rules)
         if translation_target is not None:
             from translation_languages import TARGETS
             if translation_target not in TARGETS:raise ValueError('请选择有效的翻译目标语言。')
@@ -1105,6 +1121,7 @@ class SettingsStore(QObject):
                             ("clipboard_sync_enabled", clipboard_sync_enabled),
                             ("clipboard_notice_seen", clipboard_notice_seen),
                             ("clipboard_success_notice", clipboard_success_notice),
+                            ("clipboard_history_enabled",clipboard_history_enabled),
                             ("video_link_prompt", video_link_prompt),
                             ("translation_enabled", translation_enabled),
                             ("automatic_updates", automatic_updates)):
@@ -1759,6 +1776,9 @@ class SettingsDialog(QDialog):
         self.clipboard_success_checkbox=SettingsToggleSwitch('剪贴板复制提示',cloud)
         self.clipboard_success_checkbox.setToolTip('关闭后，同步成功和失败都不弹出复制提示。')
         self.clipboard_success_checkbox.toggled.connect(self._clipboard_success_changed)
+        self.clipboard_history_checkbox=SettingsToggleSwitch('剪贴板历史（仅本机）',cloud)
+        self.clipboard_history_checkbox.setAccessibleName('剪贴板历史（仅本机）')
+        self.clipboard_history_checkbox.toggled.connect(self._clipboard_history_changed)
         self.video_prompt_checkbox=SettingsToggleSwitch('复制视频链接时提示解析',cloud)
         self.video_prompt_checkbox.toggled.connect(self._video_prompt_changed)
         self.sync_upload_checkbox.setAccessibleName("上传本机搁架到云端")
@@ -2093,7 +2113,8 @@ class SettingsDialog(QDialog):
         ch=QLabel('云同步与存储',cloud);ch.setObjectName('settingsSection');cl.addWidget(ch)
         for idx,(control,label) in enumerate(((self.sync_upload_checkbox,'上传本机搁架到云端'),(self.sync_receive_checkbox,'接收云端与其他设备内容'),
                               (self.clipboard_sync_checkbox,'剪贴板同步（小于 20 MB）'),
-                              (self.clipboard_success_checkbox,'剪贴板复制提示'))):
+                              (self.clipboard_success_checkbox,'剪贴板复制提示'),
+                              (self.clipboard_history_checkbox,'剪贴板历史（仅本机）'))):
             if idx>0:cl.addWidget(_SettingsDivider(cloud))
             cl.addWidget(self._reference_toggle(control,label,cloud))
         sl=storage.layout();self._empty_layout(sl);sl.setContentsMargins(16,16,16,16);sl.setSpacing(12)
@@ -2630,6 +2651,7 @@ class SettingsDialog(QDialog):
         self.clipboard_sync_checkbox.setChecked(self.store.clipboard_sync_enabled)
         self.video_prompt_checkbox.setChecked(self.store.video_link_prompt)
         self.clipboard_success_checkbox.setChecked(self.store.clipboard_success_notice)
+        self.clipboard_history_checkbox.setChecked(self.store.clipboard_history_enabled)
         writer=getattr(self,'_preference_writer',None)
         theme=self._applied_settings_theme if writer is not None and writer.busy else self.store.theme
         self.theme_combo.setCurrentIndex(1 if theme=="dark" else 0)
@@ -2671,6 +2693,9 @@ class SettingsDialog(QDialog):
 
     def _clipboard_success_changed(self,checked):
         self._queue_preferences(clipboard_success_notice=checked)
+
+    def _clipboard_history_changed(self,checked):
+        self._queue_preferences(clipboard_history_enabled=checked)
 
     def _clipboard_sync_changed(self,checked):
         self._queue_preferences(clipboard_sync_enabled=checked,clipboard_notice_seen=True)
@@ -2788,6 +2813,7 @@ class SettingsDialog(QDialog):
             if not self._preference_writer.busy:
                 controls={'autostart':self.startup_checkbox,'keep_empty_handle':self.keep_empty_handle_checkbox,
                     'clipboard_sync_enabled':self.clipboard_sync_checkbox,'clipboard_success_notice':self.clipboard_success_checkbox,
+                    'clipboard_history_enabled':self.clipboard_history_checkbox,
                     'automatic_updates':self.automatic_updates_checkbox}
                 for key in keys:
                     if key in controls:
@@ -2801,7 +2827,7 @@ class SettingsDialog(QDialog):
                 try:self.theme_combo.setCurrentIndex(1 if self.store.theme=='dark' else 0)
                 finally:self._loading_values=False
             self._sync_direction_controls();self._refresh_translation_preferences()
-            if set(keys)-{'magnetic_edges'} and self._pending_theme is None:self.apply_theme(self.store.theme)
+            if set(keys)-{'magnetic_edges','translation_rules'} and self._pending_theme is None:self.apply_theme(self.store.theme)
 
     def save(self):
         """Compatibility entry point: apply edited values without closing."""

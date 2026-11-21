@@ -19,6 +19,14 @@ SCROLL_BOUNCE_IDLE_MS = 100
 MAC_TRACKPAD_PULL_PX = 16
 
 
+def scroll_pull_offset(offset,wheel_delta,limit=SCROLL_BOUNCE_DISTANCE_PX):
+    """Resist the wheel more as visual overscroll approaches its limit."""
+    step=max(-12.,min(12.,float(wheel_delta)*.12))
+    if offset*step>0:
+        step*=max(.08,1-abs(offset)/limit)
+    return max(-limit,min(limit,offset+step))
+
+
 def _at_scroll_edge(bar,distance):
     return (distance<0 and bar.value()<=bar.minimum()) or (distance>0 and bar.value()>=bar.maximum())
 
@@ -109,10 +117,7 @@ class ScrollBoundaryBounce(QObject):
             if fade is not None:fade.set_bounce_source(overlay)
         # Resist progressively near the limit while retaining direction, so
         # reversing a gesture unwinds the stretch instead of jumping.
-        delta=max(-12.,min(12.,-float(distance)*.12))
-        if overlay.offset*delta>0:
-            delta*=max(.08,1-abs(overlay.offset)/SCROLL_BOUNCE_DISTANCE_PX)
-        overlay.offset=max(-SCROLL_BOUNCE_DISTANCE_PX,min(SCROLL_BOUNCE_DISTANCE_PX,overlay.offset+delta))
+        overlay.offset=scroll_pull_offset(overlay.offset,-distance)
         overlay.update();self.idle.start(SCROLL_BOUNCE_IDLE_MS)
 
     def release(self):

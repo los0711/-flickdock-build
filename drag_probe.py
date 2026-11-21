@@ -105,7 +105,7 @@ class _DropProbe(QWidget):
         if self.gate._accepts(event.mimeData()):
             event.setDropAction(Qt.DropAction.CopyAction)
             event.accept()
-            self.gate._content_entered(self.mapToGlobal(event.position().toPoint()))
+            self.gate._content_entered(self.mapToGlobal(event.position().toPoint()), event.mimeData())
         else:
             event.ignore()
 
@@ -123,6 +123,7 @@ class _DropProbe(QWidget):
         position = self.mapToGlobal(event.position().toPoint())
         handled = False
         if self.gate._accepts(event.mimeData()) and self.gate.on_drop is not None:
+            self.gate._identify_content(event.mimeData())
             self.gate._validated = True
             self.gate._deliver_validation(position, self.gate._epoch)
             handled = bool(self.gate.on_drop(event.mimeData(), position))
@@ -158,6 +159,7 @@ class ContentDragGate:
         self._active = False
         self._validated = False
         self._notified = False
+        self.file_content: bool | None = None
         self._last_arm = -1.0
         self.probe_timeout_ms = max(80, min(2000, int(probe_timeout_ms)))
         self._timeout = QTimer(self.probe)
@@ -262,9 +264,15 @@ class ContentDragGate:
     def _accepts(self, mime) -> bool:
         return self._active and not self.is_internal_drag() and is_content_mime(mime)
 
-    def _content_entered(self, position: QPoint):
+    def _identify_content(self, mime):
+        from edge_file_drag import file_urls
+        self.file_content = bool(file_urls(mime))
+
+    def _content_entered(self, position: QPoint, mime=None):
         if not self._active or self._validated:
             return
+        if mime is not None:
+            self._identify_content(mime)
         self._validated = True
         epoch = self._epoch
         # Finish the native DragEnter call before hiding its target. This
@@ -290,6 +298,7 @@ class ContentDragGate:
         self._epoch += 1
         self._validated = False
         self._notified = False
+        self.file_content = None
         self._last_arm = -1.0
         self._finish_probe()
 

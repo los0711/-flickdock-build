@@ -148,6 +148,7 @@ class ShelfSync(QObject):
         self._lane_context=None
         self.upload_lanes=UploadLanes(self)
         self.clipboard_bridge=None
+        self.direct_delivery=None
         self._refresh_again=False
         self._cycle_direction='receive'
         self.upload_enabled=True
@@ -267,6 +268,7 @@ class ShelfSync(QObject):
         if target == self.account_id and self.state is not None:
             self._update_schedule()
             return
+        if self.direct_delivery:self.direct_delivery.change_account()
         self.epoch += 1; self.schedule.configure(enabled=False); self.debounce.stop()
         self.storage=None;self.storage_changed.emit(None);self.cloud_copy_operations.clear()
         self._schedule_transfers=[]
@@ -345,6 +347,7 @@ class ShelfSync(QObject):
                              kind='url' if text is not None and re.fullmatch(r'https?://\S+',text.strip()) else 'text' if text is not None else 'file',
                              seq=entry.get('seq',0)+1)
                 if not manual_only:entry.update(intake_id=str(uuid4()),intake_seq=entry['seq'])
+            if self.direct_delivery:self.direct_delivery.local_entry(entry)
         removed = False
         for entry in entries.values():
             if entry.get('ref') not in refs and not entry.get('deleted'):
@@ -1412,7 +1415,7 @@ class ShelfSync(QObject):
         self._ref_index[fork['ref']] = fork
         return fork
 
-    def _receive(self, record, callback, *, remote_order=None):
+    def _receive(self, record, callback, *, remote_order=None, peer_only=False):
         record=dict(record)
         identity = str(record.get('id',''))
         if not re.fullmatch(r'[A-Za-z0-9_-]{1,128}',identity): self._error(ValueError('同步项目标识无效。')); return
@@ -1421,6 +1424,8 @@ class ShelfSync(QObject):
         active=self._receive_fences.get(identity)
         if active is not None:
             if active['version']==record['version'] and active.get('sha256')==record.get('sha256'):
+                if not peer_only and active.get('peer_only'):
+                    active.update(confirmed=(record,remote_order))
                 callback();return
             active['superseded']=True
         if (self._remote_heads.get(identity,{}).get('version',0)>record['version']
@@ -1435,6 +1440,15 @@ class ShelfSync(QObject):
         ignored=self.state.get('ignored_versions',{}).get(identity,0)
         if not record.get('deleted') and isinstance(ignored,int) and record['version']<=ignored:
             callback();return
+        if entry and entry.get('direct_pending') and not peer_only and not record.get('deleted'):
+            if entry.get('version')==record['version'] and entry.get('sha256')==record.get('sha256'):
+                entry.pop('direct_pending',None)
+                if _upload_timestamp(record.get('updated_at')):
+                    entry.update(uploaded_at=record['updated_at'],uploaded_sha256=record['sha256'])
+                if remote_order is not None:entry['remote_order']=remote_order
+                self._persist();self._notify_transfers();self.metadata_changed.emit(entry['ref'])
+                callback();return
+            if record['version']==entry.get('version') and not entry.get('dirty'):entry['version']=0
         if entry and record['version'] <= entry.get('version',0):
             callback();return
         # A pending removal stays queued when another device updates that item.
@@ -1489,7 +1503,8 @@ class ShelfSync(QObject):
             self.status_changed.emit('另一台设备也修改了此项，已保留两个版本。')
         target=self._download_target(record)
         if target is None:self._error(ValueError('同步文件缓存位置无效。'));callback();return
-        fence={'version':record['version'],'sha256':record['sha256'],'superseded':False,'finished':False}
+        fence={'version':record['version'],'sha256':record['sha256'],'superseded':False,'finished':False,
+               'peer_only':peer_only}
         self._receive_fences[identity]=fence
         original_callback=callback
         def callback():
@@ -1499,6 +1514,11 @@ class ShelfSync(QObject):
             original_callback()
         self.download_transfers[identity]=dict(record);self._notify_transfers()
         def receive_failed(error):
+            if peer_only and not fence.get('confirmed'):
+                self.download_transfers.pop(identity,None)
+                self._notify_transfers()
+                callback()
+                return
             # Authentication/quota errors affect the account. One damaged file,
             # local save failure or interrupted body affects only this item.
             if getattr(error,'status',0) in (401,403,429) or self._quota_error(error):
@@ -1528,17 +1548,19 @@ class ShelfSync(QObject):
                     if self._receive_fences.get(identity) is fence:self.download_transfers.pop(identity,None)
                     self._notify_transfers();callback();return
                 if text is not None: ref = 'flickdock:text:'+identity
-                self._add_ref(ref,text,record['name'],remote_order=remote_order,cloud_identity=identity,
+                official,order=fence.get('confirmed',(record,remote_order))
+                self._add_ref(ref,text,official['name'],remote_order=order,cloud_identity=identity,
                               replacing=current['ref'] if current else None)
-                entries[identity] = {'id':identity,'ref':ref,'version':record['version'],
-                    'sha256':record['sha256'],'name':record['name'],'kind':record['kind'],
-                    'size':record['size'],'mime_type':record.get('mime_type','application/octet-stream'),
-                    'fingerprint':fingerprint(ref,text,record['name']),'dirty':False,'deleted':False,'seq':0,
-                    **({'remote_order':remote_order} if remote_order is not None else {})}
+                entries[identity] = {'id':identity,'ref':ref,'version':official['version'],
+                    'sha256':official['sha256'],'name':official['name'],'kind':official['kind'],
+                    'size':official['size'],'mime_type':official.get('mime_type','application/octet-stream'),
+                    'fingerprint':fingerprint(ref,text,official['name']),'dirty':False,'deleted':False,'seq':0,
+                    **({'remote_order':order} if order is not None else {})}
+                if peer_only and not fence.get('confirmed'):entries[identity]['direct_pending']=True
                 # Revision one is the original upload; later revision timestamps
                 # may describe a rename and must not be presented as upload time.
-                if record['version']==1 and _upload_timestamp(record.get('updated_at')):
-                    entries[identity].update(uploaded_at=record['updated_at'],uploaded_sha256=record['sha256'])
+                if official['version']==1 and _upload_timestamp(official.get('updated_at')):
+                    entries[identity].update(uploaded_at=official['updated_at'],uploaded_sha256=official['sha256'])
                 self._ref_index[ref] = entries[identity]
                 self.metadata_changed.emit(ref)
                 self.download_transfers.pop(identity,None)
@@ -1557,9 +1579,15 @@ class ShelfSync(QObject):
                 self._work(unpack_directory,(path,destination),unpacked)
             else: apply_ref(str(path))
         def cloud_download():
-            self._download_record(record,target,downloaded,
+            if fence['finished'] or fence['superseded'] or self._receive_fences.get(identity) is not fence:
+                callback();return
+            if peer_only and not fence.get('confirmed'):
+                receive_failed(ValueError('搁架直传校验未通过。'));return
+            confirmed,_=fence.get('confirmed',(record,remote_order))
+            self._download_record(confirmed,target,downloaded,
                 changed=lambda current:self._receive(current,callback,remote_order=remote_order) if current else callback())
-        cloud_download()
+        if not (self.direct_delivery and self.direct_delivery.consume(record,target,downloaded,cloud_download)):
+            cloud_download()
 
     def _download_target(self, record):
         identity, version = record.get('id'),record.get('version')
@@ -1901,7 +1929,10 @@ class ShelfSync(QObject):
             if not self._resume_matches(snapshot):
                 self._discard_orphan_stage(snapshot['path']); self._push_next(); return
             self.state.setdefault('resumable_uploads',{})[identity] = snapshot
-            self._persist(); self._notify_transfers(); self._initialize_upload(snapshot)
+            self._persist(); self._notify_transfers()
+            if self.direct_delivery:
+                self.direct_delivery.staged(self.state['entries'][identity],snapshot,lambda:self._initialize_upload(snapshot))
+            else:self._initialize_upload(snapshot)
         self._work(stage_item,(pending['ref'],text,pending['name'],self.root/self.account_id/'outbox'),staged)
 
     def _initialize_upload(self, snapshot):

@@ -123,6 +123,18 @@ class PreviewPriorityTests(unittest.TestCase):
         self.assertTrue(self.gate.prepared)
     def test_preview_and_field_are_active_together(self):
         self.enter();self.assertTrue(self.moves);self.assertTrue(self.visual.overlay.isVisible());self.assertTrue(self.gate.validated)
+    def test_repeated_moves_reuse_the_native_target_mask(self):
+        from PySide6.QtGui import QRegion
+        self.enter()
+        with patch('edge_file_drag.QRegion',wraps=QRegion) as region:
+            for dy in range(-25,25):
+                point=self.point+QPoint(0,dy)
+                self.gate.update_pointer(point,True)
+                event=QDragEnterEvent(QPoint(),Qt.CopyAction,self.mime,Qt.LeftButton,Qt.NoModifier)
+                self.gate.observe_native_move(event,point)
+            region.assert_not_called()
+        self.assertTrue(self.gate.validated)
+
     def test_preview_wins_even_a_late_drop_addressed_to_edge(self):
         self.enter()
         with patch.object(self.visual,'release') as release:
@@ -167,6 +179,11 @@ class IntegratedPreviewTests(unittest.TestCase):
                 gate._native_move(event,point,entering=True);flush()
                 self.assertTrue(event.isAccepted());self.assertTrue(manager.shelf.isVisible())
                 self.assertEqual(manager.shelf.presentation_kind,'dock');self.assertTrue(manager.edge_absorb.overlay.isVisible())
+                self.assertTrue(manager.shelf._dock_drag_reveal)
+                history=manager.clipboard_history
+                self.assertTrue(history.enabled)
+                history.sync(manager.shelf)
+                self.assertTrue(history.panel is None or not history.panel.isVisible())
                 self.assertTrue(manager.shelf.zones['permanent'].hint.isHidden())
                 self.assertEqual(manager.edge_absorb.config.glow_width_px,150)
                 hit=manager.shelf.visual_geometry().intersected(gate.window.geometry())
@@ -176,6 +193,13 @@ class IntegratedPreviewTests(unittest.TestCase):
                 with patch.object(manager.shelf,'receive_mime',return_value=True) as receive,patch.object(manager.edge_absorb,'release') as release:
                     manager.shelf.dropEvent(drop);flush()
                     self.assertTrue(drop.isAccepted());receive.assert_called_once();release.assert_not_called()
+                gate.cancel()
+                manager.shelf.hide_immediately()
+                manager.edge_suppressed=False
+                manager.show_docked()
+                history.sync(manager.shelf)
+                self.assertFalse(manager.shelf._dock_drag_reveal)
+                self.assertTrue(history.panel.isVisible())
             finally:manager.quit();flush()
 
 if __name__=='__main__':unittest.main(verbosity=2)

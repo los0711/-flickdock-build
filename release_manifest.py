@@ -34,8 +34,10 @@ RUNTIME_SOURCES=(
     'translation_document.py','translation_alignment.py','speech_export.py',
     'notice_cluster.py','crash_diagnostics.py','text_preview.py','qt_lifetime.py','theme_accent.py','settings_live.py',
     'magnetic_settings.py','magnetic_editor.py','edge_native_icons.py','monitor_diagram.py','accent_presets.py','verify_magnetic.py',
-    'translation_languages.py', 'translation_api.py', 'translation_controller.py', 'translation_notice.py', 'settings_navigation.py',
+    'translation_languages.py', 'translation_api.py', 'translation_controller.py', 'translation_notice.py', 'translation_focus.py', 'settings_navigation.py',
     'translator_store.py','translator_session.py','translator_widgets.py','translator_speech.py','translator_panel.py','translator_history.py','translator_manager.py','breeze_speech_api.py','file_pins.py','border_reveal.py','verify_translator.py',
+    'verify_finder_magnetic.py',
+    'clipboard_history_native.py','clipboard_history_panel.py','clipboard_history_runtime.py','clipboard_history_store.py','shelf_direct.py',
     'shelf_ui_common.py','shelf_file_tools.py','shelf_drop_zone.py','file_preview.py',
     'overview_ui.py','shelf_window.py','dock_handle.py','sync_runtime.py','transfer_runtime.py','sync_contracts.py',
     
@@ -60,6 +62,7 @@ RUNTIME_SOURCES=(
     
 )
 MAINTAINED_TESTS=(
+    'test_auto_clipboard_translation.py',
     'test_glass_ui_v1839.py',
     'test_dropdown_fan_v1839.py',
     'test_edge_magnetic_v1842.py','test_edge_magnetic_v1841.py','test_edge_magnetic_v1840.py','test_edge_magnetic_v1839.py','test_edge_absorb_v1840.py',
@@ -129,6 +132,7 @@ MAINTAINED_TESTS=(
     'test_shelf_raise_v1810.py','test_intake_first_frame_v1810.py',
     'test_sync_remote_commit_wakeup.py','test_cloud_file_status_v1810.py',
     'test_trigger_reliability_v1810.py','test_event_stream_wiring_v1810.py',
+    'test_local_clipboard_history.py',
     'test_remote_transfer_actions_v1812.py',
 )
 SOURCE_FILES=RUNTIME_SOURCES+MAINTAINED_TESTS+(

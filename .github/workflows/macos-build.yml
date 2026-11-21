@@ -9,6 +9,9 @@ on:
       desktop_checks:
         type: boolean
         default: false
+      finder_checks:
+        type: boolean
+        default: false
   workflow_dispatch:
     inputs:
       test_build:
@@ -17,6 +20,10 @@ on:
         default: false
       desktop_checks:
         description: Validate the desktop redesign alongside the native packaging checks
+        type: boolean
+        default: false
+      finder_checks:
+        description: Drag real Finder files into the app extracted from the generated installer
         type: boolean
         default: false
   push:
@@ -76,6 +83,21 @@ jobs:
           fi
           if [ '${{ inputs.desktop_checks }}' = 'true' ]; then args+=(--desktop-checks); fi
           python build_macos.py "${args[@]}"
+      - name: Drag real Finder fixtures to the application from the installer
+        if: inputs.finder_checks
+        run: |
+          set -eu
+          stage="$(mktemp -d "$RUNNER_TEMP/finder-pkg.XXXXXX")"
+          mkdir "$stage/profile"
+          swiftc ci_finder_element.swift -o "$stage/finder-element"
+          pkgutil --expand-full "../outputs/FlickDock-$(python -c 'from app_version import APP_VERSION; print(APP_VERSION)')-macOS-${{ matrix.arch }}.pkg" "$stage/expanded"
+          binary="$(find "$stage/expanded" -type f -path '*/FlickDock.app/Contents/MacOS/FlickDock' -print -quit)"
+          test -x "$binary"
+          status=0
+          HOME="$stage/profile" QT_QPA_PLATFORM=cocoa FLICKDOCK_FINDER_AX="$stage/finder-element" \
+            "$binary" --verify-finder-magnetic "$stage/report.json" || status=$?
+          if [ -f "$stage/report.json" ]; then cp "$stage/report.json" "../outputs/mac-finder-${{ matrix.arch }}.json"; fi
+          exit "$status"
       - name: Verify frozen desktop widgets in Cocoa
         if: inputs.desktop_checks
         run: |
@@ -210,6 +232,10 @@ jobs:
               assert len(files) == 1, (pattern, files)
               for path in files:
                   shutil.copy2(path, target / path.name)
+          if '${{ inputs.finder_checks }}' == 'true':
+              path = source / 'mac-finder-${{ matrix.arch }}.json'
+              assert path.is_file()
+              shutil.copy2(path, target / path.name)
           PY
       - name: Retain build artifacts for verification
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

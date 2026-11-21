@@ -19,7 +19,7 @@ license_names=['Python-LICENSE.txt',
                'FFmpeg-LICENSE.txt','LGPL-3.0.txt','GPL-3.0.txt','PyInstaller-COPYING.txt',
                'OpenSSL-LICENSE.txt','Cloud-Client-LICENSES.txt','Lucide-LICENSE.txt','Release-Crypto-LICENSES.txt','Video-LICENSES.txt','WebRTC-LICENSES.txt','Flag-Icons-LICENSE.txt','FASTTEXT-LICENSE.txt','FASTTEXT-MODEL-ATTRIBUTION.txt','Paper-Notice-Motion-LICENSE.txt','JetBrainsMono-OFL.txt']
 asset_files=[(root/'licenses'/name,'licenses') for name in license_names]
-asset_files.append((root/'licenses/KokonutUI-MIT.txt','licenses'))
+asset_files += [(root/'licenses/KokonutUI-MIT.txt','licenses')]
 asset_files += [(root/'THIRD_PARTY_NOTICES.md','.')]
 asset_files += [(root/'assets/ui/qtbase_zh_CN.qm','assets/ui')]
 asset_files += [(root/'assets/models/lid.176.ftz','assets/models')]

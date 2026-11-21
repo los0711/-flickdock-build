@@ -1,6 +1,32 @@
 """Screen-edge trigger and reveal geometry in device-independent pixels."""
-from PySide6.QtCore import QRect, QSize
-from PySide6.QtGui import QRegion
+from PySide6.QtCore import QPoint, QRect, QSize
+from PySide6.QtGui import QGuiApplication, QRegion
+
+
+def cocoa_screen_pointer(position):
+    """Keep a rounded outermost Cocoa pointer sample on its own display."""
+    if QGuiApplication.screenAt(position) is not None:
+        return position
+    for screen in QGuiApplication.screens():
+        area = screen.geometry()
+        if area.adjusted(-1,-1,1,1).contains(position):
+            return QPoint(min(area.right(),max(area.left(),position.x())),
+                          min(area.bottom(),max(area.top(),position.y())))
+    return position
+
+
+def cocoa_drop_window_rect(rect, area, edge):
+    """Cover AppKit's rounded outermost pixel without entering another display."""
+    rect = QRect(rect)
+    outward = {'left':(-1,0,0,0), 'right':(0,0,1,0),
+               'top':(0,-1,0,0), 'bottom':(0,0,0,1)}[edge]
+    extended = rect.adjusted(*outward)
+    if area.contains(extended):
+        return rect
+    if any(other.geometry()!=area and other.geometry().intersects(extended)
+           for other in QGuiApplication.screens()):
+        return rect
+    return extended
 
 
 def trigger_rect(area, edge='right', position=8, length=76, thickness=8):

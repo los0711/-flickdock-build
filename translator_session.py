@@ -11,7 +11,7 @@ import time
 from PySide6.QtCore import QObject, QThreadPool, QTimer, Signal, Qt
 
 from sync_files import DiskWork
-from translation_languages import MAX_TEXT_CHARS, SOURCE_NAMES, TARGETS, UNKNOWN_SOURCE, detect_source, script_changed
+from translation_languages import MAX_TEXT_CHARS, TARGETS, UNKNOWN_SOURCE, content_language, detect_source, language_code, quick_content_language, script_family, script_changed
 from translation_document import TranslationDocument
 
 # A preset describes tone or length, never a different language. Keep this
@@ -25,9 +25,9 @@ class TranslatorSession(QObject):
     source_detected = Signal()
     source_replaced = Signal(str)
 
-    def __init__(self, api, store, parent=None, *, detector=detect_source):
+    def __init__(self, api, store, parent=None, *, detector=detect_source, rules=dict):
         super().__init__(parent)
-        self.api=api;self.store=store;self.detector=detector;self.closed=False;self.suspended=False
+        self.api=api;self.store=store;self.detector=detector;self.rules=rules;self._manual_target=False;self._rule_target=False;self.closed=False;self.suspended=False
         self.source='auto';self.target='en';self.source_text='';self.result='';self.original=''
         self.detected=UNKNOWN_SOURCE;self.detected_code=None;self.phase='idle';self.error='';self.storage_error=''
         self.revisions=[];self.source_revisions=[];self.source_original=''
@@ -67,7 +67,7 @@ class TranslatorSession(QObject):
         if self.closed or not self.source_text:return
         fields=('source_text','result','original','source_original','revisions','source_revisions',
                 '_draft_origin','_dirty','_record_dirty','history_id','favorite','elapsed_ms',
-                'detected','detected_code','_detection_text','document')
+                'detected','detected_code','_detection_text','document','_manual_target','_rule_target')
         self._clear_undo={name:getattr(self,name) for name in fields}
         # Clearing the live document leaves the previous alignment cache intact.
         self.document=TranslationDocument()
@@ -135,6 +135,7 @@ class TranslatorSession(QObject):
         self.error='';self.favorite=False;self.history_id=None;self.phase='idle';self._dirty=True;self._record_dirty=False
         self.detected=UNKNOWN_SOURCE;self.detected_code=None
         if not text.strip():
+            self._manual_target=False
             self._draft_origin=None;self._draft_edit_pending=False
             self.result=self.original=self.source_original=''
             self.revisions=[];self.source_revisions=[];self._dirty=False
@@ -154,9 +155,10 @@ class TranslatorSession(QObject):
     def set_language(self,side,code):
         if side not in ('source','target') or code not in TARGETS and not (side=='source' and code=='auto'):
             raise ValueError('语言无效。')
-        if getattr(self,side)==code:return
         if self.source_unconfirmed:
             self.error='请先确认或恢复润色后的原文，再切换语言。';self.changed.emit();return
+        if side=='target':self._manual_target=True;self._rule_target=False
+        if getattr(self,side)==code:return
         self._clear_undo=None
         self._invalidate();setattr(self,side,code);self.result='';self.original='';self.revisions=[];self.error=''
         self.history_id=None;self.favorite=False;self._dirty=True
@@ -183,7 +185,7 @@ class TranslatorSession(QObject):
             self.error='请先指定原文语言，再交换语言。';self.changed.emit();return False
         original=self.source_text;translated=self.result
         self._clear_undo=None
-        self._invalidate();self.source,self.target=self.target,source
+        self._invalidate();self._manual_target=True;self.source,self.target=self.target,source
         self.source_text=translated or original;self.result='';self.original='';self.revisions=[];self.source_revisions=[];self.source_original=''
         self.history_id=None;self.favorite=False;self.error='';self._dirty=True
         self.store.update_preferences(source=self.source,target=self.target);self._schedule();self.changed.emit();return True
@@ -195,7 +197,7 @@ class TranslatorSession(QObject):
         self._invalidate();self.phase='translating';self.error='';self._started=time.perf_counter()
         self._pending=dict(kind='translate',source=self.source_text,target=self.target)
         epoch=self.epoch
-        if hasattr(self.api,'translate_units') and self.source=='auto' and self._detection_text!=self.source_text:
+        if (hasattr(self.api,'translate_units') or self.rules()) and self.source=='auto' and self._detection_text!=self.source_text:
             self._pending['await_detection']=True;self._detect(epoch,self.source_text)
         else:
             if self.source=='auto':self._detect(epoch,self.source_text)
@@ -205,7 +207,13 @@ class TranslatorSession(QObject):
     def _begin_translation(self):
         if self._pending is None:return
         code=self.detected_code if self.source=='auto' else self.source
-        if code==self.target or code=='zh' and self.target=='zh':
+        if not self._manual_target:
+            rule=self.rules().get(code)
+            if rule or self._rule_target:
+                self.target=rule or self.store.data['target']
+                self._pending['target']=self.target
+                self._rule_target=bool(rule)
+        if code==self.target:
             self.document.pair(self.source_text,self.source_text);self._completed(self.epoch,self.source_text,'');return
         if not hasattr(self.api,'translate_units'):
             self.api.translate(self.epoch,self.source_text,self.target,source=self.source,glossary=self.store.data['glossary']);return
@@ -254,7 +262,7 @@ class TranslatorSession(QObject):
                 self.detected=UNKNOWN_SOURCE;self.detected_code=None
             else:
                 self.detected=value
-                self.detected_code=next((code for code,name in SOURCE_NAMES.items() if name==value and code in TARGETS),None)
+                self.detected_code=language_code(value)
             self._detection_text=text
             self.changed.emit();self.source_detected.emit()
             if self._pending and self._pending.pop('await_detection',False):self._begin_translation()
@@ -280,13 +288,33 @@ class TranslatorSession(QObject):
         base=history[-1]['before'] if regenerate and history else text
         self._invalidate();self.phase='polishing';self.error='';self._started=time.perf_counter()
         self._pending=dict(kind='polish',scope=scope,before=base,instruction=instruction,regenerate=regenerate)
-        options=dict(original=self.source_text,glossary=self.store.data['glossary'])
-        if scope=='source':options['scope']='source'
-        # Prefix instead of appending so a long custom instruction cannot drop
-        # the language lock at the end of the provider's bounded field.
-        guarded=(POLISH_LANGUAGE_GUARD+instruction)[:1000]
-        self.api.polish(self.epoch,base,self.target,guarded,**options)
+        preferred=(self.detected_code if self.source=='auto' else self.source) if scope=='source' else self.target
+        actual=quick_content_language(base,preferred)
+        if actual or preferred in ('en',None) and script_family(base) in ('latin',None):
+            self._send_polish(actual,preferred)
+        else:
+            epoch=self.epoch;detector=self.detector
+            job=DiskWork(lambda cancel:None if cancel.is_set() else content_language(base,preferred,detector=detector))
+            self.jobs.add(job)
+            def ready(code,error):
+                job.signals.done.disconnect(ready);self.jobs.discard(job)
+                if self.closed or epoch!=self.epoch:return
+                if error:
+                    import logging
+                    logging.getLogger(__name__).warning('Polish language detection failed: %s',type(error).__name__)
+                self._send_polish(code,preferred)
+            job.signals.done.connect(ready,Qt.QueuedConnection);self.pool.start(job)
         self.changed.emit();return True
+
+    def _send_polish(self,actual,preferred):
+        pending=self._pending
+        if pending is None or pending['kind']!='polish':return
+        scope=pending['scope']
+        options=dict(original=self.source_text if scope=='target' else '',glossary=self.store.data['glossary'])
+        if scope=='source':options['scope']='source'
+        language='输入语言：'+TARGETS[actual][0]+'。' if actual in TARGETS else ''
+        guarded=(POLISH_LANGUAGE_GUARD+language+pending['instruction'])[:1000]
+        self.api.polish(self.epoch,pending['before'],actual or preferred or self.target,guarded,**options)
 
     def _completed(self,epoch,result,error):
         if self.closed or epoch!=self.epoch or self._pending is None:return
@@ -402,6 +430,7 @@ class TranslatorSession(QObject):
         self._invalidate();self._draft_origin=None;self._draft_edit_pending=False
         self._clear_undo=None
         self.source_text=record['source_text'];self.result=record['text'];self.original=record['original'] or record['text']
+        self._manual_target=True;self._rule_target=False
         self.source=record['source'];self.target=record['target'];self.favorite=record['favorite'];self.history_id=record['id']
         self.revisions=[];self.source_revisions=[];self.source_original=record['source_text'];self.phase='ready';self.error='';self._dirty=False;self._record_dirty=False;self.changed.emit()
         self.document.pair(self.source_text,self.result)

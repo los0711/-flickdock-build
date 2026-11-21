@@ -17,6 +17,15 @@ from native_ui_common import paint_rounded_surface,RADIUS_CONTROL_PX,RADIUS_WIND
 import ui_theme
 
 
+SHELF_SHADOW_BLUR = 28
+SHELF_SHADOW_OFFSET = QPoint(0,7)
+SHELF_SHADOW_ALPHA = 42
+
+
+def shelf_shadow_color(alpha=SHELF_SHADOW_ALPHA):
+    return neutral_shadow_color(QColor(18,31,53,alpha))
+
+
 class Spring(QObject):
     """Retargetable spring channels. Reversals retain their current velocity.
 
@@ -166,9 +175,9 @@ class MotionShadow(QGraphicsDropShadowEffect):
         self._source_bounds=QRectF()
         self._source_dpr=0.
         self._cache_while=cache_while
-        self.setBlurRadius(28)
-        self.setOffset(0, 7)
-        self.setColor(neutral_shadow_color(QColor(18, 31, 53, alpha)))
+        self.setBlurRadius(SHELF_SHADOW_BLUR)
+        self.setOffset(SHELF_SHADOW_OFFSET)
+        self.setColor(shelf_shadow_color(alpha))
 
     def set_motion(self, sx: float = 1, sy: float = 1, dx: float = 0, dy: float = 0) -> None:
         self.sx = max(.05, min(1.3, float(sx)))

@@ -14,6 +14,7 @@ from ui_transitions import motion_allowed,COPY_NOTICE_MORPH_MS,COPY_NOTICE_FADE_
 from clipboard_delivery import sync_progress
 import notice_cluster
 from transfer_visuals import draw_ring
+from translation_focus import FocusedEditorProbe, avoid_input
 
 NOTICE_WIDTH_PX=244
 NOTICE_HEIGHT_PX=64
@@ -79,6 +80,7 @@ def _reflow_bottom_notices(manager,area,opening=None):
     for index,window in enumerate(notices):
         point=QPoint(round(left+offsets[index]) if horizontal else area.left()+(area.width()-window.width())//2,
             area.bottom()-window.height()-NOTICE_MARGIN_PX+1-(0 if horizontal else index*(PILL_HEIGHT_PX+NOTICE_PAIR_GAP_PX)))
+        point=window.placement_point(point,area)
         if (window.isVisible() and motion_allowed() and window._position_motion.state()==window._position_motion.Running
                 and window._position_motion.endValue()==point):
             continue
@@ -142,7 +144,7 @@ class CapsuleNotice(QWidget):
         self._logo=app_icon()
         self._artwork_cache={}
         self._phase='idle';self._text='';self._description='';self._progress=None;self._compact=False;self._hiding=False
-        self._pressed=False
+        self._pressed=False;self._press_origin=None
         self._shape=QPointF(COMPACT_SIDE_PX,ENTRY_HEIGHT_PX);self._alpha=0.;self._full_width=PILL_WIDTH_PX;self._layout_width=PILL_WIDTH_PX
         self._morph=DisplayAnimation(self);self._morph.setDuration(COPY_NOTICE_MORPH_MS)
         curve=QEasingCurve(QEasingCurve.OutBack);curve.setOvershoot(COPY_NOTICE_OVERSHOOT)
@@ -158,6 +160,8 @@ class CapsuleNotice(QWidget):
         self.timer=QTimer(self);self.timer.setSingleShot(True);self.timer.timeout.connect(self._expire)
 
         self._notice_area=None
+        self._focus_probe=FocusedEditorProbe(self)
+        self._focus_probe.changed.connect(self._focused_editor_changed)
         self._liquid_peer=None;self._liquid_children=WeakSet();self._liquid_target=None;self._liquid_mode=None;self._liquid_geometry=None
         self._mask_path=None
         self._position_motion=DisplayAnimation(self);self._position_motion.setDuration(NOTICE_POSITION_MS)
@@ -238,6 +242,15 @@ class CapsuleNotice(QWidget):
         if self._progress is None or self._progress['total']<=0:return self._progress
         return dict(self._progress,received=self._progress_value*self._progress['total'])
 
+    def placement_point(self,point,area):
+        width=min(self.width()-4,self._layout_width);height=PILL_HEIGHT_PX
+        bubble=QRect((self.width()-width)//2,(self.height()-height)//2,width,height)
+        return avoid_input(point,area,bubble,self._focus_probe.rect)
+
+    def _focused_editor_changed(self):
+        if not self._hiding and self._notice_area is not None:
+            _reflow_bottom_notices(self.manager,self._notice_area)
+
     def _place(self,area):place_bottom_notice(self,area)
 
     def _notice_font(self):
@@ -254,9 +267,10 @@ class CapsuleNotice(QWidget):
     def _begin_presentation(self,area):
         self._hiding=False;self._compact=False
         self.setFixedSize(min(self.HOST_WIDTH,max(COMPACT_SIDE_PX,area.width()-2*NOTICE_MARGIN_PX)),min(self.HOST_HEIGHT,area.height()-2*NOTICE_MARGIN_PX))
+        self._focus_probe.prepare()
         self._full_width=self._content_width();self._layout_width=self._full_width;self._place(area)
         if not self.isVisible():self._shape=QPointF(COMPACT_SIDE_PX,ENTRY_HEIGHT_PX);self._alpha=0.
-        self.show();self.raise_()
+        self.show();self.raise_();self._focus_probe.start()
         from platform_native import raise_edge_target
         raise_edge_target(self)
         self._animate_shape(self._full_width);self._animate_alpha(1.)
@@ -283,7 +297,8 @@ class CapsuleNotice(QWidget):
         if self.isVisible() and not self._hiding:self.dismiss()
 
     def hideEvent(self,event):
-        self._pressed=False
+        self._focus_probe.stop()
+        self._pressed=False;self._press_origin=None
         self.timer.stop();self._ring_clock.stop();self._morph.stop();self._fade.stop();self._progress_motion.stop();self._position_motion.stop()
         super().hideEvent(event)
         notice_cluster.clear(self)
@@ -291,12 +306,19 @@ class CapsuleNotice(QWidget):
 
     def mousePressEvent(self,event):
         if event.button()==Qt.LeftButton and self.capsule_rect().contains(event.position()):
-            self._pressed=True;self.update();event.accept();return
+            self._pressed=True;self._press_origin=event.globalPosition();self.update();event.accept();return
         super().mousePressEvent(event)
 
+    def mouseMoveEvent(self,event):
+        if self._pressed and self._press_origin is not None and event.buttons() & Qt.LeftButton:
+            delta=event.globalPosition()-self._press_origin
+            if delta.y()>=26 and abs(delta.x())<delta.y():
+                self._pressed=False;self._press_origin=None;self.dismiss();event.accept();return
+        super().mouseMoveEvent(event)
+
     def mouseReleaseEvent(self,event):
-        self._pressed=False;self.update()
-        if event.button()==Qt.LeftButton and self.capsule_rect().contains(event.position()):self._activate();event.accept()
+        self._pressed=False;self._press_origin=None;self.update()
+        if not self._hiding and event.button()==Qt.LeftButton and self.capsule_rect().contains(event.position()):self._activate();event.accept()
         else:super().mouseReleaseEvent(event)
 
     def paintEvent(self,event):

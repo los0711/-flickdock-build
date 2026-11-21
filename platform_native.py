@@ -350,6 +350,39 @@ def raise_edge_target(widget, *, platform=None, above=None):
     return True
 
 
+def order_companion_behind(companion, front):
+    """Put a separate nonactivating companion behind the visible shelf."""
+    if not native_input_available():
+        return False
+    if sys.platform=='win32':
+        try:
+            from ctypes import wintypes
+            user32=ctypes.WinDLL('user32',use_last_error=True)
+            order=user32.SetWindowPos
+            order.argtypes=(wintypes.HWND,wintypes.HWND,ctypes.c_int,ctypes.c_int,
+                            ctypes.c_int,ctypes.c_int,wintypes.UINT)
+            order.restype=wintypes.BOOL
+            if order(int(companion.winId()),int(front.winId()),0,0,0,0,0x0213):
+                return True
+        except (AttributeError,OSError,RuntimeError,TypeError,ValueError):
+            return raise_shelf_for_reveal(front)
+        return raise_shelf_for_reveal(front)
+    try:
+        import AppKit
+        import objc
+        back_window=objc.objc_object(c_void_p=ctypes.c_void_p(int(companion.winId()))).window()
+        front_window=objc.objc_object(c_void_p=ctypes.c_void_p(int(front.winId()))).window()
+        if back_window is not None and front_window is not None and front_window.windowNumber()>0:
+            back_window.setCollectionBehavior_(_fullscreen_collection_behavior(back_window,AppKit))
+            back_window.setLevel_(front_window.level())
+            back_window.orderWindow_relativeTo_(AppKit.NSWindowBelow,front_window.windowNumber())
+            return True
+    except Exception as error:
+        if not _recoverable_native_window_error(error):
+            raise
+    return raise_shelf_for_reveal(front)
+
+
 def remove_host_window_shadow(widget):
     """Keep the translucent shelf host from casting a rectangular Cocoa shadow.
 
