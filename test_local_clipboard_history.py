@@ -115,7 +115,7 @@ class ClipboardHistoryPanelTests(unittest.TestCase):
         self.assertLess(self.panel._surface_height(),300)
         self.assertEqual(self.panel.scroll,0.)
         self.panel.set_entries([dict(self.rows[0],id=str(index)) for index in range(25)])
-        sample_until(lambda:self.panel._entry_progress==1)
+        sample_until(lambda:self.panel._entry_progress==1 and self.panel._stack_progress==1.)
         self.assertEqual(self.panel._surface_height(),PANEL_HEIGHT_LIMIT)
         visible_bottom=self.panel.y()+self.panel._content_top()+self.panel._surface_height()
         self.assertLessEqual(visible_bottom,area.bottom()+1-SCREEN_EDGE_GAP)

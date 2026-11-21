@@ -37,25 +37,21 @@ def target(root):
                                   'clipboard_formats':app.clipboard().mimeData().formats()}),flush=True)
             super().keyPressEvent(event)
 
+        def canInsertFromMimeData(self,mime):
+            return mime.hasImage() or super().canInsertFromMimeData(mime)
+
         def insertFromMimeData(self,mime):
-            print(json.dumps({'target_paste_formats':mime.formats(),'has_image':mime.hasImage()}),flush=True)
-            if mime.hasImage():
-                image=mime.imageData()
-                if hasattr(image,'toImage'):image=image.toImage()
-                if isinstance(image,QImage) and not image.isNull():
-                    data={'color':image.pixelColor(2,2).name(),'size':[image.width(),image.height()]}
-                    (root/'image-incoming.json').write_text(json.dumps(data))
-            super().insertFromMimeData(mime)
-            if mime.hasImage():
-                block=self.document().firstBlock()
-                while block.isValid():
-                    fragments=block.begin()
-                    while not fragments.atEnd():
-                        if fragments.fragment().charFormat().isImageFormat():
-                            (root/'image-inserted').touch()
-                            return
-                        fragments+=1
-                    block=block.next()
+            if not mime.hasImage():
+                super().insertFromMimeData(mime)
+                return
+            image=mime.imageData()
+            if hasattr(image,'toImage'):image=image.toImage()
+            assert isinstance(image,QImage) and not image.isNull(),mime.formats()
+            self.textCursor().insertImage(image)
+            assert self.document().characterAt(self.textCursor().position()-1)=='\ufffc'
+            data={'color':image.pixelColor(2,2).name(),'size':[image.width(),image.height()]}
+            (root/'image-incoming.json').write_text(json.dumps(data))
+            (root/'image-inserted').touch()
     editor=ImageTarget()
     editor.setWindowTitle('FlickDock isolated clipboard target')
     editor.setGeometry(85,80,380,260)

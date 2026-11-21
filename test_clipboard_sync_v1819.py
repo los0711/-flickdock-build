@@ -431,6 +431,36 @@ class ClipboardTests(unittest.TestCase):
         self.assertIs(self.clips[0].mimeData(),mime)
         self.assertEqual(Path(mime.urls()[0].toLocalFile()).read_text(), 'original bytes')
 
+    def test_temporary_history_paste_and_restoration_are_never_observed_or_uploaded(self):
+        client=self.clients[0]
+        client._is_native=True
+        sequence=[601]
+        client._sequence=lambda:sequence[0]
+        active=[True]
+        observed=[]
+        client.copy_observed.connect(observed.append)
+        image=QImage(18,12,QImage.Format_ARGB32)
+        image.fill(QColor('#82a74e'))
+        temporary=QMimeData()
+        temporary.setImageData(image)
+        with patch('clipboard_sync.image_paste_active',side_effect=lambda:active[0]), \
+             patch('clipboard_sync.image_paste_change',side_effect=lambda seq:seq in (601,603)):
+            self.clips[0].setMimeData(temporary)
+            client._changed()
+            self.assertIsNone(client._snapshot())
+            client._observed_copy(('image',{'image':image}),601)
+            self.assertEqual(observed,[])
+            self.assertFalse(any(method=='POST' and path=='/v1/clipboard' for method,path,*_ in self.hub.calls))
+            sequence[0]=603
+            active[0]=False
+            self.clips[0].text('clipboard content retained after paste')
+            client._changed()
+            self.assertEqual(observed,[])
+            self.assertFalse(any(method=='POST' and path=='/v1/clipboard' for method,path,*_ in self.hub.calls))
+            sequence[0]=604
+            client._observed_copy(('text',{'text':'new explicit user copy'}),604)
+            self.assertEqual(observed[0][1]['text'],'new explicit user copy')
+
     def test_delayed_received_image_notifications_do_not_echo(self):
         image=QImage(33,22,QImage.Format_ARGB32);image.fill(QColor('red'))
         mime=QMimeData();mime.setImageData(image);self.clips[0].setMimeData(mime)

@@ -245,6 +245,26 @@ class DisplayFramesTests(unittest.TestCase):
         finally:
             _set_on_battery(False);pulse.stop()
 
+    def test_interactive_scroll_follows_screen_refresh_even_when_background_motion_is_capped(self):
+        background=FramePulse(self.window)
+        scroll=FramePulse(self.window,follow_refresh_rate=True)
+        background.start()
+        clock=background.clock
+        try:
+            clock._display_paced=True
+            clock.refresh_hz=144.
+            with patch('display_frames._on_battery',True):
+                self.assertAlmostEqual(clock.display_period(),1/60)
+                scroll.start()
+                self.assertAlmostEqual(clock.display_period(),1/144)
+                clock.refresh_hz=240.
+                self.assertAlmostEqual(clock.display_period(),1/240)
+                scroll.stop()
+                self.assertAlmostEqual(clock.display_period(),1/60)
+        finally:
+            scroll.stop()
+            background.stop()
+
     def test_windows_power_notification_changes_battery_policy(self):
         import ctypes
         from ctypes import wintypes
