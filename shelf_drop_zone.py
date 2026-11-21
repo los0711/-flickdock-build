@@ -47,7 +47,7 @@ class DropZone(QFrame):
 
     def _set_card_hover(self,active,point=None):
         local=self.icon.mapFrom(self,point) if point is not None else None
-        self.icon.set_hover(bool(active) and not self._transfer_choice_active,local)
+        self.icon.set_hover(bool(active) and not self._transfer_choice_active and not self.drop_highlight,local)
 
     def set_transfer_choice_active(self,active):
         self._transfer_choice_active=bool(active)
@@ -92,9 +92,10 @@ class DropZone(QFrame):
 
     def set_incoming_drag(self,active,point=None,*,accepted=False):
         active=bool(active) and not self._transfer_choice_active
+        changed=active!=self.drop_highlight
         self.drop_highlight=active
         self.icon.set_drop_preview(active,self.icon.mapFrom(self,point) if point is not None else None,accepted=accepted)
-        self._set_card_hover(active)
+        if changed:self._set_card_hover(False)
 
     def dragEnterEvent(self, event):
         self._click_armed=False

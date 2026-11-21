@@ -283,6 +283,27 @@ class VideoMatrixTests(unittest.TestCase):
             self.assertTrue(card.isVisible());self.assertEqual(card.status.text(),'等待下载…')
             self.assertTrue(result.tabs_frame.rect().contains(result.source_tabs['audio'].geometry()))
 
+    def test_video_source_labels_have_contrast_on_the_selected_pill(self):
+        from native_ui_common import colors
+        result=self.dialog.results[self.entry['key']]
+        with patch('ui_transitions.motion_allowed',return_value=False):
+            for theme in ('light','dark'):
+                self.settings.update(theme=theme);self.dialog.refresh()
+                tint=QColor(colors(theme)['segment_selected_ink'])
+                for kind in ('video','audio'):
+                    result.source_tabs[kind].click();APP.processEvents()
+                    image=result.tabs_frame.grab().toImage()
+                    scale=result.tabs_frame.devicePixelRatioF()
+                    tab=result.source_tabs[kind]
+                    bounds=tab.geometry().adjusted(13,5,-13,-5)
+                    ink_pixels=sum(
+                        abs(color.red()-tint.red())+abs(color.green()-tint.green())+abs(color.blue()-tint.blue())<160
+                        for y in range(round(bounds.top()*scale),round(bounds.bottom()*scale))
+                        for x in range(round(bounds.left()*scale),round(bounds.right()*scale))
+                        if (color:=image.pixelColor(x,y)).alpha()>240
+                    )
+                    self.assertGreater(ink_pixels,12,(theme,kind,'selected text must contrast with the pill'))
+
     def test_source_card_keeps_metadata_actions_and_status_in_a_compact_row(self):
         row=self.entry['sources'][0];card=self.dialog.cards[row['key']]
         for theme in ('light','dark'):

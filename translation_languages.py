@@ -53,6 +53,31 @@ URI_SCHEME = re.compile(r'^[A-Za-z][A-Za-z0-9+.-]*:')
 BARE_DOMAIN = re.compile(r'^(?:[\w-]+\.)+[A-Za-z\u0080-\uffff]{2,63}(?::\d{1,5})?(?:[/?#].*)?$', re.UNICODE)
 
 
+def language_code(label):
+    """Map the local detector's label to the desktop language catalog."""
+    if label in TARGETS:
+        return label
+    return next((code for code, name in SOURCE_NAMES.items() if name == label and code in TARGETS), None)
+
+
+def translation_rules(value):
+    if not isinstance(value, dict) or any(
+        source not in TARGETS or not isinstance(target, str) or target not in TARGETS or source == target
+        for source, target in value.items()
+    ):
+        raise ValueError('翻译规则必须使用不同的原文和目标语言。')
+    return dict(value)
+
+
+def voice_language_matches(language, metadata):
+    if not metadata:
+        return True
+    tag=str(metadata).replace('_','-').lower()
+    base=tag.split('-')[0]
+    aliases={'cmn':'zh','no':'nb','tl':'fil'}
+    return aliases.get(base,base)==language.split('-')[0].lower()
+
+
 def is_link_line(text):
     """Do not invoke video recognition or resolve DNS to classify a copied URL."""
     text = text.strip().strip('<>')
@@ -134,3 +159,28 @@ def script_changed(before,after):
     """True only when both texts have a clear, different dominant script."""
     first,second=script_family(before),script_family(after)
     return bool(first and second and first!=second)
+
+_SCRIPT_LANGUAGE={'hangul':'ko','hebrew':'he','thai':'th','greek':'el'}
+_ENGLISH_WORDS=re.compile(r"\b(the|this|that|with|hello|world|please|your|from|would|have|will|english|sentence|source|translated)\b",re.I)
+
+
+def quick_content_language(text, preferred=None):
+    """Resolve unambiguous scripts before scheduling the local detector."""
+    sample=text[:DETECTION_SAMPLE_CHARS]
+    if not sample.strip():return preferred
+    family=script_family(sample)
+    han=sum('\u3400'<=char<='\u9fff' for char in sample)
+    if family=='cjk' or han and han==sum(char.isalpha() for char in sample) or any('\u3041'<=char<='\u30ff' for char in sample):
+        if any('\u3041'<=char<='\u30ff' for char in sample):return 'ja'
+        if any(char in '這為體語與過讓會說臺開閉關從裡請個軟檔選畫點' for char in sample):return 'zh-Hant'
+        return 'zh-Hant' if preferred=='zh-Hant' and not any(char in '这为体语与过让会说台开闭关从里请个软档选画点' for char in sample) else 'zh'
+    if family in _SCRIPT_LANGUAGE:return _SCRIPT_LANGUAGE[family]
+    if family=='latin' and len(_ENGLISH_WORDS.findall(sample))>=(1 if preferred=='en' else 2):return 'en'
+    return None
+
+
+def content_language(text, preferred=None, *, detector=detect_source):
+    direct=quick_content_language(text,preferred)
+    if direct:return direct
+    found=language_code(detector(text))
+    return found or preferred

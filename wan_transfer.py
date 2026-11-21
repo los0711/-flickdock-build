@@ -208,8 +208,14 @@ class WanTransferService(LanTransferService):
     def _hello(self):
         self._connected=True;self.retry.stop();self.poll.start();self.code_timer.start()
         self._last_signal=time.monotonic()
-        self._send_signal(dict(type='hello',name=self.device_name,platform='macos' if sys.platform=='darwin' else 'windows',lan_id=self.lan_id))
+        self._shelf_drop_supported=False
+        self._send_client_hello()
         self._account_changed(force=True)
+
+    def _send_client_hello(self,*,shelf_drop=False):
+        hello=dict(type='hello',name=self.device_name,platform='macos' if sys.platform=='darwin' else 'windows',lan_id=self.lan_id)
+        if shelf_drop:hello['features']=['shelf-drop-v1']
+        self._send_signal(hello)
 
     def _disconnected(self,*_):
         self.connect_timeout.stop()
@@ -362,6 +368,9 @@ class WanTransferService(LanTransferService):
                     self._bind_account()
                     if reconnect:self.status_changed.emit('')
                     if reconnect:self._recover_signaling()
+                    if value.get('shelf_drop_v1') is True and not getattr(self,'_shelf_drop_supported',False):
+                        self._shelf_drop_supported=True
+                        self._send_client_hello(shelf_drop=True)
                 return
             if kind=='request':
                 if any(key[0]==identifier and key[1] in ('cancel','reject') for key in self._outbox):
@@ -381,6 +390,9 @@ class WanTransferService(LanTransferService):
                     state['diagnostics']=diagnostics
                 state.update(account_device=value.get('account_device') is True,account_id=value.get('account_id',''))
                 state['offer']=dict(id=identifier,peer=peer['name'],host='远程',code='',device_code=device_code,total=total,count=value['count'],names=value['names'],account_device=state['account_device'],account_id=state['account_id'])
+                if 'shelf_intake' in value:
+                    state['shelf_intake']=value['shelf_intake']
+                    state['offer']['shelf_intake']=value['shelf_intake']
                 self._present_offer(identifier)
                 return
             if not state:return
@@ -618,12 +630,16 @@ class WanTransferService(LanTransferService):
                     state['error']='P2P 连接未能建立，请检查网络后重试。';state['network_error']=True;state['ready'].set()
             if kind=='error':self.status_changed.emit(str(event.get('message') or 'WebRTC 连接中断。'))
 
-    def send(self,peer_id,paths):
+    def send(self,peer_id,paths,*,shelf_intake=None):
         if self._closing:raise ValueError('远程互传已关闭。')
         if self._closing or not self.enabled and not self._connected:raise ValueError('远程互传未启用。')
         peer=self._peers.get(peer_id)
         if not peer and not RECEIVE_CODE.fullmatch(str(peer_id)):raise ValueError('请输入有效的接收码，或选择最近设备。')
         if peer and 'syncthing-v2' in peer.get('features',[]):raise ValueError('对方仍使用 Syncthing 互传，请将两端更新到相同版本。')
+        if shelf_intake is not None and (not self._connected or not getattr(self,'_shelf_drop_supported',False) or
+                not peer or not peer.get('online') or peer.get('account_device') is not True or
+                'shelf-drop-v1' not in peer.get('features',[])):
+            raise ValueError('对方设备未就绪，搁架将继续使用云同步。')
         if not self._connected or self._proxy_routes and proxy_routes(self.origin)!=self._proxy_routes:self.reconnect()
         identifier=uuid4().hex;peer=dict(peer or dict(code=peer_id,name='接收码 '+peer_id))
         with self._lock:
@@ -632,6 +648,7 @@ class WanTransferService(LanTransferService):
             self._start_diagnostics(transfer)
             transfer.remote_peer=peer;self._transfers[identifier]=transfer
             self._pending[identifier]=dict(role='send',peer=peer,ready=threading.Event(),generation=0,signaling_deadline=time.monotonic()+SIGNALING_WAIT_SECONDS)
+            if shelf_intake is not None:self._pending[identifier]['shelf_intake']=dict(shelf_intake)
         if peer.get('code'):
             state=self._pending[identifier];state['prepared']=threading.Event()
             state['prepare']=dict(type='prepare',id=identifier,token=transfer.token,code=peer['code'])
@@ -664,6 +681,7 @@ class WanTransferService(LanTransferService):
         request=dict(type='request',id=transfer.transfer_id,token=transfer.token,digest=hashlib.sha256(json.dumps(entries,sort_keys=True).encode()).hexdigest(),
             total=str(transfer.total),count=sum(row['kind']=='file' for row in entries),names=[row['path'] for row in entries if '/' not in row['path']][:12])
         request.update(dict(prepared=True) if state.get('prepared_ok') else dict(code=peer['code']) if peer.get('code') else dict(peer=peer['id']))
+        if 'shelf_intake' in state:request['shelf_intake']=state['shelf_intake']
         self._command.emit(dict(_connect=True,**request));deadline=time.monotonic()+210
         while not state['ready'].wait(.1):
             if self._stopped.is_set() or transfer.cancel.is_set():raise InterruptedError('已取消传输。')

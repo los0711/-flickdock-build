@@ -46,16 +46,22 @@ def run(argv,load_font):
     from PySide6.QtWidgets import QApplication,QWidget
     from app_version import APP_VERSION
     from app_settings import SettingsStore
+    from translation_controller import TranslationController
     from translator_panel import TranslatorDialog
     from translator_store import TranslatorStore
     from translator_speech import TranslatorSpeech
     import ui_theme
     class TranslationFixture(QObject):
         completed=Signal(int,str,str)
-        def translate(self,epoch,text,target,**options):self.epoch=epoch
-        def polish(self,epoch,text,target,instruction,**options):self.epoch=epoch
-        def cancel(self):pass
-        def finish(self,text):self.completed.emit(self.epoch,text,'')
+        busy=False
+        def translate(self,epoch,text,target,**options):
+            self.epoch=epoch;self.target=target;self.busy=True
+        def polish(self,epoch,text,target,instruction,**options):self.epoch=epoch;self.busy=True
+        def cancel(self):self.busy=False
+        def finish(self,text):self.busy=False;self.completed.emit(self.epoch,text,'')
+    class ClipboardFixture(QObject):
+        copy_observed=Signal(object)
+        def set_local_observation(self,enabled):self.observing=enabled
     class SpeechFixture(QObject):
         voices_ready=Signal(int,object,str);completed=Signal(int,object,str);reset=Signal()
         def list_voices(self,epoch,language):self.voices_ready.emit(epoch,dict(voices=[dict(voice_id='fixture',name='QA voice')],pitch_supported=True,default_available=True),'')
@@ -79,13 +85,17 @@ def run(argv,load_font):
         while time.monotonic()<until:app.processEvents();time.sleep(.002)
     output=Path(argv[argv.index('--verify-output')+1]);capture=Path(argv[argv.index('--verify-capture')+1]) if '--verify-capture' in argv else None
     report=dict(ok=False,version=APP_VERSION,frozen=bool(getattr(sys,'frozen',False)),qt_platform=app.platformName(),real_provider=False,native_audio_access=False,native_clipboard_access=False)
-    view=None;shelf=None
+    view=None;shelf=None;clipboard_controller=None
     try:
         with tempfile.TemporaryDirectory(prefix='flickdock-translator-verify-') as directory:
             settings=SettingsStore(directory);settings.update(theme='dark');ui_theme.set_theme('dark');shelf=QWidget()
             store=TranslatorStore(directory,autoload=False);store.data['live']=False;api=TranslationFixture()
             speech=TranslatorSpeech(api=SpeechFixture(),player_factory=lambda owner:(PlayerFixture(owner),None))
-            view=TranslatorDialog(SimpleNamespace(settings=settings,shelf=shelf),api=api,store=store,detector=lambda text:'中文',speech=speech)
+            clipboard=ClipboardFixture();clipboard_api=TranslationFixture()
+            manager=SimpleNamespace(app=app,settings=settings,shelf=shelf,clipboard_sync=clipboard)
+            clipboard_controller=manager.translation=TranslationController(manager,api=clipboard_api,
+                detector=lambda text:'英语',sequence=lambda:1)
+            view=TranslatorDialog(manager,api=api,store=store,detector=lambda text:'中文',speech=speech)
             view.show();settle();view.source_editor.setPlainText('你好，请确认交付时间。');view.session.translate();api.finish('Hello, please confirm the delivery schedule.');settle()
             if sys.platform=='darwin':
                 group=view.caption_controls
@@ -112,6 +122,31 @@ def run(argv,load_font):
             for theme in ('light','dark'):
                 settings.update(theme=theme);ui_theme.set_theme(theme);view.refresh();settle();assert view._theme==theme
             view.hide();assert not view.session.debounce.isActive() and not speech.active
+            settings.update(translation_enabled=False)
+            view.show()
+            view.session.set_language('target','ja')
+            assert view.auto_clipboard_button.isEnabled() and not view.auto_clipboard_button.isChecked()
+            view.auto_clipboard_button.click()
+            assert clipboard_controller.automatic and view.isVisible()
+            clipboard.copy_observed.emit(('text',{'text':'Synthetic clipboard text.'}))
+            deadline=time.monotonic()+3
+            while not clipboard_api.busy and time.monotonic()<deadline:settle(.01)
+            assert clipboard_api.busy and clipboard_api.target=='ja'
+            from unittest.mock import patch
+            received=[]
+            synthetic=SimpleNamespace(setMimeData=lambda mime:received.append(mime.text()),ownsClipboard=lambda:True)
+            with patch('translation_controller.QApplication.clipboard',return_value=synthetic):
+                clipboard_api.finish('確認済みのテキスト。');settle()
+                assert received==['確認済みのテキスト。']
+                clipboard.copy_observed.emit(('text',{'text':'A second clipboard sample.'}))
+                deadline=time.monotonic()+3
+                while not clipboard_api.busy and time.monotonic()<deadline:settle(.01)
+                assert clipboard_api.busy
+                view.close()
+                assert not clipboard_controller.automatic and not clipboard.observing
+                clipboard_api.finish('Stale result.');settle()
+                assert received==['確認済みのテキスト。']
+            report['editor_scoped_clipboard_translation']=True
             # Exercise the real bundled fastText binary/model, not only the
             # deterministic detector used by the UI fixture above.
             from translation_languages import detect_source
@@ -144,5 +179,6 @@ def run(argv,load_font):
     finally:
         if view is not None:view.shutdown();view.deleteLater()
         if shelf is not None:shelf.deleteLater()
+        if clipboard_controller is not None:clipboard_controller.close();clipboard_controller.pool.waitForDone(2000)
         app.processEvents();output.parent.mkdir(parents=True,exist_ok=True);output.write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf8')
     return 0 if report['ok'] else 1

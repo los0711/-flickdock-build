@@ -154,6 +154,63 @@ class TriggerReliabilityTests(unittest.TestCase):
             manager.poll()
             reveal.assert_called_once_with()
 
+    def test_cocoa_outermost_sample_still_hits_the_exact_trigger_span(self):
+        manager = self.manager
+        manager.settings.update(dock_edge='right', dock_position=50, dock_length=80)
+        manager.update_handles()
+        trigger = manager.edge.geometry()
+        outside = QPoint(trigger.right()+1, trigger.bottom()+25)
+        inside = QPoint(trigger.right()+1, trigger.center().y())
+        darwin = SimpleNamespace(platform='darwin')
+        with patch.object(flickdock, 'sys', darwin), \
+             patch.object(flickdock, 'native_input_available', return_value=False), \
+             patch.object(flickdock, 'mouse_buttons_mask', return_value=0), \
+             patch.object(flickdock.QCursor, 'pos', return_value=outside) as pointer, \
+             patch.object(manager, 'show_docked') as reveal:
+            manager.poll()
+            reveal.assert_not_called()
+            pointer.return_value = inside
+            manager.poll()
+            reveal.assert_called_once_with()
+
+    def test_cocoa_file_probe_cannot_open_the_shelf_in_the_magnetic_band(self):
+        manager = self.manager
+        display = manager.edge.display.geometry()
+        manager.settings.update(dock_edge='right', dock_position=50, dock_length=80)
+        manager.update_handles()
+        position = QPoint(display.right()-6, display.center().y()+85)
+        self.assertTrue(manager.edge_absorb.armed(position))
+        self.assertFalse(manager.edge.file_preview_region().contains(position))
+        manager.was_down = True
+        manager._content_gesture_at = 1.0
+        mime = QMimeData()
+        mime.setUrls([QUrl.fromLocalFile(str(Path(self.profile.name)/'dragged.txt'))])
+        with patch.object(flickdock, 'sys', SimpleNamespace(platform='darwin')), \
+             patch.object(flickdock.QCursor, 'pos', return_value=position), \
+             patch.object(manager, '_pointer_dragging', return_value=True), \
+             patch.object(manager.shelf, 'show_transient') as show:
+            self.assertTrue(manager.drag_gate.arm(position))
+            event = QDragEnterEvent(manager.drag_gate.probe.mapFromGlobal(position),
+                                    Qt.CopyAction, mime, Qt.LeftButton, Qt.NoModifier)
+            manager.drag_gate.probe.dragEnterEvent(event)
+            APP.processEvents()
+            self.assertTrue(event.isAccepted())
+            show.assert_not_called()
+
+    def test_hidden_magnetic_intake_does_not_reopen_a_hiding_shelf(self):
+        manager = self.manager
+        shelf = manager.shelf
+        source = Path(self.profile.name)/'magnetic.txt'
+        source.write_bytes(b'magnetic fixture')
+        mime = QMimeData()
+        mime.setUrls([QUrl.fromLocalFile(str(source))])
+        shelf.visible_state = 'hiding'
+        with patch.object(shelf, '_show_at') as show:
+            self.assertTrue(shelf.receive_mime('permanent', mime, reveal=False))
+            self.assertEqual(shelf.files['permanent'].count(str(source)),1)
+            show.assert_not_called()
+        self.assertFalse(shelf.incoming_drop)
+
     def test_shake_keeps_empty_trigger_and_edge_drag_hands_off_the_same_shelf(self):
         manager=self.manager;manager.motion=False;manager.settings.update(trigger_view='compact')
         shelf=manager.shelf;shelf.show_transient(QPoint(160,180),reason='drag');manager.auto_shown=shelf

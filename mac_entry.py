@@ -234,6 +234,9 @@ def verify_platform(report_path):
 
 def main(arguments=None):
     arguments = list(sys.argv[1:] if arguments is None else arguments)
+    if arguments[:1] == ['--edge-icon']:
+        from edge_native_icons import helper_main
+        return helper_main(arguments[1]) if len(arguments)==2 else 2
     if '--elevated-mac-update' in arguments:
         from mac_updates import run_elevated_update_helper, write_privileged_update_error,finish_update_helper
         index = arguments.index('--elevated-mac-update')

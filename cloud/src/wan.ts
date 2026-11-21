@@ -10,7 +10,9 @@ type Seat=Device&{ip:string;connected:number;window:number;messages:number;last_
 type Binding={account:string;device:string;session:string;lan_id:string;nonce:string};
 type CodeRow={device:string;expires:number;epoch:number};
 type Pairing={sender:string;receiver:string;token:string;expires:number};
-type Session={id:string;sender:Device;receiver:Device;token:string;digest:string;total:string;count:number;names:string[];accepted:boolean;generation:number;expires:number;done:string[];initiator?:string;connected?:string[];sender_code?:string;native?:NativeState};
+type ShelfIntake={id:string;version:1;sha256:string;name:string;mime_type:string};
+const SHELF_INTAKE='shelf-drop-v1';
+type Session={shelf_intake?:ShelfIntake;id:string;sender:Device;receiver:Device;token:string;digest:string;total:string;count:number;names:string[];accepted:boolean;generation:number;expires:number;done:string[];initiator?:string;connected?:string[];sender_code?:string;native?:NativeState};
 export interface WanEnv extends RelayBudgetEnv {WAN:DurableObjectNamespace<WanHub>;DB:D1Database;FILES:R2Bucket;R2_CLASS_A_BUDGET?:string;R2_CLASS_B_BUDGET?:string;TURN_KEY_ID?:string;TURN_KEY_TOKEN?:string;TURN_ENABLED?:string;}
 const json=(value:object,status=200)=>Response.json({schema_version:1,...value},{status,headers:{'Cache-Control':'no-store'}});
 const hash=async(value:string)=>Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(value))),b=>b.toString(16).padStart(2,'0')).join('');
@@ -243,7 +245,7 @@ export class WanHub extends DurableObject<WanEnv>{
       });
       if(saved)break;if(attempt===CODE_ATTEMPTS-1)throw new Error('接收码暂不可用，请重试。');
     }
-    this.send(socket,{type:'identity',device:publicDevice(seat),code,expires,refreshAt,serverNow,recent:await this.recent(seat.id)});
+    this.send(socket,{type:'identity',device:publicDevice(seat),shelf_drop_v1:true,code,expires,refreshAt,serverNow,recent:await this.recent(seat.id)});
   }
   private async claimCode(code:unknown,seat:Seat,prepare?:{id:string;token:string}){
     if(!check(code,RECEIVE_CODE))throw new Error('接收码无效或已过期，请复制对方当前的接收码。');
@@ -277,8 +279,17 @@ export class WanHub extends DurableObject<WanEnv>{
       const socket=this.socket(id);if(socket)this.send(socket,{id:value.id,generation:value.generation,...message,...capabilities});
     }
   }
+  private async shelfIntakeAuthorized(value:Session):Promise<boolean>{
+    const sender=this.peer(value.sender.id),receiver=this.peer(value.receiver.id);
+    if(!sender?.features?.includes(SHELF_INTAKE)||!receiver?.features?.includes(SHELF_INTAKE))return false;
+    const [from,to]=await Promise.all([this.binding(sender.id),this.binding(receiver.id)]);
+    return !!(from&&to&&from.account===to.account&&from.device!==to.device);
+  }
   private async replay(socket:WebSocket,value:Session){
     const seat=socket.deserializeAttachment() as Seat;
+    if(value.shelf_intake&&!(await this.shelfIntakeAuthorized(value))){
+      this.send(socket,{type:'cancelled',id:value.id});return;
+    }
     if(value.accepted){
       const from=value.native?await this.binding(value.sender.id):null,to=value.native?await this.binding(value.receiver.id):null;
       this.send(socket,{type:'resumed',id:value.id,accepted:true,generation:value.generation,settled:value.done.length===2,
@@ -293,7 +304,11 @@ export class WanHub extends DurableObject<WanEnv>{
     }else if(seat.id===value.receiver.id){
       const from=await this.binding(value.sender.id),to=await this.binding(value.receiver.id);
       const same=!!(from&&to&&from.account===to.account&&from.device!==to.device);
-      this.send(socket,{type:'request',id:value.id,peer:value.sender,account_device:same,...(same?{account_id:from!.account}:{}),deviceCode:value.sender_code||'',token:value.token,digest:value.digest,total:value.total,count:value.count,names:value.names});
+      if(value.shelf_intake&&(!same||!seat.features?.includes(SHELF_INTAKE))){
+        this.send(socket,{type:'cancelled',id:value.id});return;
+      }
+      this.send(socket,{type:'request',id:value.id,peer:value.sender,account_device:same,...(same?{account_id:from!.account}:{}),
+        ...(value.shelf_intake?{shelf_intake:value.shelf_intake}:{}),deviceCode:value.sender_code||'',token:value.token,digest:value.digest,total:value.total,count:value.count,names:value.names});
     }else this.send(socket,{type:'waiting',id:value.id,peer:value.receiver});
   }
   private async removeSession(value:Session){
@@ -390,7 +405,7 @@ export class WanHub extends DurableObject<WanEnv>{
         await this.unbind(seat.id,request.active);this.send(socket,{type:'account_state',nonce:request.nonce});return;
       }
       if(request.type==='hello'){
-        if(request.features!==undefined&&(!Array.isArray(request.features)||request.features.length>4||request.features.some((value:unknown)=>!['routes-v1','mesh-v1','syncthing-v2'].includes(String(value)))))
+        if(request.features!==undefined&&(!Array.isArray(request.features)||request.features.length>4||request.features.some((value:unknown)=>!['routes-v1','mesh-v1','syncthing-v2',SHELF_INTAKE].includes(String(value)))))
           throw new Error('传输能力声明无效。');
         seat.features=request.features===undefined?[]:[...new Set<string>(request.features)];
         seat.name=String(request.name||'未命名设备').replace(/[\x00-\x1f]/g,'').slice(0,64);
@@ -446,9 +461,18 @@ export class WanHub extends DurableObject<WanEnv>{
         if(!check(request.id,TRANSFER)||!check(request.token,ID)||!check(request.digest,ID)
             ||!check(request.total,/^\d{1,20}$/)||BigInt(request.total)<0n||!Number.isSafeInteger(request.count)||request.count<0
             ||!Array.isArray(request.names)||request.names.length>12||request.names.some((name:unknown)=>typeof name!=='string'||name.length>255||/[\\/\x00-\x1f]/.test(name)))throw new Error('传输请求无效。');
+        let intake:ShelfIntake|undefined;
+        if(request.shelf_intake!==undefined){
+          const data=request.shelf_intake;
+          if(!data||!check(data.id,/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/)||data.version!==1||!check(data.sha256,ID)||
+             typeof data.name!=='string'||!data.name.length||data.name.length>255||/[\\/\x00-\x1f]/.test(data.name)||
+             !check(data.mime_type,/^[A-Za-z0-9.+_-]+\/[A-Za-z0-9.+_-]+$/)||data.mime_type.length>128||
+             request.count!==1||request.names.length!==1||request.code||request.prepared)throw new Error('搁架直传请求无效。');
+          intake={id:data.id,version:1,sha256:data.sha256,name:data.name,mime_type:data.mime_type};
+        }
         const previous=await this.ctx.storage.get<Session>('session:'+request.id);
         if(previous){
-          if(previous.sender.id!==seat.id||previous.token!==request.token||previous.digest!==request.digest||previous.total!==request.total||previous.count!==request.count||JSON.stringify(previous.names)!==JSON.stringify(request.names))throw new Error('传输请求冲突。');
+          if(previous.sender.id!==seat.id||previous.token!==request.token||previous.digest!==request.digest||previous.total!==request.total||previous.count!==request.count||JSON.stringify(previous.names)!==JSON.stringify(request.names)||JSON.stringify(previous.shelf_intake)!==JSON.stringify(intake))throw new Error('传输请求冲突。');
           if(previous.expires<Date.now())throw new Error('传输请求已失效，请重新发起。');
           await this.replay(socket,previous);return;
         }
@@ -476,27 +500,31 @@ export class WanHub extends DurableObject<WanEnv>{
         const receiver=this.peer(target),recipient=this.socket(target);
         if(!receiver||!recipient)throw new Error('对方设备不在线。');
         if(await this.ctx.storage.get('session:'+request.id))throw new Error('传输请求已存在。');
+        const from=await this.binding(seat.id),to=await this.binding(target);
+        const sameAccount=!!(from&&to&&from.account===to.account&&from.device!==to.device);
+        if(intake&&(!sameAccount||!seat.features?.includes(SHELF_INTAKE)||!receiver.features?.includes(SHELF_INTAKE)))
+          throw new Error('对方设备不支持搁架直传。');
         const native=seat.features?.includes('syncthing-v2')&&receiver.features?.includes('syncthing-v2');
-        const value:Session={id:request.id,sender:publicDevice(seat),receiver,token:request.token,digest:request.digest,total:request.total,count:request.count,names:request.names,accepted:false,generation:0,expires:Date.now()+86400000,done:[],sender_code:await this.ctx.storage.get<string>('own-code:'+seat.id)||'',...(native?{native:{}}:{})};
+        const value:Session={...(intake?{shelf_intake:intake}:{}),id:request.id,sender:publicDevice(seat),receiver,token:request.token,digest:request.digest,total:request.total,count:request.count,names:request.names,accepted:false,generation:0,expires:Date.now()+86400000,done:[],sender_code:await this.ctx.storage.get<string>('own-code:'+seat.id)||'',...(native?{native:{}}:{})};
         const already=await this.ctx.storage.transaction(async tx=>{
           if(await tx.get('pairing-cancel:'+seat.id+':'+request.id))throw new Error('已取消传输。');
           const previous=await tx.get<Session>('session:'+value.id);
           if(previous){
-            if(previous.sender.id!==seat.id||previous.token!==value.token||previous.digest!==value.digest||previous.total!==value.total||previous.count!==value.count||JSON.stringify(previous.names)!==JSON.stringify(value.names))throw new Error('传输请求冲突。');
+            if(previous.sender.id!==seat.id||previous.token!==value.token||previous.digest!==value.digest||previous.total!==value.total||previous.count!==value.count||JSON.stringify(previous.names)!==JSON.stringify(value.names)||JSON.stringify(previous.shelf_intake)!==JSON.stringify(value.shelf_intake))throw new Error('传输请求冲突。');
             return previous;
           }
           await tx.put({['session:'+value.id]:value,['pending:'+value.sender.id+':'+value.id]:{expires:value.expires},['pending:'+value.receiver.id+':'+value.id]:{expires:value.expires}});
           await tx.delete('pairing:'+request.id);return null;
         });
         if(already){await this.replay(socket,already);return;}
-        const from=await this.binding(seat.id),to=await this.binding(target);
-        const sameAccount=!!(from&&to&&from.account===to.account&&from.device!==to.device);
-        if(!this.send(recipient,{type:'request',id:value.id,peer:value.sender,account_device:sameAccount,...(sameAccount?{account_id:from!.account}:{}),deviceCode:value.sender_code,token:value.token,digest:value.digest,total:value.total,count:value.count,names:value.names}))throw new Error('对方设备不在线，无法发送。');
+        if(!this.send(recipient,{type:'request',id:value.id,peer:value.sender,account_device:sameAccount,
+          ...(intake?{shelf_intake:intake}:{}),...(sameAccount?{account_id:from!.account}:{}),deviceCode:value.sender_code,token:value.token,digest:value.digest,total:value.total,count:value.count,names:value.names}))throw new Error('对方设备不在线，无法发送。');
         this.send(socket,{type:'waiting',id:value.id,peer:receiver});if(request.code&&!request.prepared)await this.code(recipient);return;
       }
       const value=await this.session(request.id,seat),other=value.sender.id===seat.id?value.receiver.id:value.sender.id;
       if(request.type==='accept'){
         if(seat.id!==value.receiver.id)throw new Error('无法接受此请求。');
+        if(value.shelf_intake&&!(await this.shelfIntakeAuthorized(value)))throw new Error('搁架直传授权已失效。');
         if(value.accepted){
           await this.replay(socket,value);
           // Rejoining receivers may have missed SDP while their socket was

@@ -259,7 +259,9 @@ class IconTextButton(QPushButton):
             if enabled and self.property('keyboardFocus'):
                 paint_rounded_surface(painter,QRectF(self.rect()).adjusted(1,1,-1,-1),radius,QColor(Qt.transparent),ink(c['ring']))
             return
-        if name=='previewIconActions':
+        if self.property('videoSourceAction'):
+            fill=c['control_pressed' if down else 'control_hover' if hover else 'control']
+        elif name=='previewIconActions':
             if not enabled:fill='transparent'
             elif variant=='danger':fill='rgba(255,69,58,58)' if down else 'rgba(255,69,58,30)' if hover else 'transparent'
             else:fill=(c['control_pressed'] if theme=='dark' else '#cdcdcf') if down else (c['control_hover'] if theme=='dark' else '#dddddf') if hover else 'transparent'

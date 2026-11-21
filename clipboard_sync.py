@@ -8,6 +8,7 @@ from PySide6.QtGui import QImage,QPixmap,QImageReader
 from PySide6.QtWidgets import QApplication
 from platform_native import native_input_available,copy_activity
 from clipboard_identity import signature,content_keys
+from clipboard_history_native import image_paste_active,image_paste_change
 from sync_scheduler import SyncScheduler
 from clipboard_inbox import ClipboardInbox
 from virtual_clipboard import describe as describe_virtual,capture as capture_virtual,VirtualClipboardError
@@ -322,7 +323,7 @@ class ClipboardSync(QObject):
         self._notified_activity=None;self._content_read=None;self._content_read_failed=None
         self._copy_history=[];self._current_content_keys=None
         self._sequence=native_sequence if self._is_native else lambda:None
-        self.enabled=enabled;self._local_observation=False;self.closed=False;self._epoch=0;self._generation=0;self._applying=False
+        self.enabled=enabled;self._local_observation=False;self._local_observers=set();self.closed=False;self._epoch=0;self._generation=0;self._applying=False
         self._native_access=self._native_accessible()
         self._clock_anchor=None;self._local_clock_anchor=(time.monotonic(),round(time.time()*1000))
         self._observed_clock=0;self._local_fence=None;self._local_retry=None
@@ -413,6 +414,9 @@ class ClipboardSync(QObject):
     def _snapshot(self):
         self._snapshot_available=False
         self._native_format_issue=''
+        if self._is_native and image_paste_active():
+            self._native_format_issue='IMAGE_PASTE_IN_PROGRESS'
+            return None
         if not self._native_accessible():return None
         try:
             if self._is_native and sys.platform=='win32' and native_input_available() and not self.clipboard.ownsClipboard():
@@ -456,6 +460,9 @@ class ClipboardSync(QObject):
     def _native_read_ready(self,sequence,value,directory):
         if self.closed:return
         if directory is not None:self._directories.append((directory,time.time()))
+        if image_paste_change(sequence):return
+        if image_paste_active():
+            self.change_debounce.start(35);return
         if self._prepared_receive is not None:self._apply_received()
         baseline,self._native_baseline=self._native_baseline,None
         if baseline is not None:
@@ -559,12 +566,14 @@ class ClipboardSync(QObject):
             if sys.platform=='darwin' and self._is_native:self._mac_changed(initial=True);self.mac_poll.start()
         elif not self._local_observation:self.mac_poll.stop()
 
-    def set_local_observation(self,enabled):
-        """Reuse the native observer for translation without enabling cloud sync."""
-        self._local_observation=bool(enabled)
+    def set_local_observation(self,enabled,*,source='translation'):
+        """Share native observations while local tools manage their own settings."""
+        if enabled:self._local_observers.add(source)
+        else:self._local_observers.discard(source)
+        self._local_observation=bool(self._local_observers)
         if self.closed:return
         if sys.platform=='darwin' and self._is_native:
-            if self.enabled or enabled:
+            if self.enabled or self._local_observation:
                 self._mac_changed(initial=True);self.mac_poll.start()
             else:self.mac_poll.stop()
 
@@ -572,7 +581,10 @@ class ClipboardSync(QObject):
         if self._is_native and not self.closed:
             if self._applying:return
             sequence=self._sequence()
-            if sequence is not None and sequence==self._last_sequence:return
+            if image_paste_change(sequence) or (sequence is not None and sequence==self._last_sequence):return
+            if image_paste_active():
+                self.change_debounce.start(35)
+                return
             # Capture input/owner provenance before a delayed reader finishes;
             # mouse movement during that read is not a new Copy action.
             if self._notified_activity is None or self._notified_activity[0]!=sequence:
@@ -739,6 +751,9 @@ class ClipboardSync(QObject):
         if not pending['valid']():
             if not self._active() and 'head' in pending:return
             self._prepared_receive=None;return
+        if self._is_native and image_paste_active():
+            self.retry.start(150)
+            return
         value=pending['value'];actual=signature(self._snapshot())
         if self._snapshot_available and actual not in (self._last_local_signature,signature(value)):
             self._prepared_receive=None;self._schedule_change();return
@@ -1121,14 +1136,26 @@ class ClipboardSync(QObject):
         if callback and not self.closed and not job.cancelled.is_set():callback(result)
         self._cleanup()
 
+    def _observed_copy(self, value, sequence):
+        if sequence!=self._sequence() or self._is_native and (image_paste_active() or image_paste_change(sequence)):
+            return
+        if value and value[0]=='text':
+            value=(value[0],dict(value[1],_translation_sequence=sequence))
+        self.copy_observed.emit(value)
+
     def _changed(self):
         if self.closed or self._applying:return
+        sequence=self._sequence()
+        if self._is_native:
+            if image_paste_change(sequence):return
+            if image_paste_active():
+                self.change_debounce.start(35)
+                return
         if not self._active():
             value=self._snapshot()
             if self._snapshot_available:
-                self.copy_observed.emit(value);self._set_view(value,'local');self._last_sequence=self._sequence()
+                self._observed_copy(value,sequence);self._set_view(value,'local');self._last_sequence=sequence
             return
-        sequence=self._sequence()
         # Repeated native notifications for one copy must not ask another app
         # to render the same delayed clipboard again or repeat file/image work.
         if sequence is not None and sequence==self._last_sequence:return
@@ -1163,7 +1190,7 @@ class ClipboardSync(QObject):
         if (self._is_native and activity is not None and not repeat_intent and keys
                 and any(keys.intersection(row) for row in self._copy_history)):
             self._consume_replay(value,sequence);return
-        if self._is_native and (sig!=self._last_local_signature or repeat_intent):self.copy_observed.emit(value)
+        if self._is_native and (sig!=self._last_local_signature or repeat_intent):self._observed_copy(value,sequence)
         retry_copy=repeat_intent and self.view.get('phase') in ('error','superseded') and not self.view.get('backed_up')
         if sig==self._last_local_signature and not retry_copy and (not repeat_intent or sig==signature(self.view.get('value'))):
             self._last_sequence=sequence

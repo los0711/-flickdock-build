@@ -16,7 +16,7 @@ from flickdock_icons import app_icon
 from native_ui_common import RoundedProgressBar, RoundedScrollBar, colors, font_css_stack, reduced_motion
 from reference_widgets import SegmentedControl, ToolbarButton, button, css, label, refresh_tree
 from translation_api import TranslationApi
-from translation_languages import SPEECH_LANGUAGES, TARGETS
+from translation_languages import SPEECH_LANGUAGES, TARGETS, content_language, quick_content_language
 from translator_session import TranslatorSession
 from translator_store import TranslatorStore
 from translator_widgets import (ComparisonEditor, LanguageButton, LanguagePopup, PolishPane, PresetButton, RoundSwapButton, TranslatorPopup,
@@ -47,13 +47,14 @@ class TranslatorDialog(ReferenceModalDialog):
             from cloud_api import CloudApi
             self._transport=CloudApi(manager.account.api.origin,self);api=TranslationApi(self._transport,self)
         self.store=store or TranslatorStore(manager.settings.base,self)
-        self.session=TranslatorSession(api,self.store,self,**({'detector':detector} if detector else {}))
+        self.session=TranslatorSession(api,self.store,self,rules=lambda:getattr(manager.settings,'translation_rules',{}),
+            **({'detector':detector} if detector else {}))
         from translator_speech import TranslatorSpeech
         from breeze_speech_api import BreezeSpeechApi
         self.speech=speech or TranslatorSpeech(self,api=BreezeSpeechApi(getattr(manager,'account',None),self))
         if self.speech.parent() is None:self.speech.setParent(self)
         self.speech.error.connect(self._message)
-        self.speech_bars={};self.speech_buttons={};self.speech_playback={};self._speech_seen={};self._speech_dismissed={};self._tts_side='target';self._await_source_speech=None
+        self.speech_bars={};self.speech_buttons={};self.speech_playback={};self._speech_seen={};self._speech_dismissed={};self._tts_side='target';self._speech_codes={};self._speech_jobs={}
         self._tts_language=None
         self.surface.layout().removeWidget(self.scroll);self.scroll.hide()
         self.body.removeEventFilter(self);self._fit_timer.stop()
@@ -67,10 +68,22 @@ class TranslatorDialog(ReferenceModalDialog):
             self.close_button=self.caption_controls.buttons['close']
         head.addWidget(label('翻译器',16,600,parent=self.title_bar))
         self.back_button=overview_back_button(self.title_bar,lambda:manager.return_to_overview(self));head.addWidget(self.back_button);head.addStretch(1)
+        self.auto_clipboard_button=button('自动翻译','translate',variant='secondary',parent=self.title_bar)
+        self.auto_clipboard_button.setCheckable(True)
+        self.auto_clipboard_button.setAccessibleDescription('复制文字后将译文写回剪贴板，关闭翻译器时停止')
+        clipboard_controller=getattr(manager,'translation',None)
+        if clipboard_controller is not None and hasattr(clipboard_controller,'set_automatic'):
+            clipboard_controller.changed.connect(self._clipboard_translation_changed)
+        else:
+            self.auto_clipboard_button.setEnabled(False)
+        self.auto_clipboard_button.toggled.connect(self._toggle_clipboard_translation)
+        head.addWidget(self.auto_clipboard_button)
         self.glossary_button=button('术语保护','shield',variant='secondary',parent=self.title_bar);self.glossary_button.clicked.connect(lambda:self.show_manager('glossary'));head.addWidget(self.glossary_button)
+        self.rules_button=button('翻译规则','swap',variant='secondary',parent=self.title_bar)
+        self.rules_button.clicked.connect(lambda:self.show_manager('rules'));head.addWidget(self.rules_button)
         self.presets_button=button('润色预设','tag',variant='secondary',parent=self.title_bar);self.presets_button.clicked.connect(lambda:self.show_manager('presets'));head.addWidget(self.presets_button)
         self.history_button=button('历史','status-clock',variant='secondary',parent=self.title_bar);self.history_button.clicked.connect(self.toggle_history);head.addWidget(self.history_button)
-        for control in (self.glossary_button,self.presets_button,self.history_button):
+        for control in (self.auto_clipboard_button,self.glossary_button,self.rules_button,self.presets_button,self.history_button):
             control.setFixedHeight(ACTION_SIZE);control.setIconSize(QSize(14,14))
             css(control,*[f"QPushButton{{background:transparent;color:{colors(t)['text']};border:0;padding:3px 8px;font:500 10px {font_css_stack()};}}" for t in ('dark','light')])
         self.pin_button=ToolbarButton('pin',self.title_bar,motion=False);self.pin_button.setFixedSize(30,30)
@@ -207,7 +220,7 @@ class TranslatorDialog(ReferenceModalDialog):
             control.setAutoDefault(False);control.setDefault(False)
         self.resize(WINDOW_SIZE)
         self.session.changed.connect(self.refresh);self.store.changed.connect(self._store_changed);manager.settings.changed.connect(self.refresh)
-        self.session.result_ready.connect(self._auto_speak);self.session.source_detected.connect(self._source_speech_ready)
+        self.session.result_ready.connect(self._auto_speak)
         self.session.source_replaced.connect(self._replace_source)
         self.speech.changed.connect(self._speech_changed);self.speech.voices_changed.connect(self._voices_changed)
         self._copy_feedback=QTimer(self);self._copy_feedback.setSingleShot(True);self._copy_feedback.setInterval(1400);self._copy_feedback.timeout.connect(lambda:self._copy_appearance(True,False))
@@ -315,6 +328,8 @@ class TranslatorDialog(ReferenceModalDialog):
         text=self.session.result if side=='target' else self.session.source_text
         if not text.strip():return
         code=self._speech_language(side)
+        if code is None:
+            self._resolve_speech_language(side,lambda:self._download_speech(side));return
         if code not in SPEECH_LANGUAGES:self._message('当前语言暂不支持语音。');return
         voice=self.store.voice_for(side,code).get('id','')
         from PySide6.QtWidgets import QFileDialog
@@ -416,11 +431,50 @@ class TranslatorDialog(ReferenceModalDialog):
 
     def _tts_preference(self,**values):self.store.update_preferences(**values)
 
-    def _speech_language(self, side):
+    def _speech_input(self,side):
         state=self.session
-        if side=='target':
-            return state.target
-        return state.detected_code if state.source=='auto' else state.source
+        if side=='target':return state.result,state.target
+        return state.source_text,state.detected_code if state.source=='auto' else state.source
+
+    def _speech_language(self,side):
+        text,preferred=self._speech_input(side)
+        cached=self._speech_codes.get(side)
+        if cached is not None and cached[0]==(text,preferred):return cached[1]
+        return quick_content_language(text,preferred)
+
+    def _resolve_speech_language(self,side,callback=None):
+        from sync_files import DiskWork
+        text,preferred=self._speech_input(side)
+        if not text.strip():return
+        key=text,preferred
+        current=self._speech_jobs.get(side)
+        if current is not None:
+            if current[0]==key and not current[1].cancel.is_set():
+                if callback:current[2][:]=[callback]
+                return
+            current[1].cancel.set()
+        callbacks=[callback] if callback else []
+        detector=self.session.detector
+        job=DiskWork(lambda cancel:None if cancel.is_set() else content_language(text,preferred,detector=detector))
+        self._speech_jobs[side]=(key,job,callbacks)
+        self.session.jobs.add(job)
+        def resolved(code,error):
+            job.signals.done.disconnect(resolved)
+            self.session.jobs.discard(job)
+            if self._speech_jobs.get(side)!=(key,job,callbacks):return
+            del self._speech_jobs[side]
+            if job.cancel.is_set() or self._speech_input(side)!=key or not self.isVisible():return
+            if error:
+                import logging
+                logging.getLogger(__name__).warning('Speech language detection failed: %s',type(error).__name__)
+            self._speech_codes[side]=(key,code)
+            if self._tts_side==side and self.tts_popup.isVisible():
+                self._browse_voices();self._voices_changed()
+            if code:
+                for apply in callbacks:apply()
+            elif callbacks:self._message('未能识别当前文字的语言。')
+        job.signals.done.connect(resolved,Qt.QueuedConnection)
+        self.session.pool.start(job)
 
     def _voice_selection(self):
         return self.store.voice_for(self._tts_side,self._speech_language(self._tts_side))
@@ -435,6 +489,9 @@ class TranslatorDialog(ReferenceModalDialog):
 
     def _browse_voices(self, *, refresh=False):
         code=self._speech_language(self._tts_side)
+        cached=self._speech_codes.get(self._tts_side)
+        if code is None and (cached is None or cached[0]!=self._speech_input(self._tts_side)):
+            self._resolve_speech_language(self._tts_side)
         if code!=self._tts_language or refresh:
             self.voice_popup.hide()
             self._tts_language=code
@@ -447,8 +504,6 @@ class TranslatorDialog(ReferenceModalDialog):
         self._tts_side=side
         self._browse_voices(refresh=True)
         self.tts_popup.popup_below(self.speech_buttons[side][1])
-        if side=='source' and self.session.source=='auto' and self._tts_language is None:
-            self.session.detect_only()
     def _show_voices(self):
         if self.voice_popup.isVisible():self.voice_popup.hide();return
         self.voice_popup.configure(self.speech.catalog,self._voice_selection().get('id',''))
@@ -466,7 +521,7 @@ class TranslatorDialog(ReferenceModalDialog):
         catalog=self.speech.catalog_for(code)
         name=next((voice['name'] for voice in catalog or () if voice['key']==current),'')
         if code is None:
-            title='请先输入原文或选择语言'
+            title='正在识别文字语言…' if self._tts_side in self._speech_jobs else '未识别文字语言'
         elif code not in SPEECH_LANGUAGES:
             title='当前语言暂不支持语音'
         elif catalog is not None and not catalog:
@@ -541,12 +596,6 @@ class TranslatorDialog(ReferenceModalDialog):
 
     def _auto_speak(self):
         if self.store.data['tts_auto'] and self.isVisible() and not self._closing:self._speak(True,force=True)
-    def _source_speech_ready(self):
-        epoch=self._await_source_speech;self._await_source_speech=None
-        if epoch is None or epoch!=self.session.epoch or not self.isVisible():return
-        if self.session.detected_code in TARGETS:self._speak(False)
-        else:self._message('未能识别原文语言，请先指定原文语言后再朗读。')
-
     def sizeHint(self):return QSize(WINDOW_SIZE) if self._layout_ready else super().sizeHint()
     def adjustSize(self):
         if not self._layout_ready:return super().adjustSize()
@@ -588,6 +637,8 @@ class TranslatorDialog(ReferenceModalDialog):
         if hasattr(self,'session') and not self._pinning:self.session.suspend(False)
         self.refresh()
     def hideEvent(self,event):
+        if not self._pinning and (not event.spontaneous() or not self.isMinimized()):
+            self._toggle_clipboard_translation(False)
         if hasattr(self,'_polish_arrival'):self._polish_arrival.stop()
         if hasattr(self,'session') and not self._pinning:self.session.suspend()
         if hasattr(self,'speech'):self.speech.stop()
@@ -601,7 +652,23 @@ class TranslatorDialog(ReferenceModalDialog):
             for target,timer in ((True,self._copy_feedback),(False,self._source_copy_feedback)):
                 timer.stop();self._copy_appearance(target,False)
         super().hideEvent(event)
+
+    def _toggle_clipboard_translation(self,enabled):
+        controller=getattr(self.manager,'translation',None)
+        if controller is not None and hasattr(controller,'set_automatic'):
+            controller.set_automatic(enabled,target=self.session.target)
+
+    def _clipboard_translation_changed(self):
+        controller=self.manager.translation
+        with QSignalBlocker(self.auto_clipboard_button):
+            self.auto_clipboard_button.setChecked(controller.automatic)
+        self.auto_clipboard_button.setProperty('referenceVariant','primary' if controller.automatic else 'secondary')
+        self.auto_clipboard_button.update()
+        if controller.automatic and controller.error:
+            self._message(controller.error)
+
     def closeEvent(self,event):
+        self._toggle_clipboard_translation(False)
         if hasattr(self,'session'):self.session.suspend()
         if hasattr(self,'speech'):self.speech.stop()
         if hasattr(self,'alignment'):self.alignment.cancel()
@@ -677,9 +744,9 @@ class TranslatorDialog(ReferenceModalDialog):
     def save_prompt(self):
         self.show_manager('presets');self._managers['presets'].instruction.setPlainText(self.instruction.text())
     def show_manager(self,kind):
-        from translator_manager import TranslatorManager
+        from translator_manager import TranslationRuleManager, TranslatorManager
         dialog=self._managers.get(kind)
-        if dialog is None:dialog=self._managers[kind]=TranslatorManager(self,kind)
+        if dialog is None:dialog=self._managers[kind]=TranslationRuleManager(self) if kind=='rules' else TranslatorManager(self,kind)
         dialog.refresh();dialog.show();dialog.raise_();dialog.activateWindow()
     def toggle_history(self):self.history.set_open(not self.history.opened)
     def _pin(self,checked):
@@ -713,8 +780,8 @@ class TranslatorDialog(ReferenceModalDialog):
         side='target' if target else 'source'
         code=self._speech_language(side)
         if code not in SPEECH_LANGUAGES:
-            if code is None and self.session.source=='auto':
-                self._await_source_speech=self.session.epoch;self.session.detect_only()
+            if code is None:
+                self._resolve_speech_language(side,lambda:self._speak(target,force=force))
             else:self._message('当前语言暂不支持语音。')
             return
         text=self.session.result if target else self.session.source_text
@@ -729,7 +796,7 @@ class TranslatorDialog(ReferenceModalDialog):
             from native_clipboard_reader import foreign_clipboard_lock
             if foreign_clipboard_lock():self._message('剪贴板被其他应用占用，请稍后再试。');return
         invitation=getattr(self.manager,'translation',None)
-        if invitation is not None:invitation.silence_output_copy(text)
+        if invitation is not None and not getattr(invitation,'automatic',False):invitation.silence_output_copy(text)
         QApplication.clipboard().setText(text)
         self._copy_appearance(target,True)
         (self._copy_feedback if target else self._source_copy_feedback).start()
@@ -783,6 +850,9 @@ class TranslatorDialog(ReferenceModalDialog):
             for control in (self.live_toggle,self.delay_slider,self.tts_rate,self.tts_pitch,self.tts_auto):control.dark=theme=='dark';control.update()
             for dialog in self._managers.values():dialog.refresh()
             if hasattr(self,'history'):self.history.refresh()
+        controller=getattr(self.manager,'translation',None)
+        if getattr(controller,'automatic',False):
+            controller.set_automatic(True,target=self.session.target)
         state=self.session
         finished_polish=self._was_polishing and state.phase in ('idle','ready') and not state.error
         self._was_polishing=state.phase=='polishing'

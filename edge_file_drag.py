@@ -34,7 +34,8 @@ def file_urls(mime):
 def drop_position(widget,event):
     local=event.position()
     if sys.platform=='darwin':
-        return widget.mapToGlobal(QPoint(floor(local.x()),floor(local.y())))
+        from dock_geometry import cocoa_screen_pointer
+        return cocoa_screen_pointer(widget.mapToGlobal(QPoint(floor(local.x()),floor(local.y()))))
     return widget.mapToGlobal(local.toPoint())
 
 
@@ -104,6 +105,7 @@ class EdgeFileDrag(QObject):
         self.closed = False
         self._windows = {}
         self._prepared_space = None
+        self._prepared_layout = None
         self._target = None
         self._anchor = None
         self._down = False
@@ -152,11 +154,19 @@ class EdgeFileDrag(QObject):
             for window in self._windows.values():window.hide()
             self._prepared_space=space
         regions=self.visual.input_regions(target)
-        protected=tuple(self.preview_regions());self._covered_by_preview=False
+        protected=tuple(self.preview_regions())
+        layout=(space,tuple((edge,rect.getRect()) for edge,rect in regions.items()),
+                tuple(rect.getRect() for rect in protected))
+        if layout==self._prepared_layout:return
+        self._prepared_layout=layout
+        self._covered_by_preview=False
         for edge,window in self._windows.items():
             if edge not in regions:window.hide()
         for edge,rect in regions.items():
             window=self._window(edge)
+            if sys.platform=='darwin':
+                from dock_geometry import cocoa_drop_window_rect
+                rect=cocoa_drop_window_rect(rect,target.area,edge)
             if window.geometry()!=rect:window.setGeometry(rect)
             mask=QRegion(window.rect())
             for preview in protected:mask=mask.subtracted(QRegion(preview.intersected(rect).translated(-rect.topLeft())))
@@ -235,45 +245,47 @@ class EdgeFileDrag(QObject):
             return None
         return position
 
-    def _can_receive(self, event, position):
-        if self.closed or not self.prepared or self._drop_committed or self._drop_inflight or not self.allowed():
-            return False
-        target = self.visual.target_at(position)
-        if target is None or not any(window.isVisible() and window.geometry().contains(position)
-                                     for window in self._windows.values()):
-            return False
-        # Accepting a proposed MoveAction can delete a source file. This
-        # destination only advertises native Copy, never changes source art.
-        return bool(event.possibleActions() & Qt.CopyAction) and bool(file_urls(event.mimeData()))
+    def _receive_target(self,event,position):
+        if (self.closed or not self.prepared or self._drop_committed or self._drop_inflight
+                or not self.allowed() or not event.possibleActions()&Qt.CopyAction):
+            return None
+        if not any(window.isVisible() and window.geometry().contains(position) for window in self._windows.values()):
+            return None
+        return self.visual.target_at(position)
 
     def _native_move(self, event, position, *, entering=False):
-        if not self._can_receive(event, position):
+        target=self._receive_target(event,position)
+        urls=file_urls(event.mimeData()) if target is not None else ()
+        if not urls:
             event.ignore()
             if entering:
                 self._cancelled_target = self._target.signature() if self._target else None
                 self._defer_stop()
             return
+        # Always negotiate Copy. A native MoveAction could delete the source.
         event.setDropAction(Qt.CopyAction)
         event.accept()
-        self._observe_file(event,position,entering=entering)
+        self._observe_file(position,target,urls,entering=entering)
 
     def observe_native_move(self,event,position,*,entering=False):
         """A real shelf drag event may sustain light through the preview's hole."""
         if (not self.coexisting_preview or self.closed or self._drop_committed or self._drop_inflight
-                or not self.allowed() or not event.possibleActions()&Qt.CopyAction or not file_urls(event.mimeData())):return
-        if self.visual.target_at(position) is None:return
-        self._observe_file(event,position,entering=entering)
+                or not self.allowed() or not event.possibleActions()&Qt.CopyAction):return
+        target=self.visual.target_at(position)
+        if target is None:return
+        urls=file_urls(event.mimeData())
+        if urls:self._observe_file(position,target,urls,entering=entering)
 
-    def _observe_file(self,event,position,*,entering=False):
+    def _observe_file(self,position,target,urls,*,entering=False):
         first = not self._seen_file
         if entering or first:
             self._epoch += 1  # A re-enter invalidates the previous leave's queued hide.
         self._cancelled_target = None
-        self._target = self.visual.target_at(position)
-        self._last_native_position = QPoint(position)
-        self._seen_file = True
-        if first or entering:self.visual.prefetch_icons(file_urls(event.mimeData()))
-        self.visual.follow(position)
+        self._target=target
+        self._last_native_position=QPoint(position)
+        self._seen_file=True
+        if first or entering:self.visual.prefetch_icons(urls)
+        self.visual.follow(position,target=target)
         if self.on_file_move is not None:
             self.on_file_move(QPoint(position))
             if not self.closed:self._prepare(self._target)
@@ -306,17 +318,17 @@ class EdgeFileDrag(QObject):
     def _native_drop(self, event, position,*,preview=False):
         preview=preview or bool(self.on_preview_drop and any(rect.contains(position) for rect in self.preview_regions()))
         valid_preview=(preview and self.on_preview_drop and not self.closed and not self._drop_committed
-                       and not self._drop_inflight and self.allowed() and bool(event.possibleActions()&Qt.CopyAction)
-                       and bool(file_urls(event.mimeData())))
-        if not (valid_preview if preview else self._can_receive(event, position)):
+                       and not self._drop_inflight and self.allowed() and bool(event.possibleActions()&Qt.CopyAction))
+        allowed=valid_preview if preview else self._receive_target(event,position) is not None
+        urls=file_urls(event.mimeData()) if allowed else ()
+        if not urls:
             event.ignore()
             self._defer_stop()
             return
         # Copy just local URLs while the event owns its QMimeData. Never keep
         # an event wrapper, touch its image data, or trust an old probe result.
         owned = QMimeData()
-        owned.setUrls(file_urls(event.mimeData()))
-        urls=owned.urls()
+        owned.setUrls(urls)
         handled = False
         self._drop_inflight = True
         try:
@@ -373,6 +385,7 @@ class EdgeFileDrag(QObject):
 
     def _stop_destination(self, *, preserve_drop=False):
         self._release_timer.stop()
+        self._prepared_layout=None
         self._covered_by_preview=False
         self._release_pending = self._seen_file = False
         for window in self._windows.values():window.hide()

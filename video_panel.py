@@ -4,21 +4,26 @@ import sys
 import time
 import math
 import re
-from PySide6.QtCore import QEvent,QPointF,QRect,QRectF,QSize,Qt,QTimer
-from PySide6.QtGui import QFont,QFontMetricsF,QPainter,QColor,QLinearGradient,QPen
-from PySide6.QtWidgets import QButtonGroup,QCheckBox,QFrame,QGridLayout,QHBoxLayout,QLabel,QLineEdit,QPushButton,QSizePolicy,QStackedWidget,QStyle,QStyleOptionButton,QStylePainter,QVBoxLayout,QWidget
+from PySide6.QtCore import QPointF,QRect,QRectF,QSize,Qt,QTimer
+from PySide6.QtGui import QFont,QFontMetricsF,QPainter,QColor,QLinearGradient,QPainterPath,QPen
+from PySide6.QtWidgets import QButtonGroup,QCheckBox,QFrame,QGridLayout,QHBoxLayout,QLabel,QLineEdit,QPushButton,QSizePolicy,QStackedWidget,QVBoxLayout,QWidget
 from app_settings import ReferenceModalDialog,SettingsCloseButton,SettingsToggleSwitch
 from native_ui_common import SEGMENT_INSET_PX
-from native_ui_common import RADIUS_PANEL_PX, colors,font_css_stack,keyboard_focus_visible,set_ui_weight,RADIUS_CARD_PX,RADIUS_CONTROL_PX
-from reference_widgets import IconTextButton,button,css,refresh_tree,icon
+from native_ui_common import (RADIUS_PANEL_PX,colors,font_css_stack,keyboard_focus_visible,
+    paint_rounded_surface,qss_color,set_ui_weight,RADIUS_CARD_PX,RADIUS_CONTROL_PX)
+from reference_widgets import button,css,refresh_tree,icon
 from image_preview import ImagePreview
 from media_preview import MediaPreview
+from ui_transitions import SelectionSurface
 from window_chrome import WindowChrome
 
 VIDEO_WINDOW_SIZE=QSize(980,740)
 VIDEO_WINDOW_MIN_SIZE=QSize(600,420)
 SOURCE_GRID_BREAKPOINT_PX=580
 SOURCE_CARD_SPACING_PX=10
+SOURCE_TAB_HEIGHT_PX=30
+SOURCE_TAB_PADDING_PX=14
+SOURCE_TAB_COUNT_GAP_PX=5
 MAC_WINDOW_CONTROLS=(('close','#FF5F56','关闭视频解析'),('min','#FFBD2E','最小化'),('max','#27C93F','最大化或还原'))
 PROMPT_SWITCH_WIDTH_PX=44
 SKELETON_CYCLE_SECONDS=1.6
@@ -149,8 +154,7 @@ class VideoSourceCard(QFrame):
         self.shelf=button('','shelf',variant='secondary',parent=self)
         self.folder=button('','folder',variant='secondary',parent=self)
         for control,action,name in ((self.download,'download','下载'),(self.folder,'folder','打开所在文件夹'),(self.shelf,'shelf','下载后放入搁架')):
-            dark_style,light_style=control._reference_style
-            css(control,dark_style.replace('background:#272727','background:#333333',1),light_style)
+            control.setProperty('videoSourceAction',True)
             control.setFixedSize(30,30);control.setAccessibleName(name);control.setToolTip(name)
             control.clicked.connect(lambda checked=False,action=action:self._invoke(action));foot.addWidget(control)
         actions.addLayout(foot);head.addLayout(actions);layout.addLayout(head)
@@ -235,12 +239,41 @@ class VideoSourceCard(QFrame):
             self.progress_percent.setText(f'{row["progress"]:.0%}')
             self.progress_percent.setAccessibleName(('转换进度 ' if row['status']=='converting' else '处理进度 ' if row['status']=='processing' else '下载进度 ')+self.progress_percent.text())
 
-class VideoSourceTab(IconTextButton):
-    """Keep the source count smaller while retaining a single button target."""
-    def __init__(self,text,parent=None):
-        super().__init__(text,parent)
-        self.source_title,self.source_count=text.rsplit('  ',1)
-        self._tab_theme='dark'
+class VideoSourceTabs(SelectionSurface):
+    """Keep the video-source labels and their shared sliding pill in phase."""
+    def __init__(self,parent,*,motion):
+        super().__init__(parent,radius=SOURCE_TAB_HEIGHT_PX/2,motion=motion)
+        self.setObjectName('videoSourceTabs')
+        height=SOURCE_TAB_HEIGHT_PX+2*SEGMENT_INSET_PX
+        self.set_surface_background('control','control',height/2,stroke_role='border')
+
+    def indicator_path(self,button):
+        bounds=self._selection_rect.translated(-button.x(),-button.y())
+        path=QPainterPath()
+        if not bounds.isEmpty():
+            radius=min(bounds.width()/2,bounds.height()/2)
+            path.addRoundedRect(bounds,radius,radius)
+        return path
+
+    def _spring_frame(self,values):
+        super()._spring_frame(values)
+        for button in self._selection_buttons:button.update()
+
+    def set_selection_theme(self,theme):
+        if self._selection_theme==theme:return
+        super().set_selection_theme(theme)
+        for button in self._selection_buttons:button.update()
+
+
+class VideoSourceTab(QPushButton):
+    """Draw the title and count against the background that is under them."""
+    def __init__(self,title,count,parent):
+        super().__init__(f'{title}  {count}',parent)
+        self.source_title,self.source_count=title,str(count)
+        self.setCursor(Qt.PointingHandCursor);self.setFocusPolicy(Qt.StrongFocus)
+        self.setFixedHeight(SOURCE_TAB_HEIGHT_PX);self.setCheckable(True)
+        self.setAccessibleName(f'{title}来源，共 {count} 个')
+        css(self,"QPushButton{background:transparent;border:0;font:500 12px 'FlickDock UI';}")
 
     def text_fonts(self):
         title=QFont(self.font());set_ui_weight(title,400)
@@ -250,18 +283,45 @@ class VideoSourceTab(IconTextButton):
         set_ui_weight(count,400)
         return title,count
 
+    def sizeHint(self):
+        title,count=self.text_fonts()
+        width=QFontMetricsF(title).horizontalAdvance(self.source_title)+QFontMetricsF(count).horizontalAdvance(self.source_count)
+        return QSize(math.ceil(width)+2*SOURCE_TAB_PADDING_PX+SOURCE_TAB_COUNT_GAP_PX,SOURCE_TAB_HEIGHT_PX)
+
     def paintEvent(self,event):
-        painter=QStylePainter(self);option=QStyleOptionButton();self.initStyleOption(option)
-        option.text='';painter.drawControl(QStyle.CE_PushButton,option)
-        c=colors(self._tab_theme);hover=bool(self.property('tabHover')) or self.underMouse()
-        painter.setPen(QColor(c['text'] if self.isChecked() or hover else c['secondary']))
-        if not self.isEnabled():painter.setOpacity(.55)
-        title_font,count_font=self.text_fonts();title_metrics=QFontMetricsF(title_font);count_metrics=QFontMetricsF(count_font)
-        title_width=title_metrics.horizontalAdvance(self.source_title);count_width=count_metrics.horizontalAdvance(self.source_count)
-        x=(self.width()-title_width-5-count_width)/2
+        group=self.parentWidget();c=colors(group._selection_theme)
+        pill=group.indicator_path(self)
+        rect=QRectF(self.rect());radius=rect.height()/2
+        outside=QPainterPath();outside.addRect(rect);outside=outside.subtracted(pill)
+        painter=QPainter(self)
+        painter.setRenderHints(QPainter.Antialiasing|QPainter.TextAntialiasing)
+        painter.save();painter.setClipPath(outside)
+        if self.isEnabled() and (self.isDown() or self.underMouse()):
+            role='control_pressed' if self.isDown() else 'control_hover'
+            paint_rounded_surface(painter,rect,radius,qss_color(c[role]))
+        inactive_ink=c['text'] if self.isEnabled() else c['muted']
+        count_ink=c['secondary'] if self.isEnabled() else c['muted']
+        self._paint_label(painter,inactive_ink,count_ink)
+        painter.restore()
+        if pill.intersects(rect):
+            painter.save();painter.setClipPath(pill)
+            self._paint_label(painter,c['segment_selected_ink'],c['segment_selected_ink'])
+            painter.restore()
+        if keyboard_focus_visible(self):
+            paint_rounded_surface(painter,rect.adjusted(1,1,-1,-1),radius-1,None,qss_color(c['ring']))
+        painter.end()
+
+    def _paint_label(self,painter,ink,count_ink):
+        title_font,count_font=self.text_fonts()
+        title_metrics=QFontMetricsF(title_font)
+        title_width=title_metrics.horizontalAdvance(self.source_title)
+        count_width=QFontMetricsF(count_font).horizontalAdvance(self.source_count)
+        x=(self.width()-title_width-SOURCE_TAB_COUNT_GAP_PX-count_width)/2
         baseline=(self.height()-title_metrics.height())/2+title_metrics.ascent()
-        painter.setFont(title_font);painter.drawText(QPointF(x,baseline),self.source_title)
-        painter.setFont(count_font);painter.drawText(QPointF(x+title_width+5,baseline),self.source_count)
+        painter.setPen(QColor(ink));painter.setFont(title_font)
+        painter.drawText(QPointF(x,baseline),self.source_title)
+        painter.setPen(QColor(count_ink));painter.setFont(count_font)
+        painter.drawText(QPointF(x+title_width+SOURCE_TAB_COUNT_GAP_PX,baseline),self.source_count)
 
 
 class VideoSourceStack(QStackedWidget):
@@ -309,16 +369,13 @@ class VideoResult(QFrame):
         meta=plain_label(' · '.join(value for value in (entry['uploader'],length) if value),self);info.addWidget(meta)
         info.addWidget(plain_label(f'解析成功 · {len(entry["sources"])} 个源',self,'videoSuccess'));summary.addLayout(info,1);layout.addLayout(summary)
         tabs=QHBoxLayout();tabs.setContentsMargins(0,0,0,0);tabs.setSpacing(6)
-        from ui_transitions import SelectionSurface
-        self.tabs_frame=SelectionSurface(self,radius=16);self.tabs_frame.setObjectName('videoSourceTabs')
+        self.tabs_frame=VideoSourceTabs(self,motion=lambda:getattr(controller.manager,'motion',True))
         self.tabs_frame.setSizePolicy(QSizePolicy.Maximum,QSizePolicy.Fixed)
         tab_row=QHBoxLayout(self.tabs_frame);tab_row.setContentsMargins(*(SEGMENT_INSET_PX,)*4);tab_row.setSpacing(4)
         self.source_tabs={};self.source_stack=VideoSourceStack(self);self.source_group=QButtonGroup(self);self.source_group.setExclusive(True)
         for index,(kind,title) in enumerate((('video','视频'),('audio','音频'))):
             rows=[row for row in entry['sources'] if row['option']['kind']==kind]
-            tab=button(f'{title}  {len(rows)}',variant='secondary',parent=self.tabs_frame,control_type=VideoSourceTab);tab.setCheckable(True);tab.setEnabled(bool(rows))
-            tab.setProperty('tabHover',False);tab.installEventFilter(self)
-            tab.setAccessibleName(f'{title}来源，共 {len(rows)} 个');tab.setFixedHeight(30)
+            tab=VideoSourceTab(title,len(rows),self.tabs_frame);tab.setEnabled(bool(rows))
             self.source_group.addButton(tab,index);self.source_tabs[kind]=tab;tab_row.addWidget(tab);self.tabs_frame.add_selection_button(tab)
             tab.clicked.connect(lambda checked=False,index=index:self.source_stack.setCurrentIndex(index))
             page=QWidget(self.source_stack);grid=QGridLayout(page);grid.setContentsMargins(0,0,0,0);grid.setSpacing(SOURCE_CARD_SPACING_PX);grid.setAlignment(Qt.AlignTop)
@@ -326,18 +383,14 @@ class VideoResult(QFrame):
             for row in rows:
                 card=VideoSourceCard(row,controller,page);self.cards[row['key']]=card;cards.append(card)
             self.grids.append((grid,cards));self.source_stack.addWidget(page)
+        width=max(tab.sizeHint().width() for tab in self.source_tabs.values())
+        for tab in self.source_tabs.values():tab.setMinimumWidth(width)
         tabs.addWidget(self.tabs_frame);tabs.addStretch();layout.addLayout(tabs);layout.addWidget(self.source_stack)
         initial='video' if self.source_tabs['video'].isEnabled() else 'audio'
         self.source_tabs[initial].setChecked(True);self.source_stack.setCurrentIndex(0 if initial=='video' else 1)
         self.source_stack.currentChanged.connect(lambda _index:self._fit_sources())
         self._reflow(2)
         self._fit_sources()
-
-    def eventFilter(self,watched,event):
-        if watched in self.source_tabs.values() and event.type() in (QEvent.Type.Enter,QEvent.Type.Leave):
-            watched.setProperty('tabHover',event.type()==QEvent.Type.Enter)
-            watched.style().unpolish(watched);watched.style().polish(watched);watched.update()
-        return super().eventFilter(watched,event)
 
     def resizeEvent(self,event):
         self._reflow(2 if self.width()>=SOURCE_GRID_BREAKPOINT_PX else 1)
@@ -364,12 +417,7 @@ class VideoResult(QFrame):
 
     def refresh(self,theme):
         self.cover.dark=theme=='dark';self.cover.update()
-        c=colors(theme)
         self.tabs_frame.set_selection_theme(theme)
-        self.tabs_frame.setStyleSheet(f"QFrame#videoSourceTabs{{background:{c['control']};border:0;border-radius:{RADIUS_CONTROL_PX}px;}}")
-        for tab in self.source_tabs.values():
-            tab._tab_theme=theme
-            tab.setStyleSheet(f"QPushButton{{background:transparent;color:{c['secondary']};border:1px solid transparent;border-radius:{RADIUS_CONTROL_PX-2}px;padding:4px 12px;}} QPushButton:hover:enabled,QPushButton[tabHover='true']:enabled{{background:{c['hover']};color:{c['text']};}} QPushButton:checked,QPushButton:checked:hover:enabled,QPushButton[tabHover='true']:checked:enabled,QPushButton:checked:pressed{{background:transparent;border:1px solid transparent;color:{c['text']};}} QPushButton:pressed:!checked:enabled{{background:{c['selected']};}} QPushButton:disabled{{color:{c['muted']};}} QPushButton:focus{{border:1px solid {c['ring']};}}")
         for card in self.cards.values():card.refresh(theme)
         for grid,_cards in self.grids:grid.invalidate()
         self._fit_sources()

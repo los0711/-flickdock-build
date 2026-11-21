@@ -232,10 +232,10 @@ class EdgeAbsorb(QObject):
 
     def armed(self, position): return self.target_at(position) is not None
 
-    def follow(self, position):
+    def follow(self, position,*,target=None):
         if self.closed:
             return None
-        target = self.target_at(position)
+        if target is None:target=self.target_at(position)
         if target is None:
             self.retreat()
             return None
@@ -263,7 +263,7 @@ class EdgeAbsorb(QObject):
         low, high = (target.area.top(), target.area.bottom()) if side else (target.area.left(), target.area.right())
         normalized=target.distance*self.config.trigger_distance_px/target.trigger_width if target.trigger_width else target.distance
         self.field.follow(tangent, normalized, low, high, reset=reset)
-        self._update_geometry()
+        if reset or not self.overlay.isVisible():self._update_geometry()
         self._start()
 
     def retreat(self):

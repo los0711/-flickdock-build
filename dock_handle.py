@@ -1,6 +1,9 @@
 """Screen-edge trigger presentation and pointer/drop entry."""
 from __future__ import annotations
 
+from math import floor
+
+from PySide6.QtCore import QPoint
 from PySide6.QtCore import QRect
 from PySide6.QtCore import QRectF
 from PySide6.QtCore import Qt
@@ -54,6 +57,10 @@ class DockHandle(QWidget):
             return QRect(self.geometry()) if self.active() else QRect()
         return self.activation_region()
 
+    def can_reveal_at(self,position):
+        return (self.isVisible() and not self.manager.edge_suppressed
+                and self.file_preview_region().contains(position))
+
     def position_at_edge(self):
         values=self.values()
         self.setGeometry(trigger_rect(self.screen_area(),values['dock_edge'],values['dock_position'],values['dock_length'],values['dock_thickness']))
@@ -87,15 +94,14 @@ class DockHandle(QWidget):
         painter.end()
 
     def enterEvent(self,event):
-        if not self.active():super().enterEvent(event);return
-        self.manager.edge=self
+        point=event.globalPosition()
+        position=QPoint(floor(point.x()),floor(point.y())) if sys.platform=='darwin' else point.toPoint()
         magnetic=getattr(self.manager,'edge_file_drag',None)
-        if not self.manager.edge_suppressed:
-            if not (magnetic and magnetic.prepared):
-                self.manager.show_docked()
-            elif (getattr(magnetic,'coexisting_preview',False) and
-                  self.file_preview_region().contains(event.globalPosition().toPoint())):
-                self.manager.show_docked()
+        if self.can_reveal_at(position) and (not magnetic or not magnetic.prepared or magnetic.coexisting_preview):
+            self.manager.edge=self
+            if QGuiApplication.mouseButtons()&Qt.LeftButton or (magnetic is not None and magnetic.prepared):
+                self.manager.show_docked(file_drag=True)
+            else:self.manager.show_docked()
         super().enterEvent(event)
 
     def _magnetic_event(self,event,*,dropping=False):
@@ -108,22 +114,22 @@ class DockHandle(QWidget):
         # handle. Keep one intake owner instead of revealing a second target.
         if dropping:magnetic._native_drop(event,position)
         else:magnetic._native_move(event,position,entering=True)
-        if not dropping and getattr(magnetic,'coexisting_preview',False) and self.file_preview_region().contains(position):
-            self.manager.show_docked()
         return True
 
     def dragEnterEvent(self,event):
-        self.manager.edge=self
         if self._magnetic_event(event):return
-        if not self.active():event.ignore();return
+        from edge_file_drag import drop_position
+        if not self.can_reveal_at(drop_position(self,event)):event.ignore();return
         if self.manager.shelf.accepts_content_drop(event):
             event.setDropAction(Qt.DropAction.CopyAction); event.accept()
-            self.manager.show_docked()
+            self.manager.edge=self
+            self.manager.show_docked(file_drag=True)
         else: event.ignore()
 
     def dropEvent(self,event):
         if self._magnetic_event(event,dropping=True):return
-        if not self.active():event.ignore();return
+        from edge_file_drag import drop_position
+        if not self.can_reveal_at(drop_position(self,event)):event.ignore();return
         if self.manager.shelf.accepts_content_drop(event) and self.manager.shelf.receive_mime('permanent',event.mimeData()):
             event.setDropAction(Qt.DropAction.CopyAction); event.accept()
         else: event.ignore()

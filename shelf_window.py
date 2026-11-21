@@ -40,7 +40,7 @@ from dock_geometry import reveal_rect
 from drag_artwork import drag_pixmap
 from drag_probe import is_content_mime
 from flickdock_icons import app_icon
-from flickdock_motion import MotionShadow
+from flickdock_motion import MotionShadow, SHELF_SHADOW_ALPHA
 from flickdock_motion import Spring
 from fractions import Fraction
 from native_ui_common import SHELF_HEADER_BUTTON_GAP_PX
@@ -189,6 +189,7 @@ class ShelfWindow(QWidget):
         self._more_menu = None
         self._more_menu_just_closed = False
         self.incoming_drop = False
+        self._dock_drag_reveal = False
         self._intake_preserve_view=False
         self._intake_epoch = 0
         self._intake_stage = 'idle'
@@ -206,7 +207,7 @@ class ShelfWindow(QWidget):
         set_ui_style(self.card, "QFrame#shelfCard {background:transparent;border:0;}")
         # The native host remains transparent; this is the card's rounded
         # shadow, confined to the reserved animation surface margins.
-        self.surface_effect = MotionShadow(self.card, alpha=42,
+        self.surface_effect = MotionShadow(self.card, alpha=SHELF_SHADOW_ALPHA,
             cache_while=lambda:self.expanded and self.presentation._timer.isActive() and not self.incoming_drop and not self.preview_playing)
         self.surface_effect.setBlurRadius(20)
         self.surface_effect.setOffset(0, 4)
@@ -715,6 +716,9 @@ class ShelfWindow(QWidget):
         if (sys.platform!='win32' or previous is None or abs(alpha-previous)>=WINDOW_OPACITY_STEP
                 or (endpoint and alpha!=previous)):
             self.setWindowOpacity(alpha);self._applied_window_opacity=alpha
+        history=getattr(self.manager,'clipboard_history',None)
+        if history is not None:
+            history.follow_shelf_presentation(self,alpha,values)
 
     def toggle_contents(self):
         if self.property('flickdockConfirmationActive'): return
@@ -934,7 +938,8 @@ class ShelfWindow(QWidget):
             popup._render_signature=None;popup.rebuild()
         if hasattr(self,'zones'):self.zones['permanent'].refresh()
 
-    def add_paths(self, mode, refs, *, defer_cloud=False):
+    def add_paths(self, mode, refs, *, defer_cloud=False,direct_drop=False):
+        new_files=[]
         for ref in refs:
             info=None
             if not self.content.is_text(ref):
@@ -945,11 +950,14 @@ class ShelfWindow(QWidget):
             if self.content.exists(value):
                 if info is not None:self.file_metadata.prime(value,info)
                 if value in self.files[mode]: self.files[mode].remove(value)
+                elif direct_drop and info is not None:new_files.append(value)
                 metadata=self.content.metadata.setdefault(value,{})
                 from shelf_content import _format_shelf_timestamp
                 if not _format_shelf_timestamp(metadata.get('added_at')):
                     metadata['added_at']=time.time();metadata['added_at_source']='local'
                 self.files[mode].append(value)
+        direct=getattr(self.manager,'shelf_direct',None)
+        if direct is not None and new_files:direct.mark_drop(new_files)
         self.refresh()
         self.touch()
         if defer_cloud and hasattr(self.manager, 'save_after_intake'):
@@ -958,7 +966,8 @@ class ShelfWindow(QWidget):
             self.manager.save()
         self.manager.update_handles()
 
-    def import_paths(self,mode,refs,on_committed=None,on_failed=None,*,_checked=False,force_copy=False,_capacity_warning=False):
+    def import_paths(self,mode,refs,on_committed=None,on_failed=None,*,_checked=False,force_copy=False,
+                     _capacity_warning=False,direct_drop=False):
         """Cloud capacity never prevents keeping a file on the local shelf."""
         refs=list(refs)
         if not _checked and hasattr(self.manager,'check_cloud_capacity'):
@@ -968,8 +977,12 @@ class ShelfWindow(QWidget):
                 if insufficient is None or epoch!=self._copy_epoch:
                     if on_failed:on_failed('搁架已切换，本次放入已取消。')
                     return
-                self.import_paths(mode,refs,on_committed,on_failed,_checked=True,force_copy=force_copy,_capacity_warning=insufficient)
+                self.import_paths(mode,refs,on_committed,on_failed,_checked=True,force_copy=force_copy,
+                                  _capacity_warning=insufficient,direct_drop=direct_drop)
             self.manager.check_cloud_capacity(refs,checked);return
+        def store(paths):
+            kwargs={'direct_drop':True} if direct_drop and not _capacity_warning and mode=='permanent' else {}
+            self.add_paths(mode,paths,defer_cloud=on_committed is not None,**kwargs)
         def committed(paths):
             if on_committed:on_committed()
             if _capacity_warning:
@@ -981,7 +994,7 @@ class ShelfWindow(QWidget):
             offer=getattr(self.manager,'offer_large_intake',None)
             if offer:offer(paths)
         if not force_copy and self.manager.settings.capture_mode!='copy':
-            self.add_paths(mode,refs,defer_cloud=on_committed is not None)
+            store(refs)
             committed(refs)
             return
         directory=self.manager.settings.capture_dir
@@ -992,7 +1005,7 @@ class ShelfWindow(QWidget):
             key=os.path.normcase(os.path.abspath(ref))
             if key!=owned and not key.startswith(owned+os.sep):external.append(ref)
         if not external:
-            self.add_paths(mode,refs,defer_cloud=on_committed is not None)
+            store(refs)
             committed(refs)
             return
         job=CopyFilesJob(external,directory,parent=self)
@@ -1022,8 +1035,7 @@ class ShelfWindow(QWidget):
                     self.content.metadata[new]={'capture_mode':'copy','original_name':Path(old).name,'owned_root':str(Path(directory).absolute())}
                     if intake_times.get(old) is not None:self.content.metadata[new]['added_at']=intake_times[old]
                 captured=[replacement.get(ref,ref) for ref in refs]
-                self.add_paths(mode,captured,
-                               defer_cloud=on_committed is not None)
+                store(captured)
                 committed(captured)
                 if not on_committed:self.zones[mode].pulse('drop')
             else:
@@ -1135,13 +1147,18 @@ class ShelfWindow(QWidget):
                     if self.content.is_text(ref) and not jobs:self.content.materialize_pasted_text(ref,self.manager.settings.capture_dir)
             except OSError as error:
                 self.status_label.setText('文字文件未能保存：'+str(error));return False
+        self.manager.just_dropped = time.monotonic()
+        if not reveal:
+            # The magnetic surface owns landing feedback. Importing here must
+            # never start, retarget or finish the shelf's window animations.
+            self.import_paths(mode,paths,direct_drop=source=='drop')
+            for ref,url in jobs:self.resolver.resolve(ref,url)
+            return True
         self._cancel_intake()
         epoch=self._intake_epoch
         self._intake_preserve_view=source=='paste' or self.expanded
         self.incoming_drop = True
-        self.manager.just_dropped = time.monotonic()
-        self._silent_intake = not reveal
-        if reveal and (self.visible_state=='hiding' or not self.isVisible()):
+        if self.visible_state=='hiding' or not self.isVisible():
             # On some native drags the mouse-up poll precedes OLE DropEvent.
             # That poll starts the transient shelf's hide animation. Retarget
             # it as soon as this real content drop is accepted, before a copy
@@ -1149,7 +1166,7 @@ class ShelfWindow(QWidget):
             self._show_at(self._dock_target,self.presentation_kind,QPoint())
         self.import_paths(mode,paths,
             on_committed=lambda:self._committed_intake(mode,epoch),
-            on_failed=lambda:self._abort_intake(epoch))
+            on_failed=lambda:self._abort_intake(epoch),direct_drop=source=='drop')
         for ref,url in jobs: self.resolver.resolve(ref,url)
         return True
 
@@ -1169,7 +1186,7 @@ class ShelfWindow(QWidget):
     def _committed_intake(self,mode,epoch):
         """One accepted drop: commit, visible landing, then tuck once."""
         if epoch!=self._intake_epoch or not self.incoming_drop:return
-        if not self.isVisible() and not getattr(self,'_silent_intake',False):
+        if not self.isVisible():
             self._show_at(self._dock_target,self.presentation_kind,QPoint())
         self._intake_mode=mode
         if self.expanded and not self.pinned and not self._intake_preserve_view:
@@ -1261,6 +1278,10 @@ class ShelfWindow(QWidget):
             event.ignore()
 
     def observe_edge_file_move(self,event,*,entering=False,origin=None):
+        if entering and self.presentation_kind=='dock' and event.mimeData().hasUrls():
+            self._dock_drag_reveal=True
+            history=getattr(self.manager,'clipboard_history',None)
+            if history is not None:history.hide()
         gate=getattr(self.manager,'edge_file_drag',None)
         if gate is not None:gate.observe_native_move(event,(origin or self).mapToGlobal(event.position().toPoint()),entering=entering)
 
@@ -1380,6 +1401,9 @@ class ShelfWindow(QWidget):
         self.touch()
         from ui_transitions import SHELF_REVEAL_RESPONSE_SECONDS,SHELF_REVEAL_DAMPING
         self.presentation.animate({"sx": 1, "sy": 1, "alpha": 1, "dx": 0, "dy": 0},response=SHELF_REVEAL_RESPONSE_SECONDS,damping=SHELF_REVEAL_DAMPING)
+        history=getattr(self.manager,'clipboard_history',None)
+        if history is not None and kind=='dock' and not self.expanded:
+            history.sync(self)
         self.manager.update_handles()
 
     def _raise_for_reveal(self):
@@ -1428,7 +1452,7 @@ class ShelfWindow(QWidget):
         if getattr(self,'_shake_outside_since',None) is None:self._shake_outside_since=now
         return now-self._shake_outside_since>=SHAKE_DISMISS_SECONDS
 
-    def reveal_from_dock(self,*,expanded=False):
+    def reveal_from_dock(self,*,expanded=False,file_drag=False):
         if self.manager.edge_suppressed: return
         offsets={'right':QPoint(30,0),'left':QPoint(-30,0),'top':QPoint(0,-24),'bottom':QPoint(0,24)}
         if self.isVisible():
@@ -1437,8 +1461,10 @@ class ShelfWindow(QWidget):
                 self.hide_immediately()
             else:
                 # A hover return interrupts the dock spring at its current anchor.
+                self._dock_drag_reveal|=file_drag
                 self._show_at(self.visual_geometry().topLeft(),'dock',QPoint())
                 return
+        self._dock_drag_reveal=file_drag
         compact=self._dock_target_rect()
         rect=self._expansion_rect(compact) if expanded else compact
         with self._surface_transaction():
@@ -1461,7 +1487,7 @@ class ShelfWindow(QWidget):
         if self.pinned and not explicit:
             return
         self._hide_fallback.stop()
-        self._dismiss_clipboard_preview()
+        self._dismiss_clipboard_preview(keep_history=True)
         self._cancel_intake()
         self._explicit_hiding = explicit
         if explicit:
@@ -1514,6 +1540,7 @@ class ShelfWindow(QWidget):
         self._release_reveal_level()
         self.visible_state = "hidden"
         self.incoming_drop = False
+        self._dock_drag_reveal = False
         self.expanded = False
         self.expand_button.set_glyph("expand")
         self.status_label.show()
@@ -1525,6 +1552,8 @@ class ShelfWindow(QWidget):
 
     def hover_region_contains(self,point):
         if not self.isVisible(): return False
+        history=getattr(self.manager,'clipboard_history',None)
+        if history is not None and history.contains(point):return True
         dialog=getattr(self.manager,'clipboard_preview_dialog',None)
         if dialog is not None and dialog.isVisible() and dialog.frameGeometry().contains(point):return True
         capacities=[self.zones['permanent'].capacity_button]
@@ -1624,7 +1653,9 @@ class ShelfWindow(QWidget):
     def picker_hold_active(self,now=None):
         return self._file_choosing or (time.monotonic() if now is None else now)<self._picker_return_until
 
-    def _dismiss_clipboard_preview(self):
+    def _dismiss_clipboard_preview(self,*,keep_history=False):
+        history=getattr(self.manager,'clipboard_history',None)
+        if history is not None and not keep_history:history.hide()
         dialog=getattr(self.manager,'clipboard_preview_dialog',None)
         if dialog is not None and dialog.isVisible():dialog.close()
 

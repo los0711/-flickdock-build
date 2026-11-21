@@ -46,6 +46,13 @@ def inno_compiler():
 
 
 def main():
+    import os
+    if os.environ.get('GITHUB_REF_NAME','').startswith('ci-clipboard-paste-1840'):
+        import subprocess
+        from pathlib import Path
+        result=Path(os.environ['RUNNER_TEMP'])/'image-paste'
+        subprocess.run([sys.executable,'ci_clipboard_history_native.py','driver',str(result)],
+            check=True,env=dict(os.environ,QT_QPA_PLATFORM='windows'))
     if sys.platform != 'win32' or os.environ.get('GITHUB_ACTIONS') != 'true':
         raise RuntimeError('Run this builder only on a disposable Windows GitHub Actions runner.')
     for name in ('FlickDock.iss', 'ChineseSimplified.isl'):
