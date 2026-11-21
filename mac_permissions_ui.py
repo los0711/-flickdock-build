@@ -127,7 +127,9 @@ class MacPermissionsDialog(ReferenceModalDialog):
             self._awaiting_system=False
             self._guided_flow=False
             self.show()
-        elif QApplication.instance().applicationState()==Qt.ApplicationActive:
+        elif kind=='files' and QApplication.instance().applicationState()==Qt.ApplicationActive:
+            # The native folder chooser has returned synchronously. System
+            # Settings can take longer to launch; wait for a real app return.
             self._return_timer.start(150)
 
     def advance(self):

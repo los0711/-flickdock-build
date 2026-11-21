@@ -80,7 +80,8 @@ class ClipboardHistory(QObject):
             self.jobs.discard(job)
             if self.closed:return
             if error:
-                LOG.warning('Clipboard history %s failed (%s)',operation,type(error).__name__)
+                LOG.warning('Clipboard history %s failed (%s)',operation,type(error).__name__,
+                            exc_info=(type(error),error,error.__traceback__))
                 if self.panel:self.panel.feedback('剪贴板历史暂不可用')
                 return
             if self.enabled:callback(result)
