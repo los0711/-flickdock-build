@@ -75,6 +75,8 @@ jobs:
           cp "$profile/source.json" saved-screenshots-source.json
       - name: Paste native text and screenshot images into an independent app
         run: QT_QPA_PLATFORM=cocoa python ci_clipboard_history_native.py driver "$RUNNER_TEMP/history-native-test"
+      - name: Verify native utility controls before packaging
+        run: python ci_utility_windows.py --output "$RUNNER_TEMP/native-utility-source.json"
       - name: Retain native proof
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

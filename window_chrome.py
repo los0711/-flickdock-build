@@ -1,6 +1,7 @@
 """Resizable utility windows; no hooks, polling or changes to shelf geometry."""
 from __future__ import annotations
 import atexit,json,sys,weakref
+from pathlib import Path
 from PySide6.QtCore import QCoreApplication,QObject,QEvent,QPoint,QRect,QRectF,QSize,Qt,QTimer
 from PySide6.QtGui import QColor,QCursor,QGuiApplication,QPainter,QPen
 from PySide6.QtWidgets import QApplication,QPushButton,QWidget
@@ -165,7 +166,10 @@ class _WindowButton(QPushButton):
 class WindowChrome(QObject):
     def __init__(self,window,title_bar,settings,key,*,surface=None,system_resize=True):
         super().__init__(window);self.window=window;self.title=title_bar;self.surface=surface or window
-        # Window sizes are session-only; the chrome needs no storage path.
+        # Retain the diagnostic path for full settings stores. Session-only
+        # dialogs do not require storage, and the chrome never writes it.
+        base=getattr(settings,'base',None)
+        self.path=Path(base)/'window-sizes.json' if base is not None else None
         self.key=key;self._drag=None;self._cursor=False
         self.default_size=QSize(892,632) if key=="settings" else QSize(980,704)
         self._normal=window.size();self._restoring=False
