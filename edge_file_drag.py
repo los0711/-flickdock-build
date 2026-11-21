@@ -34,7 +34,8 @@ def file_urls(mime):
 def drop_position(widget,event):
     local=event.position()
     if sys.platform=='darwin':
-        return widget.mapToGlobal(QPoint(floor(local.x()),floor(local.y())))
+        from dock_geometry import cocoa_screen_pointer
+        return cocoa_screen_pointer(widget.mapToGlobal(QPoint(floor(local.x()),floor(local.y()))))
     return widget.mapToGlobal(local.toPoint())
 
 
@@ -157,6 +158,9 @@ class EdgeFileDrag(QObject):
             if edge not in regions:window.hide()
         for edge,rect in regions.items():
             window=self._window(edge)
+            if sys.platform=='darwin':
+                from dock_geometry import cocoa_drop_window_rect
+                rect=cocoa_drop_window_rect(rect,target.area,edge)
             if window.geometry()!=rect:window.setGeometry(rect)
             mask=QRegion(window.rect())
             for preview in protected:mask=mask.subtracted(QRegion(preview.intersected(rect).translated(-rect.topLeft())))

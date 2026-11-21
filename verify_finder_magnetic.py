@@ -11,7 +11,7 @@ import sys
 import time
 import traceback
 
-from PySide6.QtCore import QEvent, QObject, QPoint
+from PySide6.QtCore import QEvent, QObject
 from PySide6.QtGui import QCursor
 
 
@@ -37,6 +37,20 @@ class ShelfShows(QObject):
         return False
 
 
+class DragEvents(QObject):
+    def __init__(self):
+        super().__init__()
+        self.events = []
+
+    def eventFilter(self, watched, event):
+        name=event.type().name
+        if name in ('DragEnter','DragMove','DragLeave','Drop') and watched.objectName()=='flickdockMagneticFileDestination':
+            pos=event.position().toTuple() if hasattr(event,'position') else None
+            self.events.append((name,pos,watched.geometry().getRect(),QCursor.pos().toTuple()))
+            del self.events[:-60]
+        return False
+
+
 def run(manager, report_path):
     import AppKit
     import Quartz
@@ -47,6 +61,8 @@ def run(manager, report_path):
     report = dict(ok=False, version=APP_VERSION, frozen=bool(getattr(sys, 'frozen', False)),
                   arch=platform.machine(), source='com.apple.finder', cases={}, native_events=[])
     shows = ShelfShows()
+    native = DragEvents()
+    manager.app.installEventFilter(native)
     shelf = manager.shelf
     shelf.installEventFilter(shows)
     manager.edge_file_drag.note = report['native_events'].append
@@ -175,6 +191,7 @@ end run
             point=(edge_x-delta,magnetic_point[1])
             post(Quartz.kCGEventLeftMouseDragged,point);sample(.028)
         post(Quartz.kCGEventLeftMouseDragged,magnetic_point);sample(.22)
+        assert manager.edge_file_drag.validated, 'Native magnetic target lost the active drag before release'
         assert shows.count==count and not shelf.isVisible(), 'Magnet revealed the shelf before release'
         release(magnetic_point)
         check_intake(magnetic_file)
@@ -216,6 +233,8 @@ end run
             release((point.x(),point.y()))
             sample(.15)
         shelf.removeEventFilter(shows)
+        manager.app.removeEventFilter(native)
+        report['native_drag_tail']=native.events
         report_path.write_text(json.dumps(report,indent=2)+'\n', encoding='utf-8')
         print(json.dumps(report,indent=2), flush=True)
     return 0 if report['ok'] else 1
