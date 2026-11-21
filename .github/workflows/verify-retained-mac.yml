@@ -22,7 +22,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh run download 44901836951 --repo "$GITHUB_REPOSITORY" -p 'FlickDock-macOS-incomplete-arm64-*' -D "$RUNNER_TEMP/retained"
+          gh run download 44901836951 --repo "$GITHUB_REPOSITORY" -n 'FlickDock-macOS-incomplete-arm64-fcc861f8fd2b4fb8ee8b4c575bbc3e6d82f36556' -D "$RUNNER_TEMP/retained"
           python3 - "$RUNNER_TEMP/retained" <<'PY'
           import hashlib,json,sys
           from pathlib import Path
