@@ -35,6 +35,11 @@ def target(root):
             if event.matches(QKeySequence.StandardKey.Paste):
                 print(json.dumps({'target_received_paste_key':True,
                                   'clipboard_formats':app.clipboard().mimeData().formats()}),flush=True)
+                if sys.platform=='darwin':
+                    # Reproduce an application that handles paste later than
+                    # the old 400 ms restoration timer.
+                    QTimer.singleShot(650,self,self.paste)
+                    return
             super().keyPressEvent(event)
 
         def canInsertFromMimeData(self,mime):
@@ -209,7 +214,7 @@ def run(root):
     client=None
     timer=None
     front=None
-    report={'ok':False,'platform':sys.platform}
+    report={'ok':False,'platform':sys.platform,'delayed_native_paste_ms':650 if sys.platform=='darwin' else 0}
     try:
         wait_for(lambda:(root/'pid').is_file())
         pid=int((root/'pid').read_text())

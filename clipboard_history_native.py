@@ -341,6 +341,44 @@ def _paste_windows_image(png,image,target,cancel):
             user.DestroyWindow(owner)
 
 
+@lru_cache(maxsize=1)
+def _mac_paste_provider_type():
+    import objc
+    from Foundation import NSObject
+    import AppKit
+
+    class FlickDockHistoryPasteProvider(NSObject, protocols=[objc.protocolNamed('NSPasteboardItemDataProvider')]):
+        def pasteboard_item_provideDataForType_(self,board,item,kind):
+            try:
+                # Supply every representation before acknowledging the read.
+                # AppKit/Qt may request PNG and TIFF during one paste action.
+                for name,data in self.formats.items():
+                    if not item.setData_forType_(data,name):
+                        raise OSError('Could not provide requested history representation')
+            except Exception as error:
+                self.error=error
+            finally:
+                self.received.set()
+
+        def pasteboardFinishedWithDataProvider_(self,board):
+            self.finished=True
+
+    return FlickDockHistoryPasteProvider
+
+
+def _wait_mac_paste_read(provider,board,sequence):
+    from Foundation import NSDate,NSRunLoop
+    deadline=time.monotonic()+3.
+    loop=NSRunLoop.currentRunLoop()
+    while not provider.received.is_set():
+        if time.monotonic()>=deadline or board.changeCount()!=sequence:return False
+        # The pasteboard owner callback can be delivered on this worker's
+        # run loop. The application's GUI thread remains free throughout.
+        loop.runUntilDate_(NSDate.dateWithTimeIntervalSinceNow_(.025))
+    if provider.error is not None:raise provider.error
+    return True
+
+
 def _paste_mac_payload(payload,target,cancel,*,image):
     import Quartz
     import objc
@@ -363,14 +401,22 @@ def _paste_mac_payload(payload,target,cancel,*,image):
                 if total>_MAX_BACKUP_BYTES or not backup.setData_forType_(data,fmt):return False
             original.append(backup)
         item=NSPasteboardItem.alloc().init()
+        formats={}
         if image:
             data=NSData.dataWithBytes_length_(payload,len(payload))
-            if not item.setData_forType_(data,'public.png'):return False
+            formats['public.png']=data
             native_image=NSImage.alloc().initWithData_(data)
             tiff=native_image.TIFFRepresentation() if native_image is not None else None
-            if tiff is not None:item.setData_forType_(tiff,'public.tiff')
-        elif not item.setString_forType_(payload,'public.utf8-plain-text'):
-            return False
+            if tiff is not None:formats['public.tiff']=tiff
+        else:
+            encoded=payload.encode('utf8')
+            formats['public.utf8-plain-text']=NSData.dataWithBytes_length_(encoded,len(encoded))
+        provider=_mac_paste_provider_type().alloc().init()
+        provider.formats=formats
+        provider.received=Event()
+        provider.error=None
+        provider.finished=False
+        if not item.setDataProvider_forTypes_(provider,list(formats)):return False
         if not item.setData_forType_(NSData.data(),'org.nspasteboard.TransientType'):return False
         down=Quartz.CGEventCreateKeyboardEvent(None,9,True)  # kVK_ANSI_V
         up=Quartz.CGEventCreateKeyboardEvent(None,9,False)
@@ -386,6 +432,9 @@ def _paste_mac_payload(payload,target,cancel,*,image):
             for event in (down,up):
                 Quartz.CGEventSetFlags(event,Quartz.kCGEventFlagMaskCommand)
                 Quartz.CGEventPostToPid(target,event)
+            if not _wait_mac_paste_read(provider,board,sequence):return False
+            # Start the restoration grace after the consumer requested data,
+            # rather than after dispatching an asynchronous keyboard event.
             time.sleep(_PASTE_GRACE_SECONDS)
             return True
         finally:
