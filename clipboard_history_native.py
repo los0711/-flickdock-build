@@ -375,6 +375,7 @@ def _wait_mac_paste_read(provider,board,sequence):
         # The pasteboard owner callback can be delivered on this worker's
         # run loop. The application's GUI thread remains free throughout.
         loop.runUntilDate_(NSDate.dateWithTimeIntervalSinceNow_(.025))
+        if not provider.received.is_set():provider.received.wait(.005)
     if provider.error is not None:raise provider.error
     return True
 

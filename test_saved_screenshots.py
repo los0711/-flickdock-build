@@ -98,6 +98,42 @@ class SavedScreenshotTests(unittest.TestCase):
             self.assertEqual([str(path) for path in load_folders(root)],folders)
 
 
+class MacPasteReceiptTests(unittest.TestCase):
+    def test_waits_for_the_consumer_instead_of_using_a_dispatch_delay(self):
+        import sys
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        from clipboard_history_native import _wait_mac_paste_read
+        received=Event()
+        provider=SimpleNamespace(received=received,error=None)
+        loop=SimpleNamespace(runUntilDate_=Mock(side_effect=lambda _:received.set()))
+        foundation=SimpleNamespace(NSRunLoop=SimpleNamespace(currentRunLoop=lambda:loop),
+                                   NSDate=SimpleNamespace(dateWithTimeIntervalSinceNow_=lambda value:value))
+        with patch.dict(sys.modules,Foundation=foundation):
+            self.assertTrue(_wait_mac_paste_read(provider,SimpleNamespace(changeCount=lambda:8),8))
+        loop.runUntilDate_.assert_called_once()
+
+    def test_a_new_user_copy_cancels_waiting_for_old_paste_data(self):
+        import sys
+        from types import SimpleNamespace
+        from clipboard_history_native import _wait_mac_paste_read
+        foundation=SimpleNamespace(NSRunLoop=SimpleNamespace(currentRunLoop=lambda:None),NSDate=object())
+        provider=SimpleNamespace(received=Event(),error=None)
+        with patch.dict(sys.modules,Foundation=foundation):
+            self.assertFalse(_wait_mac_paste_read(provider,SimpleNamespace(changeCount=lambda:9),8))
+
+    def test_data_provider_errors_keep_the_original_error(self):
+        import sys
+        from types import SimpleNamespace
+        from clipboard_history_native import _wait_mac_paste_read
+        received=Event();received.set()
+        provider=SimpleNamespace(received=received,error=OSError('native paste payload failed'))
+        foundation=SimpleNamespace(NSRunLoop=SimpleNamespace(currentRunLoop=lambda:None),NSDate=object())
+        with patch.dict(sys.modules,Foundation=foundation):
+            with self.assertRaisesRegex(OSError,'native paste payload failed'):
+                _wait_mac_paste_read(provider,SimpleNamespace(changeCount=lambda:8),8)
+
+
 if __name__=='__main__':
     unittest.main(verbosity=2)
 
