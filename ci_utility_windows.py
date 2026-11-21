@@ -1,0 +1,251 @@
+"""Real native utility-window checks, exclusively on disposable CI runners."""
+import json,os,sys,tempfile,time
+from pathlib import Path
+from unittest.mock import patch
+
+
+def main():
+    if os.environ.get('GITHUB_ACTIONS')!='true' or os.environ.get('RUNNER_OS') not in ('Windows','macOS'):
+        raise RuntimeError('This native UI probe is restricted to an ephemeral CI runner')
+    os.environ['QT_QPA_PLATFORM']='cocoa' if sys.platform=='darwin' else 'windows'
+    from PySide6.QtCore import QObject,Signal,QPoint,QRect,Qt
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QApplication
+    import app_settings
+    from lan_panel import LanDialog
+    from window_chrome import dock_window_state
+    app=QApplication.instance() or QApplication([]);app.setQuitOnLastWindowClosed(False)
+    from shelf_ui_common import load_font,FONT_FAMILY
+    load_font(app)
+    def wait(predicate):
+        until=time.monotonic()+5
+        while not predicate() and time.monotonic()<until:app.processEvents();time.sleep(.01)
+        assert predicate(),'Native window state did not settle'
+    class Transport(QObject):
+        peers_changed=Signal(list);offer_received=Signal(dict);progress=Signal(dict)
+        completed=Signal(dict);status_changed=Signal(str)
+        def __init__(self):super().__init__();self._transfers={}
+        def peers(self):return []
+    report=dict(ok=False,platform=sys.platform,qt_platform=app.platformName(),windows=[])
+    from platform_native import copy_activity
+    activity=copy_activity()
+    assert isinstance(activity,tuple) and len(activity)==3 and activity[1]>=0 and activity[2] in (None,True,False)
+    report['copy_activity_metadata_available']=True
+    with tempfile.TemporaryDirectory(prefix='flickdock-native-utility-') as directory,patch.object(app_settings,'_startup_runtime_allowed',return_value=False):
+        store=app_settings.SettingsStore(Path(directory));service=Transport()
+        settings=app_settings.SettingsDialog(store);transfer=LanDialog(service,store)
+        for window in (settings,transfer):
+            window.chrome.fit_screen();window.show();wait(window.isVisible)
+            initial=window.size();area=window.screen().availableGeometry()
+            window.resize(max(window.minimumWidth(),min(initial.width()-60,area.width()-40)),max(window.minimumHeight(),initial.height()-30))
+            app.processEvents();changed=window.size();window.chrome.save_size()
+            assert not window.chrome.path.exists()
+            if sys.platform=='win32':
+                buttons=window.chrome.buttons
+                QTest.mouseClick(buttons['max'],Qt.LeftButton,pos=QPoint(1,1));wait(window.isMaximized)
+                assert area.adjusted(-2,-2,2,2).contains(window.frameGeometry()),(area,window.frameGeometry())
+                QTest.mouseClick(buttons['max'],Qt.LeftButton,pos=QPoint(buttons['max'].width()-2,buttons['max'].height()-2));wait(lambda:not window.isMaximized())
+                assert window.size()==changed
+                QTest.mouseClick(buttons['min'],Qt.LeftButton,pos=QPoint(1,1));wait(window.isMinimized)
+                window.showNormal();wait(lambda:not window.isMinimized())
+                import ctypes
+                style=ctypes.windll.user32.GetWindowLongW(int(window.winId()),-16)
+                report.setdefault('styles',[]).append(dict(thickframe=bool(style&0x40000),minimize=bool(style&0x20000),maximize=bool(style&0x10000)))
+                assert all(report['styles'][-1].values()),'Native sizing/min/max capabilities were lost'
+            else:
+                import AppKit
+                assert AppKit.NSApplication.sharedApplication().activationPolicy()==AppKit.NSApplicationActivationPolicyRegular
+                assert window.close_button is window.caption_controls.buttons['close']
+                assert window.title_bar.layout().indexOf(window.caption_controls)==0
+                assert all(button.isVisible() for button in window.caption_controls.buttons.values())
+                from window_chrome import minimize_utility
+                minimize_utility(window);wait(window.isMinimized)
+                assert AppKit.NSApplication.sharedApplication().activationPolicy()==AppKit.NSApplicationActivationPolicyRegular
+                # Activate a separate app first, then reactivate FlickDock's
+                # Cocoa process. This exercises Qt's activation event rather
+                # than explicitly calling showNormal() on the minimized window.
+                finder=AppKit.NSRunningApplication.runningApplicationsWithBundleIdentifier_('com.apple.finder')
+                assert finder,'Native activation probe requires Finder'
+                finder[0].activateWithOptions_(AppKit.NSApplicationActivateIgnoringOtherApps)
+                wait(lambda:not AppKit.NSApplication.sharedApplication().isActive())
+                AppKit.NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+                wait(lambda:not window.isMinimized() and window.isVisible())
+                report['cocoa_reactivation_restored_minimized']=True
+            window.close();wait(lambda:not window.isVisible())
+            window.show();wait(window.isVisible)
+            assert window.size()==initial,(window.size(),initial)
+            window.close();wait(lambda:not window.isVisible())
+            report['windows'].append(dict(title=window.windowTitle(),resize=True,minimize=True,close=True,reopen_default=True))
+        import theme_accent,ui_theme
+        from PySide6.QtGui import QColor,QPalette
+        from PySide6.QtWidgets import QLabel,QPushButton
+        from native_ui_common import colors
+        def apply_preferences():
+            theme_accent.set_color(store.accent_color);ui_theme.set_theme(store.theme)
+            ui_theme.apply_application(app,FONT_FAMILY);settings.apply_theme(store.theme);transfer.apply_theme(store.theme)
+        store.changed.connect(apply_preferences)
+        settings.show();wait(settings.isVisible)
+        assert not any(b.text() in ('取消','保存设置') for b in settings.footer_frame.findChildren(QPushButton))
+        report['automatic_preferences']=[]
+        for theme in ('light','dark'):
+            settings.theme_combo.setCurrentIndex(1 if theme=='dark' else 0)
+            settings._preference_writer.flush();wait(lambda:not settings._preference_writer.busy);app.processEvents()
+            apply_preferences();settings.choose_accent_color();app.processEvents()
+            picker=settings._accent_picker
+            assert picker.isVisible()
+            c=colors(theme);pixel=picker.grab().toImage().pixelColor(8,8)
+            assert pixel.name().upper()==c['popup_surface'].upper(),(theme,pixel.name(),c['popup_surface'])
+            labels=[label for label in picker.findChildren(QLabel) if label.isVisible() and label.text()]
+            assert labels and all(label.palette().color(QPalette.WindowText)==QColor(c['text']) for label in labels)
+            picker.grab().save('native-chooser-'+theme+'.png')
+            picker.setCurrentColor(QColor('#FFFF00' if theme=='light' else '#7C3AED'));picker.accept()
+            settings._preference_writer.flush();wait(lambda:not settings._preference_writer.busy);app.processEvents()
+            assert store.accent_color==('#FFFF00' if theme=='light' else '#7C3AED')
+            settings.close();wait(lambda:not settings.isVisible());settings.show();wait(settings.isVisible)
+            assert settings._draft_accent==store.accent_color
+            report['automatic_preferences'].append(dict(theme=theme,chooser_readable=True,applied_first_selection=True,persisted_after_reopen=True))
+        with patch('ui_transitions.motion_allowed',return_value=True),patch('native_ui_common.reduced_motion',return_value=False):
+            settings.scroll.ensureWidgetVisible(settings._theme_segment,0,0);app.processEvents()
+            from ui_transitions import SnapshotFade
+            before=settings.geometry()
+            segment=settings._theme_segment
+            segment._selection_buttons[0].click()
+            assert settings.theme_combo.currentData()=='light'
+            assert segment.selection_is_moving() and settings.surface.dark
+            wait(lambda:not settings.surface.dark)
+            assert not segment.selection_is_moving() and settings.surface.findChild(SnapshotFade) is None
+            assert settings.geometry()==before
+            settings._preference_writer.flush();wait(lambda:not settings._preference_writer.busy)
+            assert store.theme=='light'
+        report['theme_transition']=dict(selection_first=True,recolored_after_settling=True,native_geometry_unchanged=True)
+        settings.close();wait(lambda:not settings.isVisible())
+        if sys.platform=='darwin':
+            transfer.show();wait(transfer.isVisible)
+            panel=transfer.panel;combo=panel.devices
+            peers=[dict(id='fixture-a',name='第一台设备',platform='macos'),dict(id='fixture-b',name='第二台设备',platform='windows')]
+            service.peers_changed.emit(peers)
+            with patch('native_ui_common.reduced_motion',return_value=False):
+                combo.showPopup()
+                popup=combo.view().window()
+                wait(lambda:popup._dropdown_motion.presentation is not None and popup._dropdown_motion.presentation.isVisible())
+                motion=popup._dropdown_motion
+                assert motion.presentation.parentWidget() is popup and not motion.presentation.isWindow()
+                opening=popup.geometry()
+                service.peers_changed.emit([peers[1]])
+                wait(lambda:not motion.presentation.isVisible())
+                assert popup.isVisible() and popup.geometry()==opening and combo.count()==2
+                combo.view().setCurrentIndex(combo.model().index(1,0))
+                QTest.keyClick(combo.view(),Qt.Key_Return)
+                wait(lambda:not popup.isVisible() and combo.count()==1)
+                assert combo.currentData()=='fixture-b'
+            assert panel.activity_scroll.verticalScrollBar().maximum()==0 and panel.active_rows_scroll is not None
+            report['cocoa_device_picker']=dict(stable_geometry=True,tracks_in_existing_popup=True,retains_selection=True)
+            report['cocoa_activity_cards_fixed']=True
+            transfer.close();wait(lambda:not transfer.isVisible())
+        from types import SimpleNamespace
+        from intake_notice import ClipboardNotice,COMPACT_SIDE_PX
+        opened=[];notice_manager=SimpleNamespace(settings=store,shelf=transfer,show_video_dialog=opened.append)
+        notice=ClipboardNotice(notice_manager)
+        try:
+            state=dict(id='native-capsule',phase='uploading',local_copy=True,
+                cloud_transfer=dict(phase='preparing',received=0,total=0))
+            notice.show_result(None,state);wait(notice.isVisible)
+            host=notice.geometry();native=notice.winId()
+            wait(lambda:notice._morph.state()==notice._morph.Stopped)
+            assert notice.windowFlags()&Qt.WindowDoesNotAcceptFocus
+            QTest.mouseClick(notice,Qt.LeftButton,pos=notice.capsule_rect().center().toPoint())
+            wait(lambda:notice._morph.state()==notice._morph.Stopped)
+            assert notice._compact and notice.isVisible()
+            QTest.mouseClick(notice,Qt.LeftButton,pos=notice.capsule_rect().center().toPoint())
+            wait(lambda:notice._morph.state()==notice._morph.Stopped)
+            assert not notice._compact and notice.isVisible()
+            from video_prompt import VideoLinkPrompt
+            from receive_notice import TransferCapsule
+            from async_images import ImageCache
+            images=ImageCache();video_notice=VideoLinkPrompt(notice_manager)
+            file_notice=TransferCapsule(SimpleNamespace(manager=notice_manager,images=images,activate=lambda:None))
+            try:
+                video_notice.present('https://www.youtube.com/watch?v=native-capsule')
+                file_notice.present(dict(id='native-file',direction='send',name='native-fixture.zip',state='transferring',received=50,total=100,paths=[]))
+                wait(lambda:all(card._position_motion.state()==card._position_motion.Stopped for card in (notice,file_notice,video_notice)))
+                bounds=[card.capsule_rect().translated(card.pos()) for card in (notice,file_notice,video_notice)]
+                assert all(7<=b.left()-a.right()<=9 for a,b in zip(bounds,bounds[1:])),bounds
+                QTest.mouseClick(video_notice,Qt.LeftButton,pos=video_notice.capsule_rect().center().toPoint())
+                assert opened==['https://www.youtube.com/watch?v=native-capsule'] and video_notice._hiding
+                wait(lambda:not video_notice.isVisible());file_notice.dismiss();wait(lambda:not file_notice.isVisible())
+                wait(lambda:notice._position_motion.state()==notice._position_motion.Stopped)
+                report['coexisting_capsules']=dict(nonoverlap=True,video_activates=True,shared_animated_close=True)
+            finally:
+                video_notice.supersede();file_notice.supersede();video_notice.deleteLater();file_notice.deleteLater();images.close();images.deleteLater()
+            notice._expire();wait(lambda:notice._morph.state()==notice._morph.Stopped)
+            assert notice._compact and round(notice.capsule_rect().width())==COMPACT_SIDE_PX
+            # Coexisting notices intentionally reposition the fixed native host.
+            assert notice.size()==host.size() and notice.winId()==native
+            assert notice._notice_area.contains(notice.geometry()),(notice._notice_area,notice.geometry())
+            success_started=time.monotonic()
+            notice.update_delivery(dict(id=state['id'],phase='synced',backed_up=True,deliveries={'cloud':dict(success=0,total=1)}))
+            assert notice._phase=='success' and notice._compact
+            assert notice.timer.interval()==3000 and notice.timer.timerType()==Qt.PreciseTimer
+            wait(lambda:notice._hiding)
+            success_hold_ms=(time.monotonic()-success_started)*1000
+            assert success_hold_ms>=3000,success_hold_ms
+            wait(lambda:not notice.isVisible())
+            assert not notice._ring_clock.isActive()
+            report['copy_capsule']=dict(native_host_preserved=True,contracts_while_pending=True,cloud_commit_success=True,click_toggles=True,animated_exit=True,nonactivating=True,success_hold_ms=round(success_hold_ms,1))
+        finally:notice.supersede();notice.deleteLater();app.processEvents()
+        if sys.platform=='darwin':
+            import AppKit
+            assert AppKit.NSApplication.sharedApplication().activationPolicy()==AppKit.NSApplicationActivationPolicyAccessory
+            report['dock_restored_to_menu_bar']=True
+            from mac_permissions import MacPermissionBackend
+            state=MacPermissionBackend().inspect(pointer_ok=True)
+            assert state['clipboard'] in ('default','ask','allowed','denied','legacy')
+            assert state['accessibility'] in ('allowed','denied')
+            report['native_permissions_metadata']=state
+        if sys.platform=='win32':
+            import subprocess
+            from PySide6.QtCore import QTimer
+            from native_clipboard_reader import NativeClipboardReader
+            from clipboard_sync import native_sequence
+            root=Path(directory);producer_script=root/'delayed-owner.py'
+            ready=root/'producer-ready';entered=root/'producer-rendering'
+            producer_script.write_text('''import sys,time
+from pathlib import Path
+from PySide6.QtCore import QMimeData
+from PySide6.QtGui import QGuiApplication
+class Delayed(QMimeData):
+ def formats(self):return ['text/plain']
+ def retrieveData(self,kind,preferred):
+  if kind.startswith('text/plain'):
+   Path(sys.argv[2]).write_text('rendering');time.sleep(30);return 'private native clipboard fixture'
+  return None
+app=QGuiApplication([]);payload=Delayed();app.clipboard().setMimeData(payload)
+Path(sys.argv[1]).write_text('ready');app.exec()
+''',encoding='utf8')
+            producer=subprocess.Popen([sys.executable,str(producer_script),str(ready),str(entered)],
+                stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
+                creationflags=subprocess.CREATE_NO_WINDOW)
+            cache=root/'clipboard-cache';cache.mkdir();reader=NativeClipboardReader(cache,native_sequence)
+            failures=[];beats=[];clock=QTimer();clock.setInterval(10);clock.timeout.connect(lambda:beats.append(1))
+            reader.failed.connect(failures.append)
+            try:
+                wait(ready.exists);clock.start();reader.read(native_sequence())
+                wait(lambda:bool(failures))
+                assert entered.exists(),('The real producer never rendered its delayed native format',failures,reader.issue)
+                assert failures==['NATIVE_READ_TIMEOUT'] and len(beats)>20,(failures,len(beats))
+                assert reader.process is None
+                report['delayed_clipboard_reader']=dict(actual_native_producer=True,ui_responsive=True,
+                    owned_reader_timed_out=True,ui_heartbeats=len(beats),clipboard_contents_logged=False)
+            finally:
+                clock.stop();reader.close();producer.kill();producer.wait(timeout=5)
+                wait(lambda:reader.process is None and not reader.jobs);reader.deleteLater()
+        report['ok']=True
+        settings._preference_writer.close()
+        for window in (settings,transfer):window.deleteLater()
+        app.processEvents()
+    print(json.dumps(report),flush=True)
+    if '--output' in sys.argv:Path(sys.argv[sys.argv.index('--output')+1]).write_text(json.dumps(report,indent=2),encoding='utf8')
+    return 0
+
+
+if __name__=='__main__':raise SystemExit(main())

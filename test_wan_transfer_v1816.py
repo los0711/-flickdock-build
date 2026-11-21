@@ -1,0 +1,364 @@
+"""WAN recovery/security contracts and actual bounded native host-ICE stream."""
+import hashlib,json,os,subprocess,sys,tempfile,threading,time,unittest
+from unittest.mock import patch
+from pathlib import Path
+from uuid import uuid4
+from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import QCoreApplication,QEvent
+from wan_transfer import WanTransferService
+from webrtc_stream import WebRTCStream
+
+APP=QApplication.instance() or QApplication([])
+
+class WanRecovery(unittest.TestCase):
+    def setUp(self):
+        self.temporary=tempfile.TemporaryDirectory();self.root=Path(self.temporary.name)
+        self.service=WanTransferService(self.root,enabled=False);self.sent=[]
+        self.service._send_signal=lambda value:self.sent.append(dict(value)) or True
+        self.identifier=uuid4().hex
+    def tearDown(self):
+        self.service.close();self.service.deleteLater()
+        QCoreApplication.sendPostedEvents(None,QEvent.Type.DeferredDelete);APP.processEvents()
+        self.temporary.cleanup()
+    def state(self,role='send'):
+        value=dict(role=role,peer=dict(id='a'*64,name='测试设备'),ready=threading.Event(),generation=1,requested=True,total=0,connect_started=time.monotonic(),network_epoch=self.service._network_epoch,
+            request=dict(type='request',id=self.identifier,token='b'*64,digest='c'*64,total='0',count=0,names=[]))
+        self.service._pending[self.identifier]=value;return value
+    def message(self,**value):self.service._message(json.dumps(dict(schema_version=1,id=self.identifier,**value)))
+    def test_identity_survives_restart_and_requires_no_login(self):
+        identity=self.service.device_id;other=WanTransferService(self.root,enabled=False)
+        try:self.assertEqual(identity,other.device_id);self.assertEqual(hashlib.sha256((self.root/'wan-device.key').read_bytes()).hexdigest(),identity)
+        finally:other.close();other.deleteLater()
+
+    def test_flow_diagnostics_report_actual_native_bytes_and_priority_without_peer_addresses(self):
+        state=self.state();state['trace']='a1b2c3d4e5f6'
+        state['quality']=dict(transport='udp',local_type='srflx',remote_type='srflx',local_family=4,remote_family=4)
+        with patch('wan_transfer.time.monotonic',return_value=100):
+            self.service._flow_sample(state,dict(sent=100,received=200,delivered=0,rttMs=22,buffered=10,unacked=8))
+        with patch('wan_transfer.time.monotonic',return_value=105),patch('transfer_priority.clipboard_priority_active',return_value=True):
+            self.service._flow_sample(state,dict(sent=5100,received=200,delivered=4000,rttMs=23,buffered=0,unacked=0))
+        rows=json.loads((self.root/'network-diagnostics.json').read_text(encoding='utf8'))
+        self.assertEqual(rows[-1]['code'],'FLOW_LOW');details=rows[-1]['details']
+        self.assertEqual(details['wire_sent_bytes_per_second'],1000)
+        self.assertEqual(details['delivered_bytes_per_second'],800)
+        self.assertTrue(details['clipboard_priority']);self.assertEqual(details['rtt_ms'],23)
+        self.assertEqual(details['trace'],state['trace']);self.assertEqual(details['transport'],'udp')
+        self.assertNotIn('peer',details);self.assertNotIn('address',details)
+
+    def test_distinct_transfers_keep_their_failure_diagnostics_within_the_same_second(self):
+        from network_diagnostics import record_event
+        for trace in ('0123456789ab','abcdef012345'):
+            record_event(self.root,'remote','ICE','DIRECT_FAILED',details=dict(trace=trace,check_failed=2,password='must not persist',candidate='must not persist'))
+        rows=json.loads((self.root/'network-diagnostics.json').read_text(encoding='utf8'))
+        self.assertEqual(len(rows),2)
+        self.assertEqual({row['details']['trace'] for row in rows},{'0123456789ab','abcdef012345'})
+        self.assertNotIn('must not persist',json.dumps(rows))
+
+    def test_incoming_request_uses_the_signaled_sender_device_code(self):
+        offers=[];self.service.offer_received.connect(offers.append)
+        self.message(type='request',peer=dict(id='d'*64,name='发送方'),token='b'*64,digest='c'*64,total='12',count=1,names=['file.txt'],deviceCode='AB23')
+        self.assertEqual(offers[0]['device_code'],'AB23')
+    def test_refresh_deadline_restarts_from_server_identity_not_socket_start(self):
+        self.service._connected=True;identities=[];self.service.identity_changed.connect(identities.append)
+        with patch('wan_transfer.time.monotonic',return_value=1000):
+            self.message(type='identity',code='AB23',serverNow=100000,refreshAt=340000,expires=400000,recent=[])
+        with patch('wan_transfer.time.monotonic',return_value=1239):
+            self.service.check_code();self.assertFalse(self.sent)
+            self.assertEqual(self.service.code_identity()['refresh_remaining'],1)
+        with patch('wan_transfer.time.monotonic',return_value=1241):
+            self.service.check_code();self.assertEqual(self.sent[-1],dict(type='refresh'))
+            self.service.check_code();self.assertEqual(len(self.sent),1)
+            self.message(type='identity',code='EF67',serverNow=500000,refreshAt=740000,expires=800000,recent=[])
+        with patch('wan_transfer.time.monotonic',return_value=1242):
+            self.assertEqual(self.service.code_identity()['refresh_remaining'],239)
+            self.assertEqual(self.service.code_identity()['code'],'EF67')
+        self.assertEqual(identities[-1]['code'],'EF67')
+    def test_unanswered_refresh_reconnects_instead_of_leaving_an_expired_code(self):
+        self.service._connected=True
+        with patch('wan_transfer.time.monotonic',return_value=1000):
+            self.message(type='identity',code='AB23',serverNow=0,refreshAt=240000,expires=300000,recent=[])
+        with patch('wan_transfer.time.monotonic',return_value=1240):self.service.check_code()
+        with patch('wan_transfer.time.monotonic',return_value=1253):self.service.check_code()
+        self.assertFalse(self.service._connected);self.assertEqual(self.service.code_identity()['code'],'')
+    def test_valid_code_is_reserved_before_folder_preparation(self):
+        self.service._connected=True;workers=[];outgoing=[]
+        self.service._thread=lambda target,*args:workers.append((target,args))
+        self.service._outgoing=lambda *args:outgoing.append(args)
+        identifier=self.service.send('AB23',[str(self.root)])
+        self.assertEqual(self.sent[0]['type'],'prepare');self.assertFalse(outgoing)
+        self.service._message(json.dumps(dict(schema_version=1,type='prepared',id=identifier,peer=dict(id='d'*64,name='Mac'))))
+        workers[0][0](*workers[0][1])
+        self.assertEqual(outgoing[0][1],dict(id='d'*64,name='Mac'))
+        self.assertTrue(self.service._pending[identifier]['prepared_ok'])
+        self.assertEqual(self.sent[0]['token'],outgoing[0][0].token)
+    def test_cancellation_before_preparation_worker_releases_the_send_slot(self):
+        self.service._connected=True;workers=[];events=[]
+        self.service._thread=lambda target,*args:workers.append((target,args))
+        self.service.progress.connect(events.append)
+        identifier=self.service.send('AB23',[str(self.root)])
+        self.service.cancel(identifier);workers[0][0](*workers[0][1]);APP.processEvents()
+        self.assertFalse(self.service._transfers[identifier].active)
+        self.assertEqual(events[-1]['state'],'cancelled')
+    def test_recent_device_send_ignores_expired_code_and_delete_waits_for_server(self):
+        self.service._connected=True;self.service.code='';workers=[]
+        self.service._peers={'d'*64:dict(id='d'*64,name='Mac',online=True)}
+        self.service._thread=lambda target,*args:workers.append((target,args))
+        identifier=self.service.send('d'*64,[str(self.root)])
+        self.assertFalse(self.sent);self.assertNotIn('prepare',self.service._pending[identifier])
+        self.service.remove_peer('d'*64);self.assertEqual(self.sent[-1],dict(type='remove',peer='d'*64))
+        self.message(type='peers',peers=[]);self.assertEqual(self.service.peers(),[])
+    def test_offline_hint_does_not_gate_actual_connection_attempt(self):
+        self.service._connected=True;workers=[]
+        self.service._thread=lambda target,*args:workers.append((target,args))
+        self.service._peers={'d'*64:dict(id='d'*64,name='Mac',online=False)}
+        identifier=self.service.send('d'*64,[str(self.root)])
+        self.assertIn(identifier,self.service._transfers);self.assertEqual(len(workers),1)
+        self.service._disconnected()
+        self.assertEqual(self.service.peers()[0]['id'],'d'*64)
+    def test_request_not_acknowledged_by_local_queue(self):
+        state=self.state();state.pop('requested');request=dict(state['request'])
+        self.service._handle_command(dict(_connect=True,**request))
+        self.assertFalse(state.get('requested',False))
+        self.service._recover_signaling();self.assertEqual([row['type'] for row in self.sent],['request','request'])
+        self.message(type='waiting',peer=state['peer']);self.assertTrue(state['requested'])
+    def test_reconnect_and_outgoing_retry_merge(self):
+        state=self.state();self.service._recover_signaling();self.service._handle_command(dict(_connect=True,**state['request']))
+        for _ in range(2):self.message(type='resumed',accepted=True,generation=1,settled=False)
+        self.assertEqual(sum(row['type']=='retry' for row in self.sent),1)
+    def test_stale_signal_error_cannot_end_new_generation(self):
+        state=self.state();state['generation']=3
+        self.message(type='error',generation=1,requestType='candidate',message='旧信令')
+        self.assertFalse(state['ready'].is_set());self.assertNotIn('error',state)
+
+    def test_duplicate_or_stale_begin_never_restarts_the_active_native_generation(self):
+        state=self.state();bridge=unittest.mock.Mock();bridge.closed=False
+        state.update(bridge=bridge,generation=3)
+        with patch('wan_transfer.WebRTCStream') as spawn:
+            for generation in (3,2):self.message(type='begin',generation=generation,iceServers=[],relayAllowed=True)
+            spawn.assert_not_called();bridge.close.assert_not_called()
+        self.assertEqual(state['generation'],3);self.assertIs(state['bridge'],bridge)
+    def test_rejected_offer_does_not_resurrect_on_reconnect(self):
+        state=self.state('receive');self.service.cancel(self.identifier);APP.processEvents()
+        self.assertIn((self.identifier,'cancel'),self.service._outbox)
+        self.service._recover_signaling();offers=[];self.service.offer_received.connect(offers.append)
+        self.message(type='request');self.assertEqual(offers,[])
+        self.message(type='cancelled');self.assertNotIn((self.identifier,'cancel'),self.service._outbox)
+    def test_expired_accept_retires_receiver_without_worker(self):
+        self.state('receive');events=[];self.service.progress.connect(events.append)
+        self.message(type='error',requestType='accept',message='请求已失效')
+        self.assertNotIn(self.identifier,self.service._pending)
+        self.assertEqual(events[-1]['state'],'error');self.assertEqual(events[-1]['message'],'请求已失效')
+    def test_final_confirmation_cache_waits_for_both_endpoints(self):
+        state=self.state('receive');self.service._completed_wan(dict(id=self.identifier))
+        self.assertTrue(state['done']);self.assertIn(self.identifier,self.service._pending)
+        self.message(type='settled');self.assertNotIn(self.identifier,self.service._pending)
+
+    def test_failed_tls_allocation_switches_next_generation_to_supplied_udp(self):
+        state=self.state();fake=unittest.mock.Mock();fake.opened.is_set.return_value=False
+        state.update(bridge=fake,relay_transport='tls',relay_allowed=False)
+        self.service._handle_native(dict(id=self.identifier,generation=1,event=dict(type='state',state='failed')))
+        self.assertTrue(state['ready'].is_set());self.assertTrue(state['tls_failed'])
+        with patch('wan_transfer.WebRTCStream',return_value=fake):
+            self.service._begin(self.identifier,state,dict(generation=2,initiator=self.service.device_id,iceServers=[],relayAllowed=False))
+        self.assertFalse(fake.control.call_args.args[0]['preferTls'])
+
+    def test_relay_uses_native_udp_before_tls_and_one_restart_recovers_blocked_udp(self):
+        state=self.state();fake=unittest.mock.Mock();fake.opened.is_set.return_value=False
+        with patch('wan_transfer.WebRTCStream',return_value=fake):
+            self.service._begin(self.identifier,state,dict(generation=2,initiator=self.service.device_id,iceServers=[],relayAllowed=False,relayAttempt=True,relayTransport='udp'))
+        self.assertFalse(fake.control.call_args.args[0]['preferTls'])
+        self.service._relay_udp_timeout(self.identifier,2);self.service._relay_udp_timeout(self.identifier,2)
+        self.assertEqual(self.sent,[dict(type='retry',id=self.identifier,relayTransport='tls')])
+        second=unittest.mock.Mock();second.opened.is_set.return_value=False
+        with patch('wan_transfer.WebRTCStream',return_value=second):
+            self.service._begin(self.identifier,state,dict(generation=3,initiator=self.service.device_id,iceServers=[],relayAllowed=False,relayAttempt=True,relayTransport='tls'))
+        self.assertTrue(second.control.call_args.args[0]['preferTls'])
+        self.service._relay_udp_timeout(self.identifier,2)
+        self.assertEqual(len(self.sent),1)
+
+    def test_established_udp_relay_recovery_preserves_relay_path_instead_of_waiting_for_direct_again(self):
+        state=self.state();state.update(route='relay',relay_transport='udp',relay_profile='udp')
+        self.service._request_retry(self.identifier,state)
+        self.assertEqual(self.sent[-1],dict(type='retry',id=self.identifier,relayTransport='tls'))
+
+    def test_signaling_reconnect_keeps_a_relay_profile_that_is_still_connecting(self):
+        state=self.state();state.update(relay_profile='tls',relay_transport='tls')
+        self.service._request_retry(self.identifier,state)
+        self.assertEqual(self.sent[-1],dict(type='retry',id=self.identifier,relayTransport='tls'))
+
+    def test_explicit_relay_recovery_restarts_a_receiver_whose_old_bridge_still_looks_open(self):
+        state=self.state('receive');old=unittest.mock.Mock()
+        old.opened.is_set.return_value=True;old.closed=False;old.route='relay'
+        old.traffic.return_value=dict(sent=12,received=24)
+        state.update(bridge=old,relay_transport='udp',relay_profile='udp')
+        new=unittest.mock.Mock();new.opened.is_set.return_value=False
+        begin=dict(generation=2,initiator=self.service.device_id,iceServers=[],relayAllowed=False,relayAttempt=True,relayTransport='tls')
+        with patch('wan_transfer.WebRTCStream',return_value=new) as spawn:
+            self.service._begin(self.identifier,state,begin)
+            spawn.assert_not_called();old.close.assert_not_called()
+            self.service._begin(self.identifier,state,dict(begin,recovery=True))
+        old.close.assert_called_once_with(abort=True)
+        self.assertEqual(state['generation'],2);self.assertIs(state['bridge'],new)
+        self.assertEqual(state['relay_bytes_prior'],36)
+        self.assertTrue(new.control.call_args.args[0]['preferTls'])
+
+    def test_authenticated_offer_role_is_independent_of_file_direction(self):
+        for role,offerer in (('send',False),('receive',True)):
+            state=self.state(role);fake=unittest.mock.Mock()
+            initiator=self.service.device_id if offerer else state['peer']['id']
+            with patch('wan_transfer.WebRTCStream',return_value=fake):
+                self.service._begin(self.identifier,state,dict(generation=2,initiator=initiator,iceServers=[]))
+            self.assertIs(fake.control.call_args.args[0]['initiator'],offerer)
+            self.assertEqual(state['role'],role)
+
+    def test_invalid_offer_role_cannot_destroy_the_current_generation(self):
+        state=self.state();old=unittest.mock.Mock();state['bridge']=old
+        with patch('wan_transfer.WebRTCStream') as spawn,self.assertRaises(ValueError):
+            self.service._begin(self.identifier,state,dict(generation=2,initiator='not-a-peer',iceServers=[]))
+        spawn.assert_not_called();old.close.assert_not_called();self.assertEqual(state['generation'],1)
+
+class TurnTLS(unittest.TestCase):
+    def test_real_adapter_framing_and_transport_failure_contracts(self):
+        root=Path(__file__).parent/'p2p';node=root/'runtime'/('node.exe' if sys.platform=='win32' else 'node')
+        if not node.is_file():self.skipTest('Build host must prepare pinned WebRTC assets')
+        result=subprocess.run([str(node),'--test',str(root/'test-turn-tls.mjs')],cwd=root,capture_output=True,text=True,timeout=30)
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertIn('pass 8',result.stdout)
+
+class CandidateOrderingTests(unittest.TestCase):
+    def test_native_route_classification_preserves_relayed_peer_reflexive_endpoints(self):
+        root=Path(__file__).parent/'p2p';node=root/'runtime'/('node.exe' if sys.platform=='win32' else 'node')
+        if not node.is_file():self.skipTest('Build host must prepare pinned WebRTC assets')
+        result=subprocess.run([str(node),'--test',str(root/'test-ice-route.mjs')],capture_output=True,text=True,encoding='utf8',timeout=15)
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr);self.assertIn('pass 4',result.stdout)
+
+    def test_trickle_candidates_can_overtake_both_offer_and_answer_and_still_transfer(self):
+        peers=[];held={};released=set();early=[0,0];queued=[0,0];lock=threading.RLock();closing=False
+        def signal(index,value):
+            with lock:
+                if closing:return
+                kind=value.get('type')
+                if kind=='early_candidate':queued[index]=max(queued[index],value['count']);return
+                if kind not in ('candidate','description'):return
+                if index in released:
+                    peers[1-index].control(value);return
+                values=held.setdefault(index,dict(description=None,candidates=[]))
+                if kind=='description':values['description']=value
+                else:values['candidates'].append(value)
+                if values['description'] is not None and values['candidates']:
+                    peers[1-index].control(values['candidates'].pop(0));early[index]+=1
+                    peers[1-index].control(values['description'])
+                    for candidate in values['candidates']:peers[1-index].control(candidate)
+                    released.add(index)
+        peers.extend([WebRTCStream(lambda value:signal(0,value)),WebRTCStream(lambda value:signal(1,value))])
+        try:
+            peers[1].control(dict(type='init',iceServers=[],initiator=False));peers[0].control(dict(type='init',iceServers=[],initiator=True))
+            self.assertTrue(all(peer.opened.wait(12) for peer in peers),'Out-of-order ICE closed the native connection')
+            self.assertEqual(early,[1,1]);self.assertTrue(all(count>=1 for count in queued))
+            payload=os.urandom(256*1024);peers[0].sendall(payload);received=bytearray()
+            while len(received)<len(payload):
+                chunk=peers[1].recv(len(payload)-len(received));self.assertTrue(chunk);received.extend(chunk)
+            self.assertEqual(hashlib.sha256(received).digest(),hashlib.sha256(payload).digest())
+        finally:
+            closing=True
+            for peer in peers:peer.close(abort=True)
+
+    def test_unbounded_early_candidate_flood_is_rejected_before_native_description(self):
+        peer=WebRTCStream(lambda value:None)
+        try:
+            peer.control(dict(type='init',iceServers=[],initiator=False))
+            for index in range(129):
+                peer.control(dict(type='candidate',candidate='candidate:1 1 UDP 2122260223 127.0.0.1 50000 typ host',mid='0'))
+                if index%32==31:peer.traffic(refresh=True)
+            deadline=time.monotonic()+5
+            while not peer.closed and time.monotonic()<deadline:time.sleep(.01)
+            self.assertTrue(peer.closed);self.assertFalse(peer.opened.is_set())
+        finally:peer.close(abort=True)
+
+
+class NativeStream(unittest.TestCase):
+    def setUp(self):
+        root=Path(__file__).parent/'p2p/runtime'/('node.exe' if sys.platform=='win32' else 'node')
+        if not root.is_file():self.skipTest('Build host must prepare pinned WebRTC assets')
+        self.peers=[];self.closing=False;self.candidates=[]
+        def signal(index,value):
+            if self.closing:return
+            if value.get('type') in ('candidate','description'):
+                if index==1 and value['type']=='candidate':self.candidates.append(value)
+                try:self.peers[1-index].control(value)
+                except OSError:pass
+        self.peers=[WebRTCStream(lambda value:signal(0,value)),WebRTCStream(lambda value:signal(1,value))]
+        self.peers[1].control(dict(type='init',iceServers=[],initiator=False))
+        self.peers[0].control(dict(type='init',iceServers=[],initiator=True))
+        self.assertTrue(all(peer.opened.wait(12) for peer in self.peers),'Native host ICE failed')
+    def tearDown(self):
+        if not hasattr(self,'peers'):return
+        self.closing=True
+        for peer in self.peers:peer.close(abort=True)
+    def test_ordered_close_preserves_last_ack(self):
+        original=os.urandom(2*1024*1024-2);received=bytearray();failure=[]
+        def consume():
+            try:
+                while len(received)<len(original):
+                    try:part=self.peers[1].recv(65536)
+                    except TimeoutError:continue
+                    if not part:break
+                    received.extend(part)
+            except Exception as error:failure.append(type(error).__name__)
+        receiver=threading.Thread(target=consume,daemon=True);receiver.start()
+        self.peers[0].sendall(original);self.peers[0].close();receiver.join(10)
+        self.assertFalse(receiver.is_alive());self.assertEqual(failure,[]);self.assertEqual(hashlib.sha256(received).digest(),hashlib.sha256(original).digest())
+
+    def test_network_progress_counts_only_acknowledged_file_bytes(self):
+        header=b'manifest-header';body=os.urandom(2*1024*1024);trailer=b'sha256-trailer'
+        original=header+body+trailer;received=bytearray()
+        def consume():
+            while len(received)<len(original):
+                try:part=self.peers[1].recv(65536)
+                except TimeoutError:continue
+                if not part:break
+                received.extend(part)
+        thread=threading.Thread(target=consume,daemon=True);thread.start()
+        self.peers[0].sendall(header);self.peers[0].set_payload_offset(123)
+        self.peers[0].send_payload(body);self.peers[0].sendall(trailer);thread.join(8)
+        deadline=time.monotonic()+3
+        while self.peers[0].payload_progress()<123+len(body) and time.monotonic()<deadline:
+            self.peers[0].traffic(refresh=True);time.sleep(.01)
+        self.assertEqual(bytes(received),original)
+        self.assertEqual(self.peers[0].payload_progress(),123+len(body))
+        self.assertFalse(self.peers[0]._payload_spans)
+
+    def test_native_file_pipeline_preserves_folder_bytes_and_native_usage(self):
+        from lan_transfer import LanTransferService,_Transfer
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);source=root/'folder';source.mkdir();destination=root/'received';destination.mkdir()
+            for i in range(20):(source/f'{i:02}.bin').write_bytes(bytes([i])*65536)
+            sender=LanTransferService(discovery=False);receiver=LanTransferService(discovery=False)
+            sender.mode=receiver.mode='wan'
+            sender._connect_peer=lambda *args:self.peers[0];sender._stream_code=lambda *args:''
+            receiver._incoming_stream=lambda stream:stream;receiver._stream_code=lambda *args:''
+            def accept(transfer,*args):transfer.destination=destination;transfer.accepted.set()
+            receiver._incoming_offer=accept
+            identifier=uuid4().hex;transfer=_Transfer(identifier,'send','fixture',active=True)
+            receiver._slots.acquire();thread=threading.Thread(target=receiver._incoming,args=(self.peers[1],'fixture'),daemon=True)
+            thread.start();sender._outgoing(transfer,{},[source]);thread.join(12)
+            self.assertTrue(transfer.finished);self.assertFalse(thread.is_alive())
+            for path in source.iterdir():self.assertEqual((destination/source.name/path.name).read_bytes(),path.read_bytes())
+            self.assertGreater(sum(self.peers[0].traffic().values()),0)
+            self.assertFalse(any(t.name=='FlickDock-file-ack' and t.is_alive() for t in threading.enumerate()))
+            sender.close();receiver.close();sender.deleteLater();receiver.deleteLater();APP.processEvents()
+    def test_slow_consumer_does_not_block_ui_control_or_cancel(self):
+        stopped=threading.Event()
+        def send():
+            try:
+                for _ in range(64):self.peers[0].sendall(b'x'*(1024*1024))
+            except OSError:pass
+            finally:stopped.set()
+        sender=threading.Thread(target=send,daemon=True);sender.start();deadline=time.monotonic()+8
+        while self.peers[1]._size<8*1024*1024 and time.monotonic()<deadline:time.sleep(.01)
+        self.assertLessEqual(self.peers[1]._size,8*1024*1024)
+        self.assertTrue(self.candidates);started=time.monotonic();self.peers[0].control(self.candidates[0])
+        self.assertLess(time.monotonic()-started,1)
+        self.peers[0].close(abort=True);sender.join(3);self.assertFalse(sender.is_alive())
+
+if __name__=='__main__':unittest.main()

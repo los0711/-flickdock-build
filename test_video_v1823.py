@@ -1,0 +1,158 @@
+"""Real yt-dlp/FFmpeg workers, Qt controls, cancellation and action ownership."""
+from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+from types import SimpleNamespace
+import unittest
+from unittest.mock import patch
+os.environ.setdefault('QT_QPA_PLATFORM','offscreen')
+from PySide6.QtCore import QObject,Signal
+from PySide6.QtWidgets import QApplication,QWidget
+from app_settings import SettingsStore,SettingsDialog
+from video_jobs import VideoJob
+from video_links import video_url,recognized_video,candidate_link
+from video_controller import VideoController
+from video_panel import VideoDialog
+from PySide6.QtGui import QImage,QColor
+
+APP=QApplication.instance() or QApplication([]);APP.setQuitOnLastWindowClosed(False)
+
+def until(predicate,seconds=15):
+    deadline=time.monotonic()+seconds
+    while time.monotonic()<deadline:
+        APP.processEvents()
+        if predicate():return
+        time.sleep(.003)
+    raise AssertionError('Video task did not settle')
+
+
+class VideoTests(unittest.TestCase):
+    def test_actual_worker_extracts_public_url_through_system_proxy_without_local_dns(self):
+        from urllib.parse import urlsplit
+        requests=[];base=self.server.RequestHandlerClass
+        class Proxy(base):
+            def response(self,body=False):
+                requests.append(self.path);self.path=urlsplit(self.path).path
+                return super().response(body)
+        proxy=ThreadingHTTPServer(('127.0.0.1',0),Proxy);proxy.daemon_threads=True
+        thread=threading.Thread(target=proxy.serve_forever,daemon=True);thread.start()
+        endpoint=f'http://127.0.0.1:{proxy.server_port}'
+        environment={name:value for name,value in (('http_proxy',endpoint),('https_proxy',endpoint),
+            ('HTTP_PROXY',endpoint),('HTTPS_PROXY',endpoint),('all_proxy',''),('ALL_PROXY',''),('no_proxy',''),('NO_PROXY',''))}
+        result=[];job=VideoJob(dict(action='extract',url='http://flickdock-fixture.example/page'))
+        try:
+            with patch.dict(os.environ,environment):
+                job.finished.connect(result.append);job.start();until(lambda:bool(result))
+            self.assertFalse(result[0]['error'],result)
+            self.assertTrue(result[0]['result']['entries'][0]['options'])
+            self.assertTrue(requests);self.assertTrue(all(urlsplit(url).hostname=='flickdock-fixture.example' for url in requests))
+        finally:
+            job.cancel();job.deleteLater();proxy.shutdown();proxy.server_close();thread.join(3)
+
+    @classmethod
+    def setUpClass(cls):
+        cls.fixture=tempfile.TemporaryDirectory(prefix='video-fixture-');root=Path(cls.fixture.name)
+        tools=Path(__file__).parent/'assets/video-tools'/('ffmpeg.exe' if sys.platform=='win32' else 'ffmpeg')
+        if not tools.is_file():raise unittest.SkipTest('Prepare pinned video assets first')
+        cls.tools=tools
+        result=subprocess.run([str(tools),'-hide_banner','-loglevel','error','-f','lavfi','-i','testsrc=size=160x90:rate=10',
+            '-f','lavfi','-i','sine=frequency=440','-t','1.2','-c:v','mpeg4','-q:v','8','-c:a','aac',str(root/'sample.mp4')],capture_output=True,timeout=20)
+        if result.returncode:raise AssertionError(result.stderr.decode('utf-8','replace'))
+        cls.payload=(root/'sample.mp4').read_bytes()
+        cover=QImage(320,180,QImage.Format_RGB32);cover.fill(QColor('#456979'));cover.save(str(root/'cover.png'));cls.cover_payload=(root/'cover.png').read_bytes()
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self,*_):pass
+            def response(self,body=False):
+                if self.path=='/page':data=b'<html><head><title>Fixture movie</title><meta property="og:image" content="/cover.png"></head><body><video controls src="/sample.mp4"></video></body></html>';kind='text/html'
+                elif self.path=='/cover.png':data=cls.cover_payload;kind='image/png'
+                else:data=cls.payload*(100 if self.path=='/slow.mp4' else 1);kind='video/mp4'
+                self.send_response(200);self.send_header('Content-Type',kind);self.send_header('Content-Length',str(len(data)));self.end_headers()
+                if not body:return
+                try:
+                    for index in range(0,len(data),1024):
+                        self.wfile.write(data[index:index+1024]);self.wfile.flush()
+                        if self.path=='/slow.mp4':time.sleep(.03)
+                except (BrokenPipeError,ConnectionResetError,ConnectionAbortedError):pass
+            def do_HEAD(self):self.response()
+            def do_GET(self):self.response(True)
+        cls.server=ThreadingHTTPServer(('127.0.0.1',0),Handler);cls.server.daemon_threads=True
+        cls.server_thread=threading.Thread(target=cls.server.serve_forever,daemon=True);cls.server_thread.start()
+        cls.origin=f'http://127.0.0.1:{cls.server.server_port}'
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown();cls.server.server_close();cls.server_thread.join(3);cls.fixture.cleanup()
+
+    def test_url_boundary_and_supported_sites(self):
+        from urllib.parse import urlunsplit
+        for url in ('file:///C:/Windows/test',urlunsplit(('https','user:secret@example.com','/video','','')),'http://127.0.0.1/video','http://[::1]/video','http://192.168.1.2/video','http://localhost/video','https://example.com/\nvideo'):
+            with self.subTest(url=url),self.assertRaises((ValueError,UnicodeError)):video_url(url)
+        self.assertEqual(candidate_link('一个视频 https://x.com/user/status/1234567890。'),'https://x.com/user/status/1234567890')
+        cancel=threading.Event()
+        self.assertTrue(recognized_video('https://www.youtube.com/watch?v=BaW_jenozKc',cancel))
+        self.assertTrue(recognized_video('https://x.com/real/status/1234567890',cancel))
+        self.assertTrue(recognized_video('https://www.facebook.com/watch/?v=1234567890',cancel))
+        self.assertFalse(recognized_video('https://example.com/article',cancel))
+
+    def test_actual_qt_worker_extracts_generic_html_and_downloads_video_audio_without_overwrite(self):
+        result=[];job=VideoJob(dict(action='extract',url=self.origin+'/page',fixture_http=True))
+        try:
+            job.finished.connect(result.append);job.start();until(lambda:bool(result))
+            self.assertFalse(result[0]['error'],result);entry=result[0]['result']['entries'][0]
+            self.assertEqual({row['kind'] for row in entry['options']},{'video','audio'})
+            with tempfile.TemporaryDirectory() as directory:
+                paths=[]
+                for option in (entry['options'][0]['id'],entry['options'][0]['id'],entry['options'][1]['id']):
+                    done=[];request=dict(action='download',url=entry['url'],id=entry['id'],option=option,folder=directory,token=__import__('uuid').uuid4().hex,fixture_http=True)
+                    worker=VideoJob(request)
+                    try:
+                        worker.finished.connect(done.append);worker.start();until(lambda:bool(done),120)
+                        self.assertFalse(done[0]['error'],done)
+                        path=Path(done[0]['result']['path']);self.assertTrue(path.is_file());paths.append(path)
+                    finally:worker.cancel();worker.deleteLater()
+                self.assertNotEqual(paths[0],paths[1])
+                self.assertEqual(paths[0].read_bytes(),self.payload);self.assertEqual(paths[1].read_bytes(),self.payload)
+                self.assertEqual(paths[2].suffix,'.m4a')
+                self.assertFalse(list(Path(directory).glob('.flickdock-download-*')))
+        finally:job.cancel();job.deleteLater();APP.processEvents()
+
+    def test_controller_uses_actual_download_for_transfer_shelf_and_cleans_cancelled_stage(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);settings=SettingsStore(root/'profile');settings.update(video_download_dir=str(root/'downloads'),theme='dark')
+            events=[];shelf=QWidget();shelf.add_paths=lambda mode,paths:events.append(('shelf',paths))
+            manager=SimpleNamespace(app=APP,settings=settings,shelf=shelf,queue_transfer_paths=lambda mode,paths:events.append(('transfer',paths)))
+            controller=VideoController(manager);dialog=VideoDialog(manager,controller)
+            def factory(request,parent):return VideoJob(dict(request,fixture_http=True),parent)
+            with patch('video_controller.VideoJob',side_effect=factory),patch('video_controller.video_url',side_effect=lambda value:value):
+                try:
+                    dialog.show();APP.processEvents();controller.parse(self.origin+'/page');until(lambda:controller.extracting is None)
+                    self.assertEqual(len(controller.entries),1,controller.message)
+                    entry=controller.entries[0];row=entry['sources'][0];controller.action(row,'shelf')
+                    until(lambda:row['status'] in ('complete','error'),120)
+                    self.assertEqual(row['status'],'complete',row.get('error'))
+                    self.assertEqual({event[0] for event in events},{'shelf'})
+                    self.assertEqual({event[1][0] for event in events},{row['path']})
+                    self.assertTrue(Path(row['path']).is_file())
+                    until(lambda:entry['cover_state'] in ('ready','error','unavailable'));self.assertEqual(entry['cover_state'],'ready',entry['cover_error'])
+                    dialog._preview(row)
+                    until(lambda:dialog.cover_preview.media._loaded or dialog.cover_preview.media._failed)
+                    self.assertFalse(dialog.cover_preview.media._failed,dialog.cover_preview.media.status_label.text())
+                    self.assertEqual(dialog.cover_preview.media.path,row['path']);self.assertTrue(dialog.cover_preview.media.audio_output.isMuted())
+                    dialog.hide();APP.processEvents();self.assertEqual(dialog.cover_preview.media.path,'')
+                    dialog.prompt.setChecked(False);self.assertFalse(settings.video_link_prompt)
+                    reloaded=SettingsStore(root/'profile');self.assertFalse(reloaded.video_link_prompt)
+                    controller.parse(self.origin+'/slow.mp4');until(lambda:controller.extracting is None)
+                    row=controller.entries[-1]['sources'][0];controller.action(row,'download')
+                    until(lambda:row['received']>0);controller.cancel(row);until(lambda:row['job'] is None)
+                    self.assertEqual(row['status'],'cancelled',row.get('error'));self.assertFalse(list((root/'downloads').glob('.flickdock-download-*')))
+                    dialog.show();APP.processEvents();self.assertTrue(dialog.cards[row['key']].download.isEnabled())
+                finally:controller.close();dialog.hide();dialog.deleteLater();shelf.deleteLater();APP.processEvents()
+
+
+if __name__=='__main__':unittest.main()

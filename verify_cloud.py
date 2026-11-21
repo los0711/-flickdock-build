@@ -1,0 +1,146 @@
+"""Explicit frozen QA entry, offscreen profiles and no OS credential writes."""
+import copy
+import hashlib
+import json
+import os
+from pathlib import Path
+import secrets
+import sys
+import tempfile
+from uuid import uuid4
+
+
+def run(argv,load_font):
+    if os.environ.get('QT_QPA_PLATFORM') != 'offscreen': raise RuntimeError('Cloud verification requires offscreen')
+    from PySide6.QtCore import QTimer
+    from PySide6.QtWidgets import QApplication
+    from account_service import AccountService,derive_auth_key
+    from cloud_config import DEFAULT_CLOUD_URL
+    from shelf_sync import ShelfSync
+    from app_version import APP_VERSION
+    app=QApplication([argv[0]]);app.setQuitOnLastWindowClosed(False);load_font(app)
+    output=Path(argv[argv.index('--verify-output')+1]).resolve()
+    report={'ok':False,'version':APP_VERSION,'frozen':bool(getattr(sys,'frozen',False)),
+            'os_credentials_written':False,'installer_executed':False,'mac_application_tested':sys.platform=='darwin'}
+    # This catches accidental _hashlib trimming in the distributed executable.
+    key=derive_auth_key(bytearray(b'frozen-qa-known-password'),b'\x01'*16)
+    assert bytes(key).hex() == '61a958177a02aa9f93c69ce6fbf35b66442e1bf16c556bd6405b89b86dd4a6fa'
+    report['scrypt_fixture']=hashlib.sha256(key).hexdigest()
+    if sys.platform=='win32':
+        from keyring.backends.Windows import WinVaultKeyring
+        assert WinVaultKeyring.priority > 0
+    elif sys.platform=='darwin':
+        from keyring.backends.macOS import Keyring
+        assert Keyring.priority > 0
+    class Store:
+        def load(self): return None
+        def save(self,value): pass
+        def clear(self): pass
+    class Adapter:
+        def __init__(self): self.view={'permanent':[],'texts':{},'metadata':{}}
+        def snapshot(self): return copy.deepcopy(self.view)
+        def restore(self,value): self.view=copy.deepcopy(value)
+        def title(self,ref): return '文字片段' if ref.startswith('flickdock:') else Path(ref).name
+    with tempfile.TemporaryDirectory(prefix='flickdock-frozen-cloud-') as directory:
+        root=Path(directory);payload=bytes(range(256))*10000;source=root/'同步验证.bin';source.write_bytes(payload)
+        folder_mode='--verify-folder' in argv
+        folder_hashes={}
+        if folder_mode:
+            source=root/'148MB 文件夹';(source/'empty'/'nested').mkdir(parents=True)
+            chunk=os.urandom(1024*1024)
+            for name,size in (('视频素材.mp4',98),('设计原稿.7z',50)):
+                digest=hashlib.sha256()
+                with (source/name).open('wb') as stream:
+                    for _ in range(size):stream.write(chunk);digest.update(chunk)
+                folder_hashes[name]=dict(size=size*1024*1024,sha256=digest.hexdigest())
+        username='frozen-qa-'+uuid4().hex;password=secrets.token_urlsafe(32)
+        adapters=[Adapter(),Adapter()];adapters[0].view={'permanent':[str(source),'flickdock:text:qa'],
+            'texts':{'flickdock:text:qa':'同步文字仍可直接拖入输入框'},'metadata':{}}
+        origin=os.environ.get('FLICKDOCK_QA_CLOUD_ORIGIN',DEFAULT_CLOUD_URL)
+        local_origin=origin.startswith('http://127.0.0.1:')
+        if origin!=DEFAULT_CLOUD_URL and not local_origin:
+            raise ValueError('QA cloud override must be a loopback HTTP origin')
+        if local_origin:
+            from cloud_api import CloudApi
+        services=[AccountService(root/str(i),origin=origin,store=Store(),
+                  api=CloudApi(origin,allow_test_http=True) if local_origin else None) for i in range(2)]
+        report['request_results']=[]
+        for index,service in enumerate(services):
+            transport=service.api.request
+            def traced(method,path,callback,transport=transport,index=index,**kwargs):
+                def completed(result,error):
+                    route='/'.join('id' if len(part)>=32 else part for part in path.split('/'))
+                    report['request_results'].append(dict(peer=index,method=method,route=route,
+                        status=getattr(error,'status',200),code=getattr(error,'code',''),
+                        details=getattr(error,'details',None)))
+                    callback(result,error)
+                return transport(method,path,completed,**kwargs)
+            service.api.request=traced
+        engines=[ShelfSync(root/str(i),services[i],adapters[i]) for i in range(2)]
+        finished=False;phase='register'
+        def finish(error=''):
+            nonlocal finished
+            if finished:return
+            finished=True
+            report.update(ok=not error,error=error)
+            for engine in engines:engine.close()
+            for service in services:service.close()
+            output.parent.mkdir(parents=True,exist_ok=True);output.write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf8')
+            app.exit(1 if error else 0)
+        def first_account(account):
+            nonlocal phase
+            if account and phase=='register':
+                phase='upload';report['probe_account_id']=account['id']
+        def first_sync(status):
+            nonlocal phase
+            if phase=='upload' and status=='搁架已同步。':
+                phase='login';services[1].platform='macos';services[1].device_name='Frozen macOS protocol verification'
+                services[1].login(username,password)
+            elif phase=='cleanup' and status=='搁架已同步。':
+                phase='verify-delete';engines[1].tick()
+        def second_sync(status):
+            nonlocal phase
+            if phase=='login' and status=='搁架已同步。':
+                try:
+                    refs=adapters[1].view['permanent'];assert len(refs)==2
+                    target=next(Path(ref) for ref in refs if not ref.startswith('flickdock:'))
+                    if folder_mode:
+                        assert (target/'empty'/'nested').is_dir()
+                        for name,expected in folder_hashes.items():
+                            path=target/name;assert path.stat().st_size==expected['size']
+                            with path.open('rb') as stream:assert hashlib.file_digest(stream,'sha256').hexdigest()==expected['sha256']
+                        report.update(folder_logical_bytes=148*1024*1024,folder_files=folder_hashes,empty_folders_preserved=True)
+                    else:assert target.read_bytes()==payload
+                    assert list(adapters[1].view['texts'].values())==['同步文字仍可直接拖入输入框']
+                    report.update(verified_bytes=148*1024*1024 if folder_mode else len(payload),
+                        verified_sha256=hashlib.sha256(json.dumps(folder_hashes,sort_keys=True).encode()).hexdigest() if folder_mode else hashlib.sha256(payload).hexdigest(),text_native=True)
+                    phase='cleanup'
+                    adapters[0].view={'permanent':[],'texts':{},'metadata':{}}
+                    engines[0].local_changed()
+                except Exception:finish('冻结版内容校验失败。')
+            elif phase=='verify-delete' and status=='搁架已同步。':
+                try:assert not adapters[1].view['permanent']
+                except AssertionError:finish('跨设备删除未同步。');return
+                def usage(result,error):
+                    nonlocal phase
+                    report['storage_release_checks']=report.get('storage_release_checks',0)+1
+                    if not error and result.get('storage',{}).get('used_bytes')!=0 and report['storage_release_checks']<60:
+                        QTimer.singleShot(1000,lambda:services[0].api.request('GET','/v1/me',usage));return
+                    if error or result.get('storage',{}).get('used_bytes')!=0:
+                        report['storage_remaining_bytes']=result.get('storage',{}).get('used_bytes') if result else None
+                        finish('云端删除后空间未释放。');return
+                    report.update(cloud_objects_deleted=True,deletion_synced=True)
+                    phase='logout';services[1].logout();services[0].logout()
+                phase='verify-storage';services[0].api.request('GET','/v1/me',usage)
+        def logged_out(account):
+            if phase=='logout' and not any(s.signed_in for s in services):finish()
+        services[0].account_changed.connect(first_account)
+        for service in services:service.account_changed.connect(logged_out)
+        engines[0].status_changed.connect(first_sync);engines[1].status_changed.connect(second_sync)
+        def problem(status):
+            if any(word in status for word in ('失败','无法','频繁','暂未','不正确','已过期')):finish(status)
+        for service in services:service.status_changed.connect(problem)
+        for engine in engines:engine.status_changed.connect(problem)
+        QTimer.singleShot(0,lambda:services[0].register(username,password))
+        QTimer.singleShot(900000 if folder_mode else 150000,lambda:finish('云端联调超时。'))
+        return app.exec()

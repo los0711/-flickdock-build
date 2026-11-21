@@ -1,0 +1,18 @@
+{
+  "package": "hash-wasm",
+  "version": "4.12.0",
+  "upstream": "https://github.com/Daninet/hash-wasm",
+  "tarball": "https://registry.npmjs.org/hash-wasm/-/hash-wasm-4.12.0.tgz",
+  "npm_integrity": "sha512-+/2B2rYLb48I/evdOIhP+K/DD2ca2fgBjp6O+GBEnCDk2e4rpeXIK8GvIyRPjTezgmWn9gmKwkQjjx6BtqDHVQ==",
+  "wasm_sha256": "c44604aaa9d054401459b0d07f3d6deeb440fa7afdcb0cfd900ef2596d55ce55",
+  "wasm_size": 9689,
+  "upstream_state_prefix": "8c18dd94",
+  "extracted_from": "package/dist/sha256.umd.min.js",
+  "state_abi": {
+    "size": 112,
+    "message": 0,
+    "length_u64_le": 64,
+    "hash_words_u32_le": 72,
+    "digest_length_u32_le": 104
+  }
+}
