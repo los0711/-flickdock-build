@@ -54,6 +54,11 @@ jobs:
       - name: Install native checks
         run: python -m pip install -r requirements.txt 'pyobjc-framework-Quartz>=11,<13'
 
+      - name: Stabilize available display area on disposable macOS 27 runner
+        run: |
+          defaults write com.apple.dock autohide -bool true
+          killall Dock
+          sleep 2
       - name: Diagnose native utility geometry
         run: |
           python - <<'PY'
