@@ -65,6 +65,7 @@ def run(arguments):
     class Observation(QObject):
         copy_observed=Signal(object)
         def set_local_observation(self,enabled,*,source):return
+        def recheck_native_access(self,*,force=False):return
 
     owner=QWidget()
     manager=SimpleNamespace(app=app,shelf=owner,settings=SimpleNamespace(theme='light',base=root/'profile'),
