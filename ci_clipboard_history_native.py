@@ -39,9 +39,10 @@ def target(root):
     (root/'pid').write_text(str(os.getpid()))
     def record():
         payload=dict(text=editor.toPlainText(),clipboard=app.clipboard().text())
+        if payload['text']!=TEXT:return
         (root/'incoming.json').write_text(json.dumps(payload))
         (root/'incoming.json').replace(root/'target.json')
-    timer=QTimer(editor);timer.setInterval(50);timer.timeout.connect(record);timer.start()
+    editor.textChanged.connect(record)
     QTimer.singleShot(20000,app.quit)
     return app.exec()
 
@@ -73,7 +74,7 @@ def run(root):
     runtime=None
     report={'ok':False,'platform':sys.platform}
     try:
-        wait_for(lambda:(root/'pid').is_file() and (root/'target.json').is_file())
+        wait_for(lambda:(root/'pid').is_file())
         pid=int((root/'pid').read_text())
         wait_for(lambda:current_process()==pid)
         manager=SimpleNamespace(app=app,clipboard_sync=ClipboardObservation(),shelf=PassiveShelf())
@@ -91,7 +92,9 @@ def run(root):
         row=next(rect for part,key,rect in panel._hits if part=='card')
         QTest.mouseClick(panel,Qt.LeftButton,Qt.NoModifier,row.center().toPoint())
         def received_text():
-            data=json.loads((root/'target.json').read_bytes())
+            path=root/'target.json'
+            if not path.is_file():return False
+            data=json.loads(path.read_bytes())
             return data['text']==TEXT and data['clipboard']==SENTINEL
         wait_for(received_text)
         report.update(ok=True,input_matches=True,system_clipboard_untouched=True)

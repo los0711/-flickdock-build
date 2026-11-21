@@ -5,7 +5,8 @@ import math
 import time
 
 from PySide6.QtCore import QEasingCurve, QPointF, QRect, QRectF, Qt, QTimer, QVariantAnimation, Signal
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtGui import (QAbstractTextDocumentLayout,QColor,QFont,QFontMetrics,QPainter,
+    QPainterPath,QPalette,QPen,QPixmap,QTextDocument,QTextOption)
 from PySide6.QtWidgets import QWidget
 
 from flickdock_icons import glyph_pixmap
@@ -19,7 +20,8 @@ GAP = 7
 HEADER = 48
 INSET = 13
 PEEK = 12
-MAX_HEIGHT = 370
+CARD_PADDING = 11
+DETAIL_HEIGHT = 151
 
 
 class ClipboardHistoryPanel(QWidget):
@@ -29,6 +31,7 @@ class ClipboardHistoryPanel(QWidget):
     dragged = Signal(str)
     more_requested = Signal()
     clear_requested = Signal()
+    preview_requested = Signal(str)
 
     def __init__(self):
         super().__init__(None, Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
@@ -44,8 +47,8 @@ class ClipboardHistoryPanel(QWidget):
         self.selected = ''
         self.scroll = 0.
         self._stack_progress = 0.
-        self._preview_progress = 0.
-        self._preview_id = ''
+        self._detail_ids={'opening':'','closing':''}
+        self._detail_amounts={'opening':0.,'closing':0.}
         self._hovered = None
         self._press = None
         self._hits = []
@@ -53,6 +56,8 @@ class ClipboardHistoryPanel(QWidget):
         self._fonts = {}
         self._icons = {}
         self._above = False
+        self._details = {}
+        self._detail_hits = {}
         self._feedback = ''
         self.can_load_more = False
         self._feedback_timer=QTimer(self)
@@ -67,7 +72,7 @@ class ClipboardHistoryPanel(QWidget):
         easing.addCubicBezierSegment(QPointF(.23,1),QPointF(.32,1),QPointF(1,1))
         self._stack.setEasingCurve(easing)
         self._stack.valueChanged.connect(self._stack_frame)
-        self._preview = Spring(self, {'progress':0}, self._preview_frame)
+        self._preview = Spring(self,self._detail_amounts,self._preview_frame)
         self._painted = QRectF()
 
     def set_entries(self,entries, *, has_more=False):
@@ -75,9 +80,8 @@ class ClipboardHistoryPanel(QWidget):
         self.can_load_more=has_more
         retained={row['id'] for row in self.entries}
         self._pixmaps={key:image for key,image in self._pixmaps.items() if key in retained}
-        if self._preview_id not in retained:
-            self._preview_id=self.selected=''
-            self._preview.jump({'progress':0})
+        self._details={key:detail for key,detail in self._details.items() if key in retained}
+        if self.selected and self.selected not in retained:self._open('')
         self.update()
 
     def set_dark(self,dark):
@@ -89,8 +93,8 @@ class ClipboardHistoryPanel(QWidget):
         width=min(anchor.width(),area.width()-12)
         below=area.bottom()-anchor.bottom()-8
         above=anchor.top()-area.top()-8
-        use_below=below>=min(MAX_HEIGHT,155) or below>=above
-        height=min(MAX_HEIGHT,max(0,below if use_below else above))
+        use_below=below>=155 or below>=above
+        height=max(0,below if use_below else above)
         if height<HEADER+ROW+INSET:
             self.hide()
             return
@@ -119,19 +123,23 @@ class ClipboardHistoryPanel(QWidget):
         self._update_mask()
 
     def _preview_frame(self,values):
-        self._preview_progress=values['progress']
-        if abs(self._preview_progress)<.001 and not self.selected:self._preview_id=''
+        self._detail_amounts=values
         self._update_mask()
 
+    @property
+    def _preview_progress(self):
+        return self._detail_amounts['opening']
+
     def _preview_extra(self,row):
-        return min(1.,max(0.,self._preview_progress))*(110 if row['kind']=='image' else 88) if row['id']==self._preview_id else 0.
+        amount=next((self._detail_amounts[channel] for channel,key in self._detail_ids.items() if key==row['id']),0.)
+        return min(1.,max(0.,amount))*(110 if row['kind']=='image' else DETAIL_HEIGHT)
 
     def _body_height(self):
         return sum(ROW+GAP+self._preview_extra(row) for row in self.entries)+(ROW//2 if self.can_load_more else 0)
 
     def _surface_height(self):
-        folded=HEADER+(ROW+PEEK*min(2,len(self.entries)-1) if self.entries else 53)+INSET
-        full=min(self.height(),HEADER+max(48,self._body_height())+INSET)
+        folded=HEADER+(ROW+PEEK*2 if self.entries else 53)+INSET
+        full=self.height() if self.entries else HEADER+53+INSET
         return min(self.height(),folded+(full-folded)*self._stack_progress)
 
     def _update_mask(self):
@@ -149,14 +157,16 @@ class ClipboardHistoryPanel(QWidget):
     def hideEvent(self,event):
         self._stack.stop()
         self._stack_progress=0.
-        self._preview.jump({'progress':0})
+        self._detail_ids={'opening':'','closing':''}
+        self._preview.jump({'opening':0,'closing':0})
         self.expanded=False
-        self._preview_id=self.selected=''
+        self.selected=''
         self.scroll=0.
         self._confirm_clear.stop()
         self._feedback_timer.stop()
         self._feedback=''
         self._hovered=self._press=None
+        self._details.clear()
         super().hideEvent(event)
 
     def show_all(self,expanded=True):
@@ -174,10 +184,16 @@ class ClipboardHistoryPanel(QWidget):
             self._stack.start()
 
     def _open(self,key):
+        if key and key!=self._detail_ids['opening']:
+            restart=self._detail_amounts['closing'] if key==self._detail_ids['closing'] else 0.
+            closing=self._detail_amounts['opening']
+            self._detail_ids['closing']=self._detail_ids['opening']
+            self._detail_ids['opening']=key
+            self._preview.jump({'opening':restart,'closing':closing})
         self.selected=key
-        if key:self._preview_id=key
-        if reduced_motion():self._preview.jump({'progress':1 if key else 0})
-        else:self._preview.animate_physical({'progress':1 if key else 0},240,21)
+        target={'opening':1 if key else 0,'closing':0}
+        if reduced_motion():self._preview.jump(target)
+        else:self._preview.animate_physical(target,240,21)
 
     def _colors(self):
         if self.dark:
@@ -219,6 +235,42 @@ class ClipboardHistoryPanel(QWidget):
             pixmap.loadFromData(row['thumbnail'])
         return pixmap
 
+    def set_detail(self,key,text):
+        if key not in self._detail_ids.values():return
+        document=QTextDocument()
+        document.setDocumentMargin(0)
+        document.setDefaultFont(self._font(12))
+        options=document.defaultTextOption();options.setWrapMode(QTextOption.WrapAtWordBoundaryOrAnywhere)
+        document.setDefaultTextOption(options)
+        preview=text[:12000]
+        document.setPlainText(preview+('\n…' if len(text)>len(preview) else ''))
+        self._details={item:detail for item,detail in self._details.items() if item in self._detail_ids.values()}
+        self._details[key]=[document,0.]
+        self.update()
+
+    def _draw_text_detail(self,painter,row,details,ink,muted,tile,line):
+        self._rounded(painter,details,tile,line,10)
+        viewport=details.adjusted(10,8,-11,-8)
+        if viewport.isEmpty():return
+        key=row['id']
+        if key not in self._details:return
+        document,scroll=self._details[key]
+        if document.textWidth()!=viewport.width():document.setTextWidth(viewport.width())
+        total=document.size().height()
+        maximum=max(0.,total-viewport.height())
+        scroll=max(0.,min(maximum,scroll));self._details[key][1]=scroll
+        self._detail_hits[key]=(viewport,maximum)
+        context=QAbstractTextDocumentLayout.PaintContext()
+        context.palette.setColor(QPalette.Text,QColor(ink))
+        painter.save();painter.setClipRect(viewport)
+        painter.translate(viewport.x(),viewport.y()-scroll)
+        document.documentLayout().draw(painter,context)
+        painter.restore()
+        if maximum>0:
+            height=max(10.,viewport.height()*viewport.height()/total)
+            y=viewport.y()+(viewport.height()-height)*scroll/maximum
+            self._rounded(painter,QRectF(details.right()-6,y,2,height),muted,muted,1)
+
     def feedback(self,message):
         self._feedback=message
         self._feedback_timer.start(2200)
@@ -233,17 +285,17 @@ class ClipboardHistoryPanel(QWidget):
         key=row['id']
         self._rounded(painter,rect,card,line,16)
         if folded:return
-        thumb=QRectF(rect.x()+10,rect.y()+11,37,37)
+        thumb=QRectF(rect.x()+CARD_PADDING,rect.y()+CARD_PADDING,37,37)
         image=self._entry_image(row)
         title_x=thumb.right()+9
         if not image.isNull():
             progress=min(max(preview/110,0.),1.)
             if progress:
-                width=min(rect.width()-20,102*image.width()/image.height())
+                width=min(rect.width()-2*CARD_PADDING,102*image.width()/image.height())
                 height=width*image.height()/image.width()
                 thumb=QRectF(thumb.x()+(rect.center().x()-width/2-thumb.x())*progress,
                             thumb.y()+44*progress,37+(width-37)*progress,37+(height-37)*progress)
-                title_x+=(rect.x()+10-title_x)*progress
+                title_x+=(rect.x()+CARD_PADDING-title_x)*progress
             clip=QPainterPath();clip.addRoundedRect(thumb,7,7)
             painter.save();painter.setClipPath(clip);painter.drawPixmap(thumb,image,QRectF(image.rect()));painter.restore()
         else:
@@ -262,17 +314,16 @@ class ClipboardHistoryPanel(QWidget):
             if self._hovered==(part,key):self._rounded(painter,box,hover,hover,7)
             self._glyph(painter,glyph,box.adjusted(5,5,-5,-5),gold if part=='pin' and row['pinned'] else muted)
         self._hits.extend([('thumb',key,thumb),('pin',key,pin),('remove',key,remove),('card',key,rect)])
-        if preview>2 and image.isNull():
-            details=QRectF(rect.x()+10,rect.y()+55,rect.width()-20,preview)
-            painter.save();painter.setClipRect(details)
-            painter.setFont(self._font(12));painter.setPen(QColor(ink))
-            painter.drawText(details.adjusted(1,1,-1,-8),Qt.AlignTop|Qt.TextWrapAnywhere,row.get('excerpt',''))
-            painter.restore()
+        if preview>16 and image.isNull():
+            details=QRectF(rect.x()+CARD_PADDING,rect.y()+57,rect.width()-2*CARD_PADDING,
+                           max(10.,rect.height()-57-CARD_PADDING))
+            self._draw_text_detail(painter,row,details,ink,muted,tile,line)
 
     def paintEvent(self,event):
         painter=QPainter(self);painter.setRenderHints(QPainter.Antialiasing|QPainter.SmoothPixmapTransform)
         painter.translate(0,self._content_top())
         self._hits=[]
+        self._detail_hits={}
         surface,card,line,ink,muted,hover,gold,tile=self._colors()
         self._rounded(painter,self._painted,surface,line,RADIUS_WINDOW_PX)
         title=QRectF(30,8,152,29)
@@ -364,6 +415,10 @@ class ClipboardHistoryPanel(QWidget):
         elif part=='thumb':
             if not self.expanded:self.show_all()
             self._open('' if key==self.selected else key)
+            if key==self.selected:
+                row=next((row for row in self.entries if row['id']==key),None)
+                if row and row['kind']!='image':self.set_detail(key,row.get('excerpt',''))
+                self.preview_requested.emit(key)
         elif part=='pin':self.pinned.emit(key)
         elif part=='remove':self.removed.emit(key)
         elif part=='more':self.more_requested.emit()
@@ -372,6 +427,13 @@ class ClipboardHistoryPanel(QWidget):
     def wheelEvent(self,event):
         if not self.expanded:self.show_all()
         delta=event.pixelDelta().y() or event.angleDelta().y()*.37
+        position=event.position()-QPointF(0,self._content_top())
+        for key,(viewport,limit) in self._detail_hits.items():
+            if viewport.contains(position) and key in self._details:
+                detail=self._details[key]
+                offset=max(0.,min(limit,detail[1]-delta))
+                if offset!=detail[1]:
+                    detail[1]=offset;self.update();event.accept();return
         maximum=max(0.,self._body_height()-max(0.,self._surface_height()-HEADER-INSET))
         self.scroll=max(0.,min(maximum,self.scroll-delta))
         self.update();event.accept()

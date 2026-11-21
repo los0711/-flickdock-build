@@ -5,7 +5,8 @@ import logging
 
 from PySide6.QtCore import QMimeData, QObject, QPoint, QRect, QThreadPool, QUrl, Qt
 from PySide6.QtGui import QDrag, QImage, QPixmap
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QLineEdit, QPlainTextEdit, QTextEdit
+from shiboken6 import isValid
 
 from clipboard_history_native import front_target, insert_text, private_clipboard
 from clipboard_history_panel import ClipboardHistoryPanel
@@ -107,9 +108,18 @@ class ClipboardHistory(QObject):
         panel.clear_requested.connect(lambda:self._change('clear'))
         panel.more_requested.connect(self._more)
         panel.activated.connect(self._activate)
+        panel.preview_requested.connect(self._preview)
         panel.dragged.connect(self._drag)
         panel.set_entries(self.entries[:self.limit],has_more=len(self.entries)>self.limit)
         self.panel=panel
+
+    def _preview(self,key):
+        def ready(value):
+            if value is None or self.panel is None or not self.panel.isVisible():return
+            kind,payload=value
+            if kind in ('text','link'):self.panel.set_detail(key,payload['text'])
+            elif kind=='file':self.panel.set_detail(key,'\n'.join(payload))
+        self._submit('payload',(key,),ready)
 
     def sync(self,shelf,point,button_down):
         if not self.enabled:return
@@ -143,23 +153,38 @@ class ClipboardHistory(QObject):
     def _activate(self,key):
         target=front_target()
         if self.panel is None:return
+        editor=QApplication.focusWidget() if target is None else None
         self._action_epoch+=1; epoch=self._action_epoch
         def ready(value):
             if not self.panel.isVisible() or epoch!=self._action_epoch or value is None:return
             kind,payload=value
-            if kind in ('image','file'):
-                self.panel.feedback('拖入目标窗口')
-                return
             try:
-                pasted=insert_text(payload['text'],target)
+                if target is None and editor is not None and isValid(editor) and editor is QApplication.focusWidget():
+                    pasted=self._insert_local(editor,kind,payload)
+                else:pasted=kind in ('text','link') and insert_text(payload['text'],target)
             except (OSError,RuntimeError,ImportError,ValueError,TypeError) as error:
                 LOG.warning('Clipboard history text insertion failed (%s)',type(error).__name__)
                 pasted=False
             if pasted:
                 self.hide()
                 self.manager.shelf.hide_animated(explicit=True)
+            elif kind in ('image','file'):self.panel.feedback('拖入目标窗口')
             else:self.panel.feedback('请先聚焦目标输入框，或拖放')
         self._submit('payload',(key,),ready)
+
+    @staticmethod
+    def _insert_local(editor,kind,payload):
+        if not isinstance(editor,(QLineEdit,QPlainTextEdit,QTextEdit)) or editor.isReadOnly():return False
+        if kind in ('text','link'):
+            if isinstance(editor,QLineEdit):editor.insert(payload['text'])
+            else:editor.insertPlainText(payload['text'])
+            return True
+        if kind=='image' and isinstance(editor,QTextEdit) and editor.acceptRichText():
+            image=QImage.fromData(payload)
+            if image.isNull():return False
+            editor.textCursor().insertImage(image)
+            return True
+        return False
 
     def _drag(self,key):
         def ready(value):

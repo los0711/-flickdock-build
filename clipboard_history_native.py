@@ -88,13 +88,12 @@ def _send_mac(text,target):
     for start in range(0,len(text),8):
         if front_target()!=target:return False
         piece=text[start:start+8]
-        raw=piece.encode('utf-16-le')
-        units=tuple(int.from_bytes(raw[index:index+2],'little') for index in range(0,len(raw),2))
+        length=len(piece.encode('utf-16-le'))//2
         down=Quartz.CGEventCreateKeyboardEvent(None,0,True)
         up=Quartz.CGEventCreateKeyboardEvent(None,0,False)
         if down is None or up is None:return False
-        Quartz.CGEventKeyboardSetUnicodeString(down,len(units),units)
-        Quartz.CGEventKeyboardSetUnicodeString(up,len(units),units)
+        Quartz.CGEventKeyboardSetUnicodeString(down,length,piece)
+        Quartz.CGEventKeyboardSetUnicodeString(up,length,piece)
         Quartz.CGEventPostToPid(target,down)
         Quartz.CGEventPostToPid(target,up)
     return True
