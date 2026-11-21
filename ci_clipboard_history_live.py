@@ -189,7 +189,7 @@ def run(root, credentials):
                 wait(lambda:client._native_format_issue=='WETYPE_CLIPBOARD_RELAY' and
                      client._last_sequence==client._sequence(),8)
                 assert not observed and not mutations and latest()['id']==baseline
-            check_windows_bridge(root,app,check_cloud)
+            check_windows_bridge(root,app,check_cloud,verify_reader_roundtrip=False)
             wait(lambda:client._seen and client._seen!=baseline and client._pending is None)
             report.update(history_echoes_received=0,ordinary_mac_copy_received=True,
                           bridge_image_blocked=True,bridge_text_blocked=True,ordinary_windows_copy_synced=True)

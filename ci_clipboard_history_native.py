@@ -29,7 +29,7 @@ def wait_for(predicate):
         QTest.qWait(20)
 
 
-def check_windows_bridge(root,app,relay_checked=lambda:None):
+def check_windows_bridge(root,app,relay_checked=lambda:None,verify_reader_roundtrip=True):
     from clipboard_sync import native_sequence
     from native_clipboard_reader import NativeClipboardReader,clipboard_owner_executable
 
@@ -63,8 +63,9 @@ app.exec()
         assert reader.issue=='WETYPE_CLIPBOARD_RELAY'
         relay_checked()
         app.clipboard().setText('Native ordinary copy fixture')
-        reader.read(native_sequence());wait_for(lambda:bool(observed))
-        assert observed[0][0]=='text' and observed[0][1]['text']=='Native ordinary copy fixture',observed
+        if verify_reader_roundtrip:
+            reader.read(native_sequence());wait_for(lambda:bool(observed))
+            assert observed[0][0]=='text' and observed[0][1]['text']=='Native ordinary copy fixture',observed
     finally:
         reader.close();producer.terminate();producer.wait(timeout=5)
         wait_for(lambda:reader.process is None and not reader.jobs)
