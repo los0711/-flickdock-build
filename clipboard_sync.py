@@ -8,7 +8,8 @@ from PySide6.QtGui import QImage,QPixmap,QImageReader
 from PySide6.QtWidgets import QApplication
 from platform_native import native_input_available,copy_activity
 from clipboard_identity import signature,content_keys
-from clipboard_history_native import (image_paste_active,image_paste_change,mac_clipboard_image,private_clipboard,
+from clipboard_history_native import (history_paste_active,history_paste_echo,image_paste_active,image_paste_change,
+    mac_clipboard_image,mac_history_echo_memory,private_clipboard,
     mac_clipboard_file_needs_resolving,mac_clipboard_file_path,mac_history_echo,mac_history_echo_candidate)
 from sync_scheduler import SyncScheduler
 from clipboard_inbox import ClipboardInbox
@@ -24,6 +25,7 @@ CLIPBOARD_PRIORITY_LEASE_MS=350
 TEXT_COPY_COALESCE_MS=8
 BINARY_COPY_COALESCE_MS=60
 MAC_CLIPBOARD_OBSERVE_MS=50
+HISTORY_PASTE_RECHECK_MS=60
 COPY_FORMAT_SETTLE_SECONDS=1.
 REPEAT_COPY_INPUT_MAX_AGE_MS=3000
 COPY_REPLAY_HISTORY_ENTRIES=64
@@ -423,8 +425,11 @@ class ClipboardSync(QObject):
     def _snapshot(self):
         self._snapshot_available=False
         self._native_format_issue=''
-        if self._is_native and image_paste_active():
-            self._native_format_issue='IMAGE_PASTE_IN_PROGRESS'
+        if self._is_native and (image_paste_active() or history_paste_active()):
+            # A history card owns the clipboard while it inserts. Reading that
+            # temporary payload would publish it as a fresh copy.
+            self._native_format_issue=('IMAGE_PASTE_IN_PROGRESS' if image_paste_active()
+                                       else 'HISTORY_PASTE_IN_PROGRESS')
             return None
         if not self._native_accessible():return None
         try:
@@ -601,6 +606,9 @@ class ClipboardSync(QObject):
     def _schedule_change(self):
         if self._is_native and not self.closed:
             if self._applying:return
+            if history_paste_active():
+                self.change_debounce.start(HISTORY_PASTE_RECHECK_MS)
+                return
             sequence=self._sequence()
             if image_paste_change(sequence) or (sequence is not None and sequence==self._last_sequence):return
             if image_paste_active():
@@ -772,7 +780,7 @@ class ClipboardSync(QObject):
         if not pending['valid']():
             if not self._active() and 'head' in pending:return
             self._prepared_receive=None;return
-        if self._is_native and image_paste_active():
+        if self._is_native and (image_paste_active() or history_paste_active()):
             self.retry.start(150)
             return
         value=pending['value'];actual=signature(self._snapshot())
@@ -1161,15 +1169,25 @@ class ClipboardSync(QObject):
         self._cleanup()
 
     def _observed_copy(self, value, sequence):
-        if sequence!=self._sequence() or self._is_native and (image_paste_active() or image_paste_change(sequence)):
+        if (sequence!=self._sequence()
+                or self._is_native and (image_paste_active() or history_paste_active() or image_paste_change(sequence)
+                                        or history_paste_echo(value))):
             return
         if value and value[0]=='text':
             value=(value[0],dict(value[1],_translation_sequence=sequence))
         self.copy_observed.emit(value)
 
+    def _suppress_history_paste(self,sequence):
+        """Close out a history card's temporary clipboard replacement."""
+        self._native_format_issue='PRIVATE_MAC_PASTEBOARD'
+        self._observe_control_file(sequence)
+
     def _check_history_origin(self,value,sequence):
         """Return whether observation must stop for a pending or private read."""
-        if not self._history_file_roots or value is None:return False
+        # The echo memory is authoritative even when a relocated profile or a
+        # replaced data directory left the private history roots unconfigured.
+        if value is None:return False
+        if not (self._history_file_roots or mac_history_echo_memory()):return False
         key=(sequence,self._generation)
         if self._history_result is not None and self._history_result[0]==key:
             if self._history_result[1]:
@@ -1183,6 +1201,7 @@ class ClipboardSync(QObject):
 
         def classify(cancel):
             if mac_history_echo(value,self._history_file_roots):return True,None
+            if history_paste_echo(value):return True,None
             if value[0]=='files' and any(mac_clipboard_file_needs_resolving(path) for path in value[1]):
                 paths=[mac_clipboard_file_path(path) for path in value[1]]
                 return (False,('files',paths)) if all(paths) else (True,None)
@@ -1205,8 +1224,10 @@ class ClipboardSync(QObject):
         sequence=self._sequence()
         if self._is_native:
             if image_paste_change(sequence):return
-            if image_paste_active():
-                self.change_debounce.start(35)
+            if image_paste_active() or history_paste_active():
+                # Defer, never drop: the settle window ends and a genuine user
+                # copy made meanwhile is published then.
+                self.change_debounce.start(35 if image_paste_active() else HISTORY_PASTE_RECHECK_MS)
                 return
         if not self._active():
             value=self._snapshot()
@@ -1243,6 +1264,11 @@ class ClipboardSync(QObject):
         if self._history_result is not None and self._history_result[0]==(sequence,self._generation):
             value=self._history_result[2] or value
         sig=signature(value)
+        if self._is_native and history_paste_echo(value):
+            # The payload a history card just pasted is never a new copy, even
+            # when the platform announced a sequence this process never set.
+            self._suppress_history_paste(sequence)
+            return
         if value is None and sequence is not None and sequence!=self._last_sequence:
             # Some native owners announce a new sequence before delayed data
             # is readable. Retry briefly without consuming its copy event.
@@ -1415,7 +1441,8 @@ class ClipboardSync(QObject):
             pending['value']=value;self._local_retry=pending;self._pending=None;self.retry.start();return
         def prepare(cancel):
             try:
-                if self._history_file_roots and value[0]=='files' and mac_history_echo(value,self._history_file_roots):
+                if (self._is_native and (self._history_file_roots or mac_history_echo_memory())
+                        and (mac_history_echo(value,self._history_file_roots) or history_paste_echo(value))):
                     return VirtualClipboardError('LOCAL_HISTORY_PASTE')
                 result=package(value,directory,cancel)
                 if result is not None:
@@ -1512,7 +1539,8 @@ class ClipboardSync(QObject):
                       progress=progress,_task=pending,**options)
 
     def _verified_file_origin(self,pending):
-        if (self._history_file_roots and (pending.get('package') or {}).get('kind')=='files'
+        if ((self._history_file_roots or sys.platform=='darwin' and mac_history_echo_memory())
+                and (pending.get('package') or {}).get('kind')=='files'
                 and not pending.get('_file_origin_checked')):
             self._unavailable_task(pending)
             return False

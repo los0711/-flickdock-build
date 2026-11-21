@@ -461,6 +461,84 @@ class ClipboardTests(unittest.TestCase):
             client._observed_copy(('text',{'text':'new explicit user copy'}),604)
             self.assertEqual(observed[0][1]['text'],'new explicit user copy')
 
+    def test_history_payload_replay_without_private_roots_is_never_observed_or_uploaded(self):
+        """A card's payload re-announced by the platform must not sync.
+
+        The pasteboard can advance without a sequence this process marked
+        (native republishing, delayed restore), and a relocated profile can
+        leave the private history roots unconfigured. The pasted payload has to
+        stay local in both cases.
+        """
+        import clipboard_history_native as native
+        client=self.clients[0]
+        client._is_native=True
+        observed=[]
+        client.copy_observed.connect(observed.append)
+        source=self.base/'fence-card.txt';source.write_text('history card bytes',encoding='utf8')
+        value=('files',[str(source)])
+        native._remember_mac_history_payload(value)
+        sequence=[9101]
+        client._sequence=lambda:sequence[0]
+        try:
+            with patch.object(client,'_history_file_roots',()):
+                sequence[0]=9102
+                mime=QMimeData();mime.setUrls([QUrl.fromLocalFile(str(source))])
+                self.clips[0].setMimeData(mime)
+                client._changed()
+                client._observed_copy(value,9102)
+                until(lambda:not client._jobs)
+                QTest.qWait(80)
+                self.assertEqual(observed,[])
+                self.assertFalse(any(method in ('POST','PUT') for method,_ in self.hub.calls))
+                self.assertIsNone(client._pending)
+        finally:
+            native._MAC_HISTORY_ECHOES.clear();native._HISTORY_PASTE_STAMPS.clear()
+
+    def test_history_paste_fence_defers_observation_until_the_restore_settles(self):
+        import clipboard_history_native as native
+        client=self.clients[0]
+        client._is_native=True
+        observed=[]
+        client.copy_observed.connect(observed.append)
+        source=self.base/'fence-settle.txt';source.write_text('settle payload',encoding='utf8')
+        value=('files',[str(source)])
+        try:
+            with native.history_paste_scope(value):
+                self.assertTrue(native.history_paste_active())
+                self.assertIsNone(client._snapshot())
+                self.assertEqual(client._native_format_issue,'HISTORY_PASTE_IN_PROGRESS')
+                self.assertTrue(native.history_paste_echo(value))
+            # The fence outlives the paste itself for late native notifications.
+            self.assertTrue(native.history_paste_active())
+            sequence=[9301]
+            client._sequence=lambda:sequence[0]
+            mime=QMimeData();mime.setUrls([QUrl.fromLocalFile(str(source))])
+            self.clips[0].setMimeData(mime)
+            client._changed()
+            client._observed_copy(value,9301)
+            self.assertEqual(observed,[])
+            self.assertFalse(any(method in ('POST','PUT') for method,_ in self.hub.calls))
+        finally:
+            native._HISTORY_PASTE_SETTLE_UNTIL=0.
+            native._MAC_HISTORY_ECHOES.clear();native._HISTORY_PASTE_STAMPS.clear()
+
+    def test_copy_unrelated_to_a_history_paste_still_reaches_the_other_device(self):
+        import clipboard_history_native as native
+        client=self.clients[0]
+        client._is_native=True
+        sequence=[9201]
+        client._sequence=lambda:sequence[0]
+        card=self.base/'fence-card-source.txt';card.write_text('card payload',encoding='utf8')
+        with native.history_paste_scope(('files',[str(card)])):pass
+        native._HISTORY_PASTE_SETTLE_UNTIL=0.
+        ordinary=self.base/'fence-ordinary.txt';ordinary.write_text('ordinary copy',encoding='utf8')
+        self.assertFalse(native.history_paste_echo(('files',[str(ordinary)])))
+        mime=QMimeData();mime.setUrls([QUrl.fromLocalFile(str(ordinary))])
+        self.clips[0].setMimeData(mime)
+        until(lambda:self.clients[1].view['phase']=='synced' and self.clients[1].view['value'][0]=='files')
+        self.assertEqual(Path(self.clients[1].view['value'][1][0]).read_bytes(),b'ordinary copy')
+        native._MAC_HISTORY_ECHOES.clear();native._HISTORY_PASTE_STAMPS.clear()
+
     def test_delayed_received_image_notifications_do_not_echo(self):
         image=QImage(33,22,QImage.Format_ARGB32);image.fill(QColor('red'))
         mime=QMimeData();mime.setImageData(image);self.clips[0].setMimeData(mime)

@@ -143,15 +143,17 @@ class ClipboardFileJobs(QObject):
     def _restore(self,task):
         if not self.valid(task):return
         roots=self.client._history_file_roots
-        if roots and not task.get('_file_origin_checked'):
-            from clipboard_history_native import mac_history_echo
+        from clipboard_history_native import history_paste_echo,mac_history_echo,mac_history_echo_memory
+        if (roots or mac_history_echo_memory()) and not task.get('_file_origin_checked'):
             def checked(allowed):
                 if not self.valid(task):return
                 if not allowed:
                     self.client._unavailable_task(task);return
                 task['_file_origin_checked']=True
                 self._restore_verified(task)
-            task['_job']=self.client._work(lambda cancel:not mac_history_echo(('files',[task['file_source']]),roots),checked)
+            def forwarded(cancel,value=('files',[task['file_source']])):
+                return not (mac_history_echo(value,roots) or history_paste_echo(value))
+            task['_job']=self.client._work(forwarded,checked)
             return
         self._restore_verified(task)
 

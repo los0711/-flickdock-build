@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import ctypes
 from collections import deque
+import hashlib
 from contextlib import contextmanager
 from ctypes import wintypes
 from enum import Enum
@@ -192,6 +193,18 @@ _MAC_FILE_PASTE_GRACE_SECONDS=1.
 _MAC_HISTORY_ECHO_SECONDS=5.
 _MAC_HISTORY_ECHOES=deque(maxlen=32)
 _MAC_HISTORY_ECHO_LOCK=Lock()
+# Inserting a history card temporarily owns the system clipboard. That
+# replacement is one local action: no observer may publish it as a new copy or
+# forward it to another device. The fence outlives the paste itself so delayed
+# restores and late native notifications stay covered, and its content stamps
+# identify the pasted payload even when the platform reports an extra
+# sequence that was never announced by this process.
+_HISTORY_PASTE_TTL_SECONDS=30.
+_HISTORY_PASTE_SETTLE_SECONDS=.5
+_HISTORY_PASTE_STATE_LOCK=Lock()
+_HISTORY_PASTE_DEPTH=0
+_HISTORY_PASTE_SETTLE_UNTIL=0.
+_HISTORY_PASTE_STAMPS=deque(maxlen=64)
 
 
 def _mac_file_identity(path):
@@ -211,10 +224,11 @@ def _mac_history_keys(value):
 
 def _remember_mac_history_payload(value):
     keys=_mac_history_keys(value)
-    if not keys:return
+    stamp=_history_stamp(value)
     expires=None if value[0]=='files' else time.monotonic()+_MAC_HISTORY_ECHO_SECONDS
     with _MAC_HISTORY_ECHO_LOCK:
-        _MAC_HISTORY_ECHOES.append((value[0],keys,expires))
+        if keys:_MAC_HISTORY_ECHOES.append((value[0],keys,expires))
+        if stamp is not None:_HISTORY_PASTE_STAMPS.append((stamp,time.monotonic()+_HISTORY_PASTE_TTL_SECONDS))
 
 
 def _mac_history_recent(kind):
@@ -222,6 +236,54 @@ def _mac_history_recent(kind):
     with _MAC_HISTORY_ECHO_LOCK:
         return tuple(keys for name,keys,expires in _MAC_HISTORY_ECHOES
                      if name==kind and (expires is None or expires>=now))
+
+
+@contextmanager
+def history_paste_scope(value=None):
+    """Fence the temporary clipboard replacement a history card performs."""
+    global _HISTORY_PASTE_DEPTH,_HISTORY_PASTE_SETTLE_UNTIL
+    if value is not None:_remember_mac_history_payload(value)
+    with _HISTORY_PASTE_STATE_LOCK:_HISTORY_PASTE_DEPTH+=1
+    try:yield
+    finally:
+        with _HISTORY_PASTE_STATE_LOCK:
+            _HISTORY_PASTE_DEPTH=max(0,_HISTORY_PASTE_DEPTH-1)
+            _HISTORY_PASTE_SETTLE_UNTIL=time.monotonic()+_HISTORY_PASTE_SETTLE_SECONDS
+
+
+def history_paste_active():
+    """True while a history paste runs, or while its restore is still settling."""
+    with _HISTORY_PASTE_STATE_LOCK:
+        return _HISTORY_PASTE_DEPTH>0 or time.monotonic()<_HISTORY_PASTE_SETTLE_UNTIL
+
+
+def _history_stamp(value):
+    # Identity that survives a platform republishing the payload under a new
+    # sequence, a new path spelling, or a replaced inode.
+    try:
+        from clipboard_identity import content_keys,signature
+        stamp=signature(value) if value[0]=='files' else content_keys(value)
+    except (ImportError,RuntimeError,OSError,TypeError):
+        return None
+    if not stamp:return None
+    return hashlib.sha256(repr(stamp).encode('utf8','backslashreplace')).digest()
+
+
+def history_paste_echo(value):
+    """True when a clipboard value is the payload a history card just pasted."""
+    if not value:return False
+    now=time.monotonic()
+    with _MAC_HISTORY_ECHO_LOCK:
+        recorded=tuple(stamp for stamp,expires in _HISTORY_PASTE_STAMPS if expires>=now)
+    if not recorded:return False
+    stamp=_history_stamp(value)
+    return stamp is not None and stamp in recorded
+
+
+def mac_history_echo_memory():
+    """Whether any history payload is still remembered for echo classification."""
+    with _MAC_HISTORY_ECHO_LOCK:
+        return bool(_MAC_HISTORY_ECHOES)
 
 
 def _mac_file_from_text(value):
@@ -583,13 +645,6 @@ def _paste_mac_payload(payload,target,cancel,*,image=False,files=False):
         if down is None or up is None:return MacPasteResult.UNAVAILABLE
         if cancel.is_set():return MacPasteResult.CANCELLED
         if front_target()!=target:return MacPasteResult.FOCUS
-        if files:
-            local_value=('files',payload)
-        elif image:
-            local_value=('image',dict(raw=payload))
-        else:
-            local_value=('text',dict(text=payload))
-        _remember_mac_history_payload(local_value)
         if board.changeCount()!=baseline:return MacPasteResult.CLIPBOARD_CHANGED
         sequence=board.clearContents()
         _mark_paste_change(sequence)
@@ -621,6 +676,10 @@ def _paste_mac_payload(payload,target,cancel,*,image=False,files=False):
                 # belong to this paste. Some apps re-export bare file URLs.
                 if len(latest)==len(items):
                     marked=all(bytes(item.dataForType_(_MAC_HISTORY_PASTE) or b'')==marker for item in latest)
+                    # A sequence that still carries this paste's marker belongs
+                    # to the temporary replacement, even when the platform
+                    # advanced it without announcing a new copy.
+                    if marked:_mark_paste_change(current)
                     if marked or files and _mac_pasteboard_has_files(latest,payload):sequence=current
             if board.changeCount()==sequence:
                 _mark_paste_change(board.clearContents())
@@ -656,7 +715,12 @@ def _insert_mac_history(payload,target,*,cancel=None,image=False,files=False):
             if not payload.startswith(b'\x89PNG\r\n\x1a\n'):payload=encode_png(decoded)
         if files and not all(Path(path).is_absolute() and Path(path).exists() for path in payload):
             return MacPasteResult.UNAVAILABLE
-        return _paste_mac_payload(payload,target,cancel,image=image,files=files)
+        local_value=(('files',list(payload)) if files else ('image',dict(raw=payload)) if image
+                     else ('text',dict(text=payload)))
+        # The fence covers the whole replacement, its restore and the settle
+        # window after it, so nothing can publish the temporary payload.
+        with history_paste_scope(local_value):
+            return _paste_mac_payload(payload,target,cancel,image=image,files=files)
     finally:
         _IMAGE_PASTE_LOCK.release()
 
@@ -677,7 +741,9 @@ def insert_image(png,target,*,cancel=None):
             return False
         if not png.startswith(b'\x89PNG\r\n\x1a\n'):
             png=encode_png(image)
-        if sys.platform=='win32':return _paste_windows_image(png,image,target,cancel)
+        if sys.platform=='win32':
+            with history_paste_scope(('image',dict(raw=png))):
+                return _paste_windows_image(png,image,target,cancel)
         return False
     finally:
         _IMAGE_PASTE_LOCK.release()
@@ -692,7 +758,8 @@ def insert_files(paths,target,*,cancel=None):
     if not _IMAGE_PASTE_LOCK.acquire(blocking=False):return False
     try:
         if sys.platform=='win32':
-            return _paste_windows_formats(((15,_windows_file_drop(paths)),('Preferred DropEffect',struct.pack('<I',1))),target,cancel)
+            with history_paste_scope(('files',list(paths))):
+                return _paste_windows_formats(((15,_windows_file_drop(paths)),('Preferred DropEffect',struct.pack('<I',1))),target,cancel)
         return False
     finally:
         _IMAGE_PASTE_LOCK.release()
