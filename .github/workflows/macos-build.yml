@@ -67,7 +67,7 @@ jobs:
           result=unittest.TextTestRunner(verbosity=2).run(suite)
           assert result.wasSuccessful()
           PY
-          QT_QPA_PLATFORM=offscreen python -m unittest test_saved_screenshots test_mac_permissions_v1821 test_clipboard_sync_v1819 -q
+          QT_QPA_PLATFORM=offscreen python -m unittest test_saved_screenshots test_mac_permissions_v1821 test_clipboard_sync_v1819 test_stability_v1822.PermissionRecoveryTests -q
       - name: Exercise native file events and movable permission window
         run: |
           profile="$(mktemp -d "$RUNNER_TEMP/saved-native.XXXXXX")"
