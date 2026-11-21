@@ -37,8 +37,14 @@ def target(root):
         AppKit.NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
     app.clipboard().setText(SENTINEL)
     (root/'pid').write_text(str(os.getpid()))
+    observations=0
     def record():
+        nonlocal observations
         payload=dict(text=editor.toPlainText(),clipboard=app.clipboard().text())
+        observations+=1
+        pending=root/f'observed-{observations:04}.tmp'
+        pending.write_text(json.dumps(payload))
+        pending.replace(pending.with_suffix('.json'))
         if payload['text']!=TEXT:return
         (root/'incoming.json').write_text(json.dumps(payload))
         (root/'incoming.json').replace(root/'target.json')
@@ -90,7 +96,10 @@ def run(root):
         assert current_process()==pid, 'History panel took focus from the native target'
         panel.repaint()
         row=next(rect for part,key,rect in panel._hits if part=='card')
+        activated=[]
+        panel.activated.connect(activated.append)
         QTest.mouseClick(panel,Qt.LeftButton,Qt.NoModifier,row.center().toPoint())
+        assert activated, 'The card body did not activate'
         def received_text():
             path=root/'target.json'
             if not path.is_file():return False
@@ -100,6 +109,10 @@ def run(root):
         report.update(ok=True,input_matches=True,system_clipboard_untouched=True)
         assert ClipboardHistoryStore(root/'saved').execute('list',3,0)[0]['title']==TEXT
     finally:
+        if not report['ok']:
+            observed=sorted(root.glob('observed-*.json'))
+            report.update(front_process=current_process(),history_feedback=runtime.panel._feedback if runtime and runtime.panel else None,
+                          observed=json.loads(observed[-1].read_bytes()) if observed else None)
         if runtime:runtime.close()
         procedure.terminate()
         procedure.wait(timeout=5)
