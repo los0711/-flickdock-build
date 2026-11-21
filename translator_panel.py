@@ -584,6 +584,8 @@ class TranslatorDialog(ReferenceModalDialog):
         super().keyPressEvent(event)
     def showEvent(self,event):
         super().showEvent(event)
+        if sys.platform=='darwin' and self.store.ready:
+            self._apply_pin(self.store.data['pinned'])
         if hasattr(self,'session') and not self._pinning:self.session.suspend(False)
         self.refresh()
     def hideEvent(self,event):
@@ -685,8 +687,17 @@ class TranslatorDialog(ReferenceModalDialog):
         self._apply_pin(checked)
         self.store.update_preferences(pinned=bool(checked))
     def _apply_pin(self,checked):
-        from platform_native import set_window_topmost
+        from platform_native import native_input_available,set_window_topmost
         checked=bool(checked)
+        if sys.platform=='darwin' and native_input_available():
+            # Keep the flag on the live QWindow, where Cocoa derives its
+            # native level. Changing QWidget flags would hide the translator.
+            window=self.windowHandle()
+            if window is not None:
+                flags=window.flags()|Qt.NoDropShadowWindowHint
+                flags=flags|Qt.WindowStaysOnTopHint if checked else flags&~Qt.WindowStaysOnTopHint
+                if flags!=window.flags():window.setFlags(flags)
+            return
         if set_window_topmost(self,checked):return
         if bool(self.windowFlags() & Qt.WindowStaysOnTopHint)==checked:return
         geometry=self.geometry();visible=self.isVisible();self._pinning=True
