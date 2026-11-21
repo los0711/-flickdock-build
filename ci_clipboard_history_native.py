@@ -110,7 +110,7 @@ def check_cocoa_clock():
     import statistics
     from PySide6.QtCore import QEventLoop
     from PySide6.QtWidgets import QWidget
-    from display_frames import FramePulse
+    from display_frames import FramePulse, WindowFrames
     class PaintedWindow(QWidget):
         def paintEvent(self,event):
             self.times.append(time.perf_counter())
@@ -121,6 +121,8 @@ def check_cocoa_clock():
         widget=PaintedWindow()
         widget.times=[];widget.resize(360,260);widget.show()
         QTest.qWait(120)
+        clock=widget._display_frames=WindowFrames(widget)
+        clock._use_cocoa_link=mode=='display_link'
         pulse=FramePulse(widget)
         frames=[];bound=[];loop=QEventLoop()
         def tick():
@@ -129,7 +131,6 @@ def check_cocoa_clock():
             widget.update(QRect(20,20,270,160))
         pulse.timeout.connect(tick)
         pulse.start()
-        if mode=='timer':pulse.clock._use_cocoa_link=False;pulse.clock.schedule()
         QTimer.singleShot(1700,loop.quit)
         loop.exec()
         pulse.stop()
@@ -141,8 +142,9 @@ def check_cocoa_clock():
         def p95(values):return round(statistics.quantiles(values,n=20,method='inclusive')[18],2)
         measurements[mode]=dict(hz=widget.screen().refreshRate(),callbacks=len(frames),paints=len(widget.times),
                                 interval_p95_ms=p95(intervals),paint_interval_p95_ms=p95(paints),
-                                native_link_callbacks=len(bound))
+                                paint_hz=round(1000/statistics.fmean(paints),2),native_link_callbacks=len(bound))
         if mode=='display_link':assert len(bound)>.9*len(frames),measurements
+        else:assert not bound,measurements
         widget.close()
     return measurements
 
