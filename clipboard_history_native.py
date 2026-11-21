@@ -527,9 +527,8 @@ def _insert_mac_history(payload,target,*,cancel=None,image=False,files=False):
     if not _IMAGE_PASTE_LOCK.acquire(blocking=False):return MacPasteResult.BUSY
     try:
         if image:
-            from PySide6.QtGui import QImage
-            from clipboard_history_store import encode_png
-            decoded=QImage.fromData(payload)
+            from clipboard_history_store import decode_history_image, encode_png
+            decoded=decode_history_image(payload)
             if decoded.isNull() or decoded.sizeInBytes()>_MAX_BACKUP_BYTES:return MacPasteResult.UNAVAILABLE
             if not payload.startswith(b'\x89PNG\r\n\x1a\n'):payload=encode_png(decoded)
         if files and not all(Path(path).is_absolute() and Path(path).exists() for path in payload):

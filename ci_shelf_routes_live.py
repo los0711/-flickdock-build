@@ -247,7 +247,8 @@ class Exercise:
             assert self.account.signed_in
             self.lan.start()
             self.wan.start()
-            self.wait(lambda: self.lan.port and self.wan._shelf_drop_supported and self.direct._authenticated())
+            self.wait(lambda: self.lan.port and getattr(self.wan,'_shelf_drop_supported',False)
+                      and self.direct._authenticated())
             self.send() if self.side == 'A' else self.receive()
             assert not errors
             self.report.update(ok=True, phase='complete')

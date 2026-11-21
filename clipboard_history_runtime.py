@@ -6,14 +6,14 @@ import sys
 import time
 
 from PySide6.QtCore import QMimeData, QObject, QPoint, QRect, QThreadPool, QTimer, QUrl, Qt
-from PySide6.QtGui import QDrag, QImage, QPixmap
+from PySide6.QtGui import QDrag, QPixmap
 from PySide6.QtWidgets import QApplication, QLineEdit, QPlainTextEdit, QTextEdit
 from shiboken6 import isValid
 
 from clipboard_history_native import (front_target, insert_files, insert_image, insert_text, mac_history_paste_blocker,
                                       mac_owns_foreground, private_clipboard, restore_mac_target)
 from clipboard_history_panel import ClipboardHistoryPanel
-from clipboard_history_store import ClipboardHistoryStore, PAGE
+from clipboard_history_store import ClipboardHistoryStore, PAGE, decode_history_image
 from sync_files import DiskWork
 from ui_transitions import motion_allowed
 
@@ -242,7 +242,10 @@ class ClipboardHistory(QObject):
             elif kind in ('image','file'):self.panel.feedback('拖入目标窗口')
             else:self.panel.feedback('请先聚焦目标输入框，或拖放')
         def ready(value):
-            if not self.panel.isVisible() or epoch!=self._action_epoch or value is None:return
+            if not self.panel.isVisible() or epoch!=self._action_epoch:return
+            if value is None:
+                self.panel.feedback('这条历史内容已不存在')
+                return
             kind,payload=value
             if target is None and editor is not None and isValid(editor) and editor is QApplication.focusWidget():
                 complete(self._insert_local(editor,kind,payload),kind)
@@ -285,7 +288,7 @@ class ClipboardHistory(QObject):
             else:editor.insertPlainText(payload['text'])
             return True
         if kind=='image' and isinstance(editor,QTextEdit) and editor.acceptRichText():
-            image=QImage.fromData(payload)
+            image=decode_history_image(payload)
             if image.isNull():return False
             editor.textCursor().insertImage(image)
             return True
@@ -298,7 +301,7 @@ class ClipboardHistory(QObject):
             kind,payload=value
             mime=QMimeData()
             if kind=='image':
-                image=QImage.fromData(payload)
+                image=decode_history_image(payload)
                 if image.isNull():return
                 mime.setImageData(image)
             elif kind=='file':

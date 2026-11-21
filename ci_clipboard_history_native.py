@@ -236,6 +236,24 @@ def run(root):
     timer=None
     front=None
     report={'ok':False,'platform':sys.platform,'delayed_native_paste_ms':650 if sys.platform=='darwin' else 0}
+    uploads=[]
+    native_copies=[]
+
+    def begin_cloud_check():
+        if client is None:return
+        client.change_debounce.stop()
+        client._last_sequence=client._sequence()
+        native_copies.clear()
+        client.account.signed_in=True
+        client.enabled=True
+        assert client._active()
+
+    def end_cloud_check():
+        if client is None:return
+        QTest.qWait(450)
+        assert not native_copies and not uploads
+        client.account.signed_in=False
+        client.enabled=False
     try:
         wait_for(lambda:(root/'pid').is_file())
         pid=int((root/'pid').read_text())
@@ -244,10 +262,14 @@ def run(root):
         if on_mac:
             from clipboard_sync import ClipboardSync
             client=ClipboardSync(Account(),Events(),root/'client',enabled=False)
+            client.copy_observed.connect(native_copies.append)
+            # Observe the production upload boundary with a disposable cloud
+            # client. No user data or credentials enter this native test.
+            client._prepare_local=lambda:uploads.append(True)
         manager=SimpleNamespace(app=app,clipboard_sync=client or ClipboardObservation(),shelf=PassiveShelf())
+        ClipboardHistoryStore(root/'saved').execute('remember',('text',{'text':TEXT}))
         runtime=ClipboardHistory(manager,root/'saved')
         runtime.set_enabled(True)
-        runtime.observe(('text',{'text':TEXT}))
         wait_for(lambda:len(runtime.entries)==1)
         runtime._create_panel()
         panel=runtime.panel
@@ -292,7 +314,9 @@ def run(root):
             QTest.qWait(220)
             assert panel.contains_companion(seam) and panel.expanded
             point=panel.mapToGlobal(row_point(key))
-            cocoa_pointer(point,'move');QTest.qWait(65);cocoa_pointer(point,'click')
+            cocoa_pointer(point,'move');QTest.qWait(65)
+            begin_cloud_check()
+            cocoa_pointer(point,'click')
             report.update(painted_gap_px=round(bounds.top()-anchor.bottom()-1),cocoa_hover=True,seam_stable=True)
         else:
             QTest.mouseClick(panel,Qt.LeftButton,Qt.NoModifier,point)
@@ -304,6 +328,7 @@ def run(root):
             return data['text']==TEXT
         wait_for(received_text)
         wait_for(lambda:runtime._insert_job is None and app.clipboard().text()==SENTINEL)
+        end_cloud_check()
         assert ClipboardHistoryStore(root/'saved').execute('list',3,0)[0]['title']==TEXT
 
         image=QImage(47,29,QImage.Format_ARGB32)
@@ -324,6 +349,14 @@ def run(root):
         point=row_point(key)
         assert current_process()==pid
         if on_mac:
+            import sqlite3
+            from AppKit import NSImage
+            tiff=bytes(NSImage.alloc().initWithContentsOfFile_(str(image_path)).TIFFRepresentation())
+            # Preserve the schema and exercise an image written by an older
+            # build that retained the native TIFF bytes directly.
+            from contextlib import closing
+            with closing(sqlite3.connect(runtime.store.path)) as database, database:
+                database.execute('UPDATE clips SET payload=? WHERE id=?',(tiff,key))
             request=root/'activate-history-fixture'
             request.write_text(str(os.getpid()))
             wait_for(native.mac_owns_foreground)
@@ -331,8 +364,10 @@ def run(root):
             # have settled. The focus handoff and paste itself stay native.
             QTest.qWait(150)
             wait_for(lambda:panel._stack_progress==1. and panel._entry_progress==1.)
+            begin_cloud_check()
             QTest.mouseClick(panel,Qt.LeftButton,Qt.NoModifier,row_point(key))
             report['activation_handoff']=True
+            report['history_paste_legacy_tiff']=True
         else:QTest.mouseClick(panel,Qt.LeftButton,Qt.NoModifier,point)
         wait_for(lambda:len(activated)==2)
         assert activated[-1]==key,activated
@@ -340,6 +375,7 @@ def run(root):
         actual=json.loads((root/'image-incoming.json').read_bytes())
         assert actual=={'color':IMAGE_COLOR,'size':[47,29]},actual
         wait_for(lambda:runtime._insert_job is None and app.clipboard().text()==SENTINEL)
+        end_cloud_check()
         cache=root/'saved'/'clipboard-cache'/'clip-fixture'
         contents=cache/'files'
         contents.mkdir(parents=True)
@@ -357,13 +393,18 @@ def run(root):
         assert current_process()==pid
         if on_mac:
             point=panel.mapToGlobal(point)
-            cocoa_pointer(point,'move');QTest.qWait(65);cocoa_pointer(point,'click')
+            cocoa_pointer(point,'move');QTest.qWait(65)
+            begin_cloud_check()
+            cocoa_pointer(point,'click')
         else:QTest.mouseClick(panel,Qt.LeftButton,Qt.NoModifier,point)
         wait_for(lambda:(root/'files-incoming.json').is_file())
         assert json.loads((root/'files-incoming.json').read_text('utf8'))==expected
         wait_for(lambda:runtime._insert_job is None and app.clipboard().text()==SENTINEL)
+        end_cloud_check()
         report['cloud_files_inserted']=True
         if on_mac:
+            report['history_paste_cloud_uploads']=len(uploads)
+            report['history_paste_reopened_text']=True
             previous_images={entry['id'] for entry in runtime.entries if entry['kind']=='image'}
             screenshot=subprocess.run(['/usr/sbin/screencapture','-x','-c','-R85,80,160,100'],
                                       capture_output=True,timeout=12)

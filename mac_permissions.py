@@ -109,16 +109,21 @@ class MacPermissionBackend:
 
 def setup_needed(base,backend=None):
     from pathlib import Path
-    if (Path(base)/'mac-permissions-shown').exists():return False
+    from app_version import APP_BUILD
+    try:
+        if (Path(base)/'mac-permissions-shown').read_text(encoding='utf8')==APP_BUILD:return False
+    except FileNotFoundError:
+        pass
     backend=backend or MacPermissionBackend()
     return backend.paste()!='allowed' or backend.clipboard() not in ('allowed','legacy')
 
 
 def mark_setup_shown(base):
     from pathlib import Path
+    from app_version import APP_BUILD
     path=Path(base)/'mac-permissions-shown'
     path.parent.mkdir(parents=True,exist_ok=True)
-    path.touch()
+    path.write_text(APP_BUILD,encoding='utf8')
 
 
 def clipboard_access(*,force=False):

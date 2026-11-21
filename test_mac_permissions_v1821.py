@@ -92,6 +92,18 @@ class PermissionIdentityTests(unittest.TestCase):
             self.assertFalse(setup_needed(root,backend))
             self.assertEqual(backend.paste(),'denied')
 
+    def test_permission_guide_rechecks_only_when_the_new_build_needs_it(self):
+        from mac_permissions import setup_needed,mark_setup_shown
+        backend=SimpleNamespace(paste=lambda:'denied',clipboard=lambda:'allowed')
+        with tempfile.TemporaryDirectory() as root:
+            with patch('app_version.APP_BUILD','1.8.40'):
+                mark_setup_shown(root)
+                self.assertFalse(setup_needed(root,backend))
+            with patch('app_version.APP_BUILD','1.8.41'):
+                self.assertTrue(setup_needed(root,backend))
+                backend.paste=lambda:'allowed'
+                self.assertFalse(setup_needed(root,backend))
+
 
 class ClipboardPermissionTests(unittest.TestCase):
     def setUp(self):fast.ClipboardFastTests.setUp(self)

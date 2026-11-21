@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import shutil
 import sqlite3
+import sys
 import tempfile
 import time
 from urllib.parse import urlsplit
@@ -18,6 +19,7 @@ from PySide6.QtGui import QImage
 
 PAGE = 12
 MAX_ITEM_BYTES = 20*1024*1024
+MAX_IMAGE_PIXELS = 24*1024*1024
 
 
 def encode_png(image):
@@ -27,6 +29,24 @@ def encode_png(image):
     if not image.save(buffer,'PNG'):
         raise ValueError('无法保存剪贴板图片')
     return bytes(data)
+
+
+def decode_history_image(payload):
+    image=QImage.fromData(payload)
+    if not image.isNull() or not payload or sys.platform!='darwin':
+        return image
+    # Old histories may contain native TIFF/HEIC from the pasteboard. The
+    # installed Qt build need not ship the same image plugins as its writer.
+    import objc
+    from AppKit import NSBitmapImageFileTypePNG, NSBitmapImageRep
+    from Foundation import NSData
+    with objc.autorelease_pool():
+        data=NSData.dataWithBytes_length_(payload,len(payload))
+        bitmap=NSBitmapImageRep.imageRepWithData_(data)
+        if bitmap is None or not 0 < bitmap.pixelsWide()*bitmap.pixelsHigh() <= MAX_IMAGE_PIXELS:
+            return QImage()
+        png=bitmap.representationUsingType_properties_(NSBitmapImageFileTypePNG,{})
+        return QImage.fromData(bytes(png)) if png is not None else QImage()
 
 
 class ClipboardHistoryStore:
@@ -54,11 +74,12 @@ class ClipboardHistoryStore:
             return kind,title[:160],text[:640],payload,b'',''
         if kind=='image':
             raw=data.get('raw')
-            image=data.get('image') or QImage.fromData(raw or b'')
+            image=data.get('image') or decode_history_image(raw or b'')
             if image.isNull():return None
-            # A Retina screenshot from AppKit may be an uncompressed TIFF.
-            # Keep its full resolution when it fits losslessly as PNG.
-            payload=raw if raw and len(raw)<=MAX_ITEM_BYTES else encode_png(image)
+            # Keep a portable lossless copy when it fits. Older records and
+            # large images already in native formats can still be read.
+            payload=raw if raw and raw.startswith(b'\x89PNG\r\n\x1a\n') else encode_png(image)
+            if len(payload)>MAX_ITEM_BYTES and raw and len(raw)<=MAX_ITEM_BYTES:payload=raw
             pixels=image.convertToFormat(QImage.Format_RGBA8888_Premultiplied)
             digest=hashlib.sha256(pixels.constBits()).hexdigest()
             fingerprint=f'{pixels.width()}x{pixels.height()}:{digest}'
@@ -112,6 +133,18 @@ class ClipboardHistoryStore:
             directory=self.files/key
             if directory.is_dir():shutil.rmtree(directory)
 
+    def _file_payload(self,key,paths):
+        retained=self.files/key
+        result=[]
+        for original in paths:
+            path=Path(original)
+            relocated=retained/path.name
+            if path.parts[-3:-1]==(self.files.name,key) and relocated.exists():
+                result.append(str(relocated))
+            else:
+                result.append(original)
+        return result
+
     def execute(self,operation,*arguments):
         snapshot=self._snapshot(arguments[0]) if operation=='remember' else None
         if operation=='remember' and (snapshot is None or len(snapshot[3])>MAX_ITEM_BYTES):return None
@@ -163,5 +196,7 @@ class ClipboardHistoryStore:
                 row=db.execute('SELECT kind,payload FROM clips WHERE id=?',arguments).fetchone()
                 if row is None:return None
                 kind,payload=row
-                return kind, payload if kind=='image' else json.loads(payload)
+                if kind=='image':return kind,payload
+                value=json.loads(payload)
+                return kind,self._file_payload(arguments[0],value) if kind=='file' else value
             raise ValueError('未知的历史操作')

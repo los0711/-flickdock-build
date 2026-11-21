@@ -56,6 +56,25 @@ class LocalClipboardStoreTests(unittest.TestCase):
             store.execute('clear')
             self.assertEqual(source.read_bytes(),b'untouched')
 
+    def test_retained_cloud_attachment_reopens_from_the_current_profile(self):
+        with TemporaryDirectory() as directory:
+            base=Path(directory)
+            previous=base/'previous-profile'
+            cached=previous/'clipboard-cache'/'clip-old'/'files'
+            cached.mkdir(parents=True)
+            attachment=cached/'old attachment.txt'
+            attachment.write_bytes(b'original cached file')
+            store=ClipboardHistoryStore(previous)
+            key=store.execute('remember_cloud_files','cloud-item',[str(attachment)],cached.parent)
+            attachment.unlink()
+            current=base/'current-profile'
+            previous.rename(current)
+            reopened=ClipboardHistoryStore(current)
+            kind, paths = reopened.execute('payload',key)
+            self.assertEqual(kind,'file')
+            self.assertEqual(Path(paths[0]),current/'clipboard-history-files'/key/attachment.name)
+            self.assertEqual(Path(paths[0]).read_bytes(),b'original cached file')
+
 
 class ClipboardHistoryPanelTests(unittest.TestCase):
     def setUp(self):
