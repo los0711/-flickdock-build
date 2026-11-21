@@ -52,6 +52,19 @@ class PermissionTests(unittest.TestCase):
         self.assertEqual(states['input'],'not_required');quartz.CGPreflightListenEventAccess.assert_not_called()
         self.assertEqual(states['network'],'unknown');self.assertEqual(states['files'],'on_demand')
 
+    def test_accessibility_settings_opens_the_pane_without_requesting_a_prompt(self):
+        authorize=Mock()
+        check=Mock(return_value=False)
+        opener=Mock(return_value=True)
+        backend=MacPermissionBackend(ax=SimpleNamespace(AXIsProcessTrusted=check,AXIsProcessTrustedWithOptions=authorize),
+                                     quartz=SimpleNamespace(CGPreflightPostEventAccess=lambda:False),opener=opener)
+        with patch('mac_permissions.ctypes.CDLL') as library:
+            self.assertTrue(backend.request('accessibility'))
+        opener.assert_called_once_with(QUrl('x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility'))
+        authorize.assert_not_called()
+        check.assert_not_called()
+        library.assert_not_called()
+
 
 class PermissionIdentityTests(unittest.TestCase):
     def test_direct_paste_reports_the_missing_permission(self):

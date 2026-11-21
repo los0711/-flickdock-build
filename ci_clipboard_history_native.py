@@ -403,6 +403,15 @@ def run(root):
         end_cloud_check()
         report['cloud_files_inserted']=True
         if on_mac:
+            # Even if the platform reports a file reference after Paste,
+            # it must not become a second history row.
+            attachment=runtime.store.execute('payload',key)[1]
+            client.copy_observed.emit(('files',attachment))
+            client.copy_observed.emit(('files',attachment))
+            QTest.qWait(160)
+            wait_for(lambda:not runtime.jobs)
+            assert [row['id'] for row in runtime.entries if row['kind']=='file']==[key]
+            report['file_paste_history_duplicates']=0
             report['history_paste_cloud_uploads']=len(uploads)
             report['history_paste_reopened_text']=True
             previous_images={entry['id'] for entry in runtime.entries if entry['kind']=='image'}

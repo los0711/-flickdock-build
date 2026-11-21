@@ -1211,7 +1211,9 @@ class LanPanel(QFrame):
             remote=QWidget(self.pairing_card);remote_layout=QVBoxLayout(remote);remote_layout.setContentsMargins(0,0,0,0);remote_layout.setSpacing(4)
             remote_layout.addWidget(self.peer_code_label);self.peer_code_input.setFixedHeight(36);remote_layout.addWidget(self.peer_code_input);remote_layout.addStretch(1)
             pair.addWidget(remote,1);send.addWidget(self.pairing_card)
-        else:send.addWidget(self.send_code)
+        else:
+            send.addWidget(self.send_code)
+            self.send_code.hide()
         send.addStretch(1)
         self.send_button = _button('发送', self); self.send_button.setObjectName('lanPrimary')
         self.send_button.setProperty('pressScale',True)
@@ -1820,16 +1822,22 @@ class LanPanel(QFrame):
             paths, _ = QFileDialog.getOpenFileNames(self, '选择要发送的文件')
         if not paths: return
         try:
-            identifier = self.service.send(peer, paths)
+            identifier = self._send_files(peer,paths)
             if self._wan:self.peer_code_input.clear()
             self._set_history_context(identifier, paths)
             self.queue_paths([],replace=True)
         except (ValueError, OSError) as error: self.status_label.setText(str(error))
 
+    def _send_files(self,peer_id,paths):
+        authorizer=getattr(self.service,'account_authorizer',None)
+        if not self._wan and authorizer is not None and authorizer.known_peer(peer_id):
+            return self.service.send(peer_id,paths,account_only=True)
+        return self.service.send(peer_id,paths)
+
     def send_paths(self, peer_id, paths):
         """Overview/context-menu entry can send selected files and folders."""
         try:
-            identifier = self.service.send(peer_id, paths)
+            identifier = self._send_files(peer_id,paths)
             self._set_history_context(identifier, paths)
             return identifier
         except (ValueError, OSError) as error: self.status_label.setText(str(error)); return ''
@@ -1927,7 +1935,8 @@ class LanPanel(QFrame):
         row['icon'].set_source('',row['history_name'])
         names = '、'.join(str(name) for name in offer.get('names', [])[:3])
         if len(offer.get('names', [])) > 3: names += ' 等'
-        confirmation=str(offer.get('device_code') or offer.get('code') or '').strip()
+        confirmation='' if not self._wan and offer.get('account_device') else str(
+            offer.get('device_code') or offer.get('code') or '').strip()
         code_label='设备码' if self._wan else '确认码'
         row['detail'].setText(f"{names} · {_size(offer['total'])}"+(f" · {code_label} {confirmation}" if confirmation else ''))
         row['heading'].hide(); row['detail'].hide(); row['bar'].hide()
@@ -2021,6 +2030,14 @@ class LanPanel(QFrame):
     def _progress(self, data):
         identifier = data['id']; row = self._row(identifier, data.get('peer', ''), data['direction'])
         state = data['state']; now = time.monotonic(); received = data.get('received', 0); total = data.get('total', 0)
+        if not self._wan and data['direction']=='send':
+            code=str(data.get('code') or '') if state=='waiting' and not data.get('account_device') else ''
+            if row.get('send_confirmation_code','')!=code:
+                row['send_confirmation_code']=code
+                pending=max((item for item in self._rows.values() if item.get('send_confirmation_code')),
+                            key=lambda item:item['sequence'],default=None)
+                self.send_code_value.setText(' '.join(pending['send_confirmation_code']) if pending else '—')
+                self.send_code.setVisible(pending is not None)
         if data['direction']=='receive' and (state in ('connecting','transferring','reconnecting') or data.get('accepted')):
             self._offers.pop(identifier,None)
             if row.get('extra'):
@@ -2059,9 +2076,11 @@ class LanPanel(QFrame):
             row['detail'].setText(f'{_size(received)} / {_size(total)} · ' + (f'{_size(speed)}/s' if speed else '计算速度…')+' · '+eta+transport)
             if data.get('route_measurements'):row['detail'].setToolTip(_transport_hint(data))
         elif state == 'waiting':
-            if not self._wan:self.send_code_value.setText(' '.join(str(data.get('code',''))) or '—')
             row['bar'].setRange(0, 0)
-            row['detail'].setText('等待接收方确认' if self._wan else f"等待接收方确认 · 确认码 {data.get('code', '')}")
+            detail='已验证同账号，正在连接…' if data.get('account_device') else '等待接收方确认'
+            if not self._wan and row.get('send_confirmation_code'):
+                detail+=' · 确认码 '+row['send_confirmation_code']
+            row['detail'].setText(detail)
         elif state=='connecting':
             row['bar'].setRange(0,0);row['detail'].setText({'relay':'正在尝试中继连接…','cloud':'正在连接云端传输…'}.get(data.get('route'),'正在建立 P2P 直连…'))
         elif state=='preparing':

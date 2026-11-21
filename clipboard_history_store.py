@@ -50,10 +50,11 @@ def decode_history_image(payload):
 
 
 class ClipboardHistoryStore:
-    def __init__(self,root):
+    def __init__(self,root,*,include_file_references=True):
         self.root=Path(root)
         self.path=self.root/'clipboard-history.sqlite3'
         self.files=self.root/'clipboard-history-files'
+        self.include_file_references=include_file_references
 
     def _snapshot(self,value):
         if not value:return None
@@ -85,7 +86,7 @@ class ClipboardHistoryStore:
             fingerprint=f'{pixels.width()}x{pixels.height()}:{digest}'
             return ('image','剪贴板图片',f'{image.width()} × {image.height()}',
                     payload,encode_png(image.scaled(300,196,Qt.KeepAspectRatio,Qt.SmoothTransformation)),fingerprint)
-        if kind=='files':
+        if kind=='files' and self.include_file_references:
             paths=[str(path) for path in data
                    if Path(path).is_absolute() and 'clipboard-cache' not in Path(path).parts]
             if not paths:return None
@@ -145,6 +146,17 @@ class ClipboardHistoryStore:
                 result.append(original)
         return result
 
+    def _is_retained_attachment(self,key,payload):
+        # Cloud arrivals have their own managed directory named after the row
+        # ID. Local file references, including duplicate copies of an existing
+        # attachment, have a different row ID and no directory of their own.
+        try:
+            paths=json.loads(payload)
+            return bool(paths) and isinstance(paths,list) and all(
+                Path(path).parts[-3:-1]==(self.files.name,key) for path in paths)
+        except (ValueError,TypeError):
+            return False
+
     def execute(self,operation,*arguments):
         snapshot=self._snapshot(arguments[0]) if operation=='remember' else None
         if operation=='remember' and (snapshot is None or len(snapshot[3])>MAX_ITEM_BYTES):return None
@@ -173,9 +185,14 @@ class ClipboardHistoryStore:
                 if fingerprint:db.execute('INSERT OR REPLACE INTO clip_images VALUES (?,?)',(fingerprint,key))
                 return key
             if operation in ('list','page'):
-                rows=[dict(row) for row in db.execute('''SELECT id,kind,title,excerpt,thumbnail,updated,pinned
-                    FROM clips ORDER BY pinned DESC,updated DESC,id LIMIT ? OFFSET ?''',arguments)]
-                return (rows,db.execute('SELECT COUNT(*) FROM clips').fetchone()[0]) if operation=='page' else rows
+                visible=''
+                if not self.include_file_references:
+                    db.create_function('retained_attachment',2,self._is_retained_attachment,deterministic=True)
+                    visible=" WHERE kind<>'file' OR retained_attachment(id,payload)"
+                rows=[dict(row) for row in db.execute(
+                    'SELECT id,kind,title,excerpt,thumbnail,updated,pinned FROM clips'+visible+
+                    ' ORDER BY pinned DESC,updated DESC,id LIMIT ? OFFSET ?',arguments)]
+                return (rows,db.execute('SELECT COUNT(*) FROM clips'+visible).fetchone()[0]) if operation=='page' else rows
             if operation=='pin':
                 db.execute('UPDATE clips SET pinned=NOT pinned WHERE id=?',arguments)
                 return True
@@ -197,6 +214,8 @@ class ClipboardHistoryStore:
                 if row is None:return None
                 kind,payload=row
                 if kind=='image':return kind,payload
+                if kind=='file' and not self.include_file_references and not self._is_retained_attachment(arguments[0],payload):
+                    return None
                 value=json.loads(payload)
                 return kind,self._file_payload(arguments[0],value) if kind=='file' else value
             raise ValueError('未知的历史操作')

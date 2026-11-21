@@ -8,6 +8,7 @@ from PySide6.QtCore import QObject,Signal
 
 AUTHORIZATION_SECONDS=5.
 TICKET_LIFETIME_SECONDS=180.
+KNOWN_PEER_SECONDS=900.
 MAX_TICKETS=64
 HEX32=re.compile('[a-f0-9]{32}')
 HEX64=re.compile('[a-f0-9]{64}')
@@ -23,7 +24,9 @@ class LanAccountAuthorizer(QObject):
 
     def __init__(self,lan,wan):
         super().__init__(lan);self.lan=lan;self.wan=wan;self._lock=threading.RLock()
+        self._peer_updates=threading.Condition(self._lock)
         self._identity=None;self._peers={};self._waiting={};self._tickets={}
+        self._known_peers={}
         self._deferred={}
         self._prepare.connect(self._send);wan.lan_authorization.connect(self._receive)
         wan.account_service.account_changed.connect(self._refresh);wan.peers_changed.connect(self._refresh)
@@ -48,9 +51,18 @@ class LanAccountAuthorizer(QObject):
                 for waiting in self._waiting.values():
                     waiting['error']='账号已改变，局域网发送已取消。';waiting['done'].set()
                 self._waiting.clear();self._tickets.clear();self._deferred.clear();self._identity=identity
+                self._known_peers.clear()
             self._peers={row['lan_id']:dict(row) for row in rows
                          if row.get('account_device') is True and HEX32.fullmatch(str(row.get('lan_id','')))
                          and HEX64.fullmatch(str(row.get('id','')))}
+            if self._active():
+                # Previous proof is only used to require a fresh ticket when
+                # reconnecting. It never authorizes a transfer by itself.
+                now=time.monotonic()
+                current={key:expiry for key,expiry in self._known_peers.items() if expiry>now}
+                current.update(dict.fromkeys(self._peers,now+KNOWN_PEER_SECONDS))
+                self._known_peers=dict(sorted(current.items(),key=lambda item:item[1])[-256:])
+            self._peer_updates.notify_all()
             if not self.wan._connected or self.wan._closing:
                 self._deferred.clear()
                 return
@@ -67,23 +79,37 @@ class LanAccountAuthorizer(QObject):
         for message in ready:
             self._receive(message)
 
-    def prepare(self,transfer,peer,entries):
+    def known_peer(self,lan_id):
         with self._lock:
-            target=self._peers.get(peer['id']);identity=self._identity
-            if target is None or not self._active():return False
+            return (self._identity is not None and self._identity==self._session()
+                    and (self._known_peers.get(lan_id,0)>time.monotonic()
+                         or self._active() and lan_id in self._peers))
+
+    def prepare(self,transfer,peer,entries):
+        deadline=time.monotonic()+AUTHORIZATION_SECONDS
+        with self._peer_updates:
+            identity=self._identity
+            while True:
+                target=self._peers.get(peer['id'])
+                if target is not None and self._active():break
+                if not transfer.account_only:return False
+                if transfer.cancel.is_set() or self.lan._stopped.is_set():raise InterruptedError('已取消局域网传输。')
+                if identity is None or identity!=self._session():return False
+                remaining=deadline-time.monotonic()
+                if remaining<=0:return False
+                self._peer_updates.wait(min(.05,remaining))
+            if transfer.shelf_intake is None:transfer.account_only=True
             waiting=dict(peer=target['id'],identity=identity,done=threading.Event(),error='',accepted=False,
                          payload=dict(type='lan-transfer',action='prepare',id=transfer.transfer_id,
                                       token=transfer.token,digest=manifest_digest(entries,transfer.shelf_intake),
                                       fingerprint=peer['fingerprint']))
             self._waiting[transfer.transfer_id]=waiting
         try:
-            self._prepare.emit(waiting);deadline=time.monotonic()+AUTHORIZATION_SECONDS
+            self._prepare.emit(waiting)
             while not waiting['done'].wait(.05):
                 if transfer.cancel.is_set() or self.lan._stopped.is_set():raise InterruptedError('已取消局域网传输。')
                 if time.monotonic()>=deadline:return False
             if waiting['identity']!=self._session():raise ConnectionError('账号已改变，局域网发送已取消。')
-            # No ticket grants no automatic consent. The original TLS offer
-            # still works and requires the receiving user's confirmation.
             return waiting['accepted']
         finally:
             with self._lock:self._waiting.pop(transfer.transfer_id,None)

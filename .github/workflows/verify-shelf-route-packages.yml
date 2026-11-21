@@ -2,7 +2,7 @@ name: Verify shelf route test packages
 
 on:
   push:
-    branches: [ci-shelf-route-packages-1841]
+    branches: [ci-manual-lan-packages-1842]
 
 permissions:
   contents: read

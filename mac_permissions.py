@@ -90,17 +90,6 @@ class MacPermissionBackend:
             # Register this app in the pasteboard privacy pane if necessary.
             # This explicit user action neither writes nor uploads the content.
             self._appkit().NSPasteboard.generalPasteboard().pasteboardItems()
-        elif kind=='accessibility' and self.paste()!='allowed':
-            api=self._ax()
-            core=ctypes.CDLL('/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation')
-            create=core.CFDictionaryCreate;create.argtypes=[ctypes.c_void_p,ctypes.POINTER(ctypes.c_void_p),ctypes.POINTER(ctypes.c_void_p),ctypes.c_long,ctypes.c_void_p,ctypes.c_void_p];create.restype=ctypes.c_void_p
-            release=core.CFRelease;release.argtypes=[ctypes.c_void_p];release.restype=None
-            key=ctypes.c_void_p.in_dll(api,'kAXTrustedCheckOptionPrompt');truth=ctypes.c_void_p.in_dll(core,'kCFBooleanTrue')
-            options=create(None,(ctypes.c_void_p*1)(key.value),(ctypes.c_void_p*1)(truth.value),1,None,None)
-            if options:
-                try:
-                    request=api.AXIsProcessTrustedWithOptions;request.argtypes=[ctypes.c_void_p];request.restype=ctypes.c_bool;request(options)
-                finally:release(options)
         elif kind=='input' and self.input()=='denied':
             request=getattr(self._quartz(),'CGRequestListenEventAccess',None)
             if request:request()

@@ -75,6 +75,33 @@ class LocalClipboardStoreTests(unittest.TestCase):
             self.assertEqual(Path(paths[0]),current/'clipboard-history-files'/key/attachment.name)
             self.assertEqual(Path(paths[0]).read_bytes(),b'original cached file')
 
+    def test_mac_file_history_hides_old_references_and_keeps_cloud_attachments(self):
+        with TemporaryDirectory() as directory:
+            root=Path(directory)
+            native_file=root/'local-reference.txt'
+            native_file.write_bytes(b'local file')
+            received=root/'clipboard-cache'/'clip-fixture'
+            files=received/'files';files.mkdir(parents=True)
+            attachment=files/'cloud.txt';attachment.write_bytes(b'cloud file')
+            legacy=ClipboardHistoryStore(root)
+            previous_reference=legacy.execute('remember',('files',[str(native_file)]))
+            cloud_attachment=legacy.execute('remember_cloud_files','cloud-id',[str(attachment)],received)
+            cloud_path=legacy.execute('payload',cloud_attachment)[1][0]
+            duplicate=legacy.execute('remember',('files',[cloud_path]))
+            text_id=legacy.execute('remember',('text',{'text':'kept text'}))
+            self.assertNotEqual(duplicate,cloud_attachment)
+            history=ClipboardHistoryStore(root,include_file_references=False)
+            self.assertIsNone(history.execute('remember',('files',[str(native_file)])))
+            self.assertIsNone(history.execute('remember',('files',[cloud_path])))
+            self.assertIsNone(history.execute('payload',previous_reference))
+            self.assertIsNone(history.execute('payload',duplicate))
+            self.assertEqual(history.execute('payload',cloud_attachment),('file',[cloud_path]))
+            rows,total=history.execute('page',1,0)
+            self.assertEqual(total,2)
+            self.assertEqual(rows[0]['id'],text_id)
+            self.assertEqual(history.execute('list',1,1)[0]['id'],cloud_attachment)
+            self.assertEqual(native_file.read_bytes(),b'local file')
+
 
 class ClipboardHistoryPanelTests(unittest.TestCase):
     def setUp(self):

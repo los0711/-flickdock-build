@@ -410,6 +410,7 @@ class _Transfer:
     confirmation_code: str = ''
     confirmation_error: str = ''
     account_verified: bool = False
+    account_only: bool = False
     shelf_intake: dict | None = None
     shelf_declined: bool = False
 
@@ -650,7 +651,7 @@ class LanTransferService(QObject):
         with self._lock:
             return sum(t.active and t.direction == 'send' for t in self._transfers.values()) < 2
 
-    def send(self, peer_id, paths, *, shelf_intake=None):
+    def send(self, peer_id, paths, *, shelf_intake=None, account_only=False):
         with self._lock:
             peer = dict(self._peers.get(peer_id) or {})
             if not peer: raise ValueError('这台设备已离线，请重新选择。')
@@ -660,6 +661,7 @@ class LanTransferService(QObject):
                 raise ValueError('对方暂不支持局域网搁架直传。')
             identifier = uuid4().hex
             transfer = _Transfer(identifier, 'send', peer['name'], active=True)
+            transfer.account_only = account_only
             transfer.shelf_intake = dict(shelf_intake) if shelf_intake is not None else None
             self._start_diagnostics(transfer)
             transfer.remote_peer = peer
@@ -677,7 +679,7 @@ class LanTransferService(QObject):
         account=self.account_authorizer.incoming(transfer) if self.account_authorizer and transfer.account_verified else None
         with transfer.lock:
             if not (account and account.get('account_device')):
-                if transfer.shelf_intake is not None:return False
+                if transfer.shelf_intake is not None or transfer.account_only:return False
                 if not isinstance(confirmation,str) or len(confirmation)!=6 or not confirmation.isascii() or not confirmation.isdigit():
                     raise ValueError('请输入发送方显示的六位确认码。')
                 if not secrets.compare_digest(confirmation,transfer.confirmation_code):
@@ -772,10 +774,12 @@ class LanTransferService(QObject):
         intake=transfer.shelf_intake
         if intake is not None and not account:
             raise ValueError('局域网搁架直传缺少有效的同账号授权。')
+        if transfer.account_only and not account:
+            raise ValueError('同账号验证未完成，请确认两端已登录后重试。')
         with transfer.lock:
-            transfer.confirmation_code=code
             transfer.account_verified=bool(account and account.get('account_device'))
-        self.offer_received.emit({'id':transfer.transfer_id,'peer':transfer.peer,'host':host,'code':code,
+            transfer.confirmation_code='' if transfer.account_verified else code
+        self.offer_received.emit({'id':transfer.transfer_id,'peer':transfer.peer,'host':host,'code':transfer.confirmation_code,
             'total':transfer.total,'count':sum(e['kind']=='file' for e in transfer.entries),
             'names':[e['path'] for e in transfer.entries if '/' not in e['path']],**(account or {}),
             **({'shelf_intake':intake} if intake is not None else {})})
@@ -797,8 +801,12 @@ class LanTransferService(QObject):
             if intake is not None:
                 offer['shelf_intake']=intake
             authorized=self.account_authorizer and self.account_authorizer.prepare(transfer,peer,entries)
+            if transfer.account_only and not authorized:
+                raise ValueError('同账号验证未完成，请确认两端已登录后重试。')
             if intake is not None and not authorized:
                 raise ConnectionError('局域网搁架直传授权不可用。')
+            if authorized and intake is None:
+                offer['account_only']=True
             for attempt in range(3):
                 receipts=None
                 if transfer.cancel.is_set(): raise InterruptedError('已取消传输。')
@@ -810,8 +818,9 @@ class LanTransferService(QObject):
                         raise
                     stream.settimeout(1); transfer.socket = stream
                     phase = 'transfer'
-                    code = self._stream_code(stream,transfer.transfer_id)
-                    _send_transfer_json(stream,offer,transfer.diagnostics); self._notify(transfer, 'waiting', code=code)
+                    code = '' if authorized else self._stream_code(stream,transfer.transfer_id)
+                    _send_transfer_json(stream,offer,transfer.diagnostics)
+                    self._notify(transfer,'waiting',code=code,**({'account_device':True} if authorized else {}))
                     reply = _read_json(stream, transfer.cancel, timeout=8 if intake is not None else 180,
                                        diagnostics=transfer.diagnostics)
                     if intake is not None and reply.get('state') == 'declined':
@@ -913,6 +922,9 @@ class LanTransferService(QObject):
             intake=request.get('shelf_intake')
             if 'shelf_intake' in request and (self.mode!='lan' or not isinstance(intake,dict)):
                 raise ValueError('无效的搁架直传请求。')
+            account_only=request.get('account_only',False)
+            if type(account_only) is not bool or (account_only and self.mode!='lan'):
+                raise ValueError('无效的同账号局域网请求。')
             manifest_hash = manifest_digest(entries,intake)
             handoff_deadline=time.monotonic()+8
             already_finished=False
@@ -922,7 +934,7 @@ class LanTransferService(QObject):
                     if transfer:
                         if (transfer.direction!='receive' or transfer.cancel.is_set()
                                 or not secrets.compare_digest(transfer.token,token)
-                                or transfer.manifest_hash!=manifest_hash):
+                                or transfer.manifest_hash!=manifest_hash or transfer.account_only!=account_only):
                             raise ValueError('无法恢复这项传输。')
                         busy=transfer.active
                         already_finished=transfer.finished and not busy
@@ -934,7 +946,7 @@ class LanTransferService(QObject):
                             raise ValueError('待处理的传输请求过多。')
                         sender=str(request.get('sender') or '局域网设备')[:64]
                         transfer=_Transfer(identifier,'receive',sender,entries=entries,token=token,
-                            manifest_hash=manifest_hash,total=total,shelf_intake=intake)
+                            manifest_hash=manifest_hash,total=total,shelf_intake=intake,account_only=account_only)
                         self._start_diagnostics(transfer)
                         if transfer.diagnostics:transfer.diagnostics.manifest(sum(e['kind']=='file' for e in entries),total)
                         self._transfers[identifier]=transfer

@@ -30,7 +30,7 @@ class ClipboardHistory(QObject):
     def __init__(self,manager, directory):
         super().__init__(manager.app)
         self.manager=manager
-        self.store=ClipboardHistoryStore(directory)
+        self.store=ClipboardHistoryStore(directory,include_file_references=sys.platform!='darwin')
         self.panel=None
         self.pool=None
         self.jobs=set()
@@ -108,6 +108,7 @@ class ClipboardHistory(QObject):
 
     def observe(self,value):
         if not self.enabled or not value:return
+        if value[0]=='files' and not self.store.include_file_references:return
         if isinstance(value[1],dict) and value[1].get('_history_private'):return
         try:
             if private_clipboard(image=value[0]=='image'):return

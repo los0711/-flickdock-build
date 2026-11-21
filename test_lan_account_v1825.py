@@ -147,6 +147,83 @@ class LanAccountTests(unittest.TestCase):
         wan.peers_changed.emit(wan.peers())
         self.assertIsNone(receiver.incoming(transfer))
 
+    def test_manual_same_account_send_never_shows_a_confirmation_code(self):
+        source=self.root/'manual-same-account.txt'
+        source.write_text('verified LAN transfer',encoding='utf8')
+        destination=self.root/'manual-inbox';destination.mkdir()
+        sender,receiver=self.lans
+        sent=[]
+        completed=[]
+        offers=[]
+        dialog=LanDialog(sender,SettingsStore(self.root/'profile'))
+        panel=dialog.panel
+        def inspect(event):
+            if event['state']=='waiting':
+                sent.append((event,panel.send_code.isHidden(),panel._rows[event['id']]['detail'].text()))
+        def receive(offer):
+            offers.append(offer)
+            receiver.accept(offer['id'],destination)
+        sender.progress.connect(inspect)
+        receiver.offer_received.connect(receive)
+        receiver.completed.connect(completed.append)
+        try:
+            panel.queue_paths([source])
+            panel.send_button.click()
+            until(lambda:bool(completed) and bool(sent),seconds=7)
+            event,hidden,label=sent[0]
+            self.assertTrue(hidden)
+            self.assertTrue(event['account_device'])
+            self.assertEqual(event['code'],'')
+            self.assertNotIn('确认码',label)
+            self.assertTrue(offers[0]['account_device'])
+            self.assertEqual(offers[0]['code'],'')
+            self.assertEqual(Path(completed[0]['paths'][0]).read_bytes(),source.read_bytes())
+        finally:dialog.close();dialog.deleteLater();flush()
+
+    def test_manual_known_peer_waits_for_rebinding_then_sends_without_a_code(self):
+        source=self.root/'manual-reconnected.txt';source.write_text('after rebinding')
+        destination=self.root/'manual-inbox';destination.mkdir()
+        sender,receiver=self.lans;wan=self.wans[0]
+        offers=[];completed=[];progress=[]
+        receiver.offer_received.connect(offers.append)
+        receiver.offer_received.connect(lambda offer:receiver.accept(offer['id'],destination))
+        receiver.completed.connect(completed.append)
+        sender.progress.connect(progress.append)
+        dialog=LanDialog(sender,SettingsStore(self.root/'profile'))
+        try:
+            wan._bound_identity=None
+            with patch.object(wan,'peers',return_value=[]):
+                wan.peers_changed.emit([])
+                dialog.panel.queue_paths([source]);dialog.panel.send_button.click()
+                until(lambda:bool(progress))
+                self.assertFalse(offers)
+                self.assertTrue(next(iter(sender._transfers.values())).account_only)
+            wan._bound_identity=wan._account_identity()
+            wan.peers_changed.emit(wan.peers())
+            until(lambda:bool(completed),seconds=7)
+            self.assertEqual(offers[0]['code'],'')
+            self.assertTrue(all(row.get('account_device') for row in progress if row['state']=='waiting'))
+            self.assertEqual(Path(completed[0]['paths'][0]).read_bytes(),source.read_bytes())
+        finally:dialog.close();dialog.deleteLater();flush()
+
+    def test_manual_known_peer_with_no_ticket_fails_without_an_offer(self):
+        source=self.root/'manual-account-unavailable.txt';source.write_text('keep file local')
+        sender,receiver=self.lans
+        progress=[];offers=[]
+        sender.progress.connect(progress.append)
+        receiver.offer_received.connect(offers.append)
+        dialog=LanDialog(sender,SettingsStore(self.root/'profile'))
+        try:
+            self.wans[0]._connected=False
+            with patch('lan_account.AUTHORIZATION_SECONDS',.25):
+                dialog.panel.queue_paths([source]);dialog.panel.send_button.click()
+                until(lambda:any(row['state']=='error' for row in progress))
+            self.assertFalse(offers)
+            self.assertTrue(dialog.panel.send_code.isHidden())
+            error=next(row for row in progress if row['state']=='error')
+            self.assertIn('同账号验证未完成',error['message'])
+        finally:dialog.close();dialog.deleteLater();flush()
+
     def test_shelf_offer_carries_verified_metadata_and_declines_without_resending(self):
         source=self.root/'shelf-test.bin'
         source.write_bytes(b'fixture for LAN shelf delivery')

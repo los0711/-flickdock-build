@@ -51,6 +51,11 @@ class Exercise:
         self.lan.completed.connect(self.lan_completed)
         self.wan.completed.connect(self.wan_completed)
         self.lan.progress.connect(self.lan_progress)
+        self.lan.offer_received.connect(self.accept_manual)
+        self.manual_progress=[]
+        self.manual_offers=[]
+        self.manual_inbox=root/'manual-inbox'
+        self.manual_inbox.mkdir()
         self.record_original_downloads()
         self.payload_started = {}
         self.payload_lock = Lock()
@@ -154,8 +159,44 @@ class Exercise:
         self.received_on(result, 'p2p')
 
     def lan_progress(self, result):
+        if self.report['phase']=='manual_lan' and result['direction']=='send':
+            self.manual_progress.append(result)
         if result['direction'] == 'send' and result['state'] == 'error':
             self.failures.append(result.get('phase'))
+
+    def accept_manual(self,offer):
+        if 'shelf_intake' in offer:return
+        self.manual_offers.append(offer)
+        if offer.get('account_device') and not offer.get('code'):
+            self.lan.accept(offer['id'],self.manual_inbox)
+        else:
+            self.lan.reject(offer['id'])
+
+    def verify_manual_send(self,peer_id):
+        from app_settings import SettingsStore
+        from lan_panel import LanDialog
+        self.report['phase']='manual_lan'
+        fixture=self.root/self.fixture('manual')
+        fixture.write_bytes(self.payload('manual'))
+        dialog=LanDialog(self.lan,SettingsStore(self.root/'manual-settings'))
+        panel=dialog.panel
+        samples=[]
+        def inspect(event):
+            if event['state']=='waiting':
+                samples.append(panel.send_code.isHidden() and event.get('account_device') and not event.get('code'))
+        self.lan.progress.connect(inspect)
+        try:
+            panel.devices.setCurrentIndex(panel.devices.findData(peer_id))
+            panel.queue_paths([fixture])
+            panel.send_button.click()
+            self.wait(lambda:any(event['state'] in ('complete','error') for event in self.manual_progress),25)
+            assert samples and all(samples) and self.manual_progress[-1]['state']=='complete'
+            self.wait_status('B','manual-received')
+            self.report['manual_lan']=dict(sender_code_hidden=True,authenticated=True,actual_bytes=fixture.stat().st_size)
+        finally:
+            self.lan.progress.disconnect(inspect)
+            dialog.close()
+            dialog.deleteLater()
 
     def gate_first_payload(self, route, service):
         original = service._yield_payload
@@ -182,6 +223,7 @@ class Exercise:
         self.wait(lambda: self.wan.nearby_peer(peer['id']))
         assert self.wan.nearby_peer(peer['id'])['shelf_drop']
         assert self.wan.nearby_peer(self.peer('C')['id']) is None
+        self.verify_manual_send(self.wan.nearby_peer(peer['id'])['id'])
         self.report['phase'] = 'parallel'
         self.gate_first_payload('lan', self.lan)
         self.gate_first_payload('p2p', self.wan)
@@ -217,6 +259,14 @@ class Exercise:
 
     def receive(self):
         self.status('ready')
+        if self.side=='B':
+            self.report['phase']='manual_lan'
+            fixture=self.manual_inbox/self.fixture('manual')
+            self.wait(lambda:fixture.is_file() and bool(self.manual_offers),45)
+            assert self.manual_offers[0]['account_device'] and not self.manual_offers[0]['code']
+            assert fixture.read_bytes()==self.payload('manual')
+            self.report['manual_lan']=dict(receiver_code_requested=False,matching_sha256=True,actual_bytes=fixture.stat().st_size)
+            self.status('manual-received')
         self.report['phase'] = 'parallel'
         self.check_received('parallel', 'lan' if self.side == 'B' else 'p2p')
         if self.side == 'B':

@@ -2,7 +2,7 @@ name: Native shelf direct delivery
 
 on:
   push:
-    branches: [ci-shelf-lan-priority]
+    branches: [ci-manual-lan-1842]
 
 permissions:
   contents: read

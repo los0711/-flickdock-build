@@ -560,6 +560,7 @@ class ShelfManager:
         if offer.get('account_device') is True and self.account.signed_in and offer.get('account_id')==self.account.account['id']:
             try:
                 if self.lan.accept(offer['id'],self.settings.lan_receive_dir):self.lan_receive_notice.begin(offer)
+                else:self.lan.reject(offer['id'])
             except (OSError,ValueError) as error:
                 self.lan.reject(offer['id']);self.lan.status_changed.emit('同账号局域网文件未能接收：'+str(error))
             return
