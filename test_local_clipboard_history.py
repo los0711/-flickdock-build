@@ -125,7 +125,7 @@ class ClipboardHistoryRuntimeTests(unittest.TestCase):
     def test_selected_record_leaves_current_clipboard_content_in_place(self):
         from clipboard_history_runtime import ClipboardHistory
         from types import SimpleNamespace
-        from unittest.mock import Mock
+        from unittest.mock import ANY,Mock
         from PySide6.QtCore import QObject,Signal
         class NativeFixture(QObject):
             copy_observed=Signal(object)
@@ -146,7 +146,7 @@ class ClipboardHistoryRuntimeTests(unittest.TestCase):
                      patch('clipboard_history_runtime.insert_text',return_value=True) as insert:
                     runtime._activate(runtime.entries[0]['id'])
                     sample_until(lambda:insert.called)
-                    insert.assert_called_once_with('历史粘贴测试','target')
+                    insert.assert_called_once_with('历史粘贴测试','target',cancel=ANY)
                 self.assertEqual(APP.clipboard().text(),'当前剪贴板测试')
                 runtime.set_enabled(False)
                 self.assertFalse(runtime.panel.isVisible())

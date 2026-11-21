@@ -39,6 +39,7 @@ class ClipboardHistory(QObject):
         self._refresh_epoch=0
         self._placement=None
         self._action_epoch=0
+        self._insert_job=None
         manager.clipboard_sync.copy_observed.connect(self.observe)
 
     def set_enabled(self,enabled):
@@ -52,13 +53,16 @@ class ClipboardHistory(QObject):
             self.limit=PAGE
             self._refresh()
         elif self.panel:
+            if self._insert_job is not None:self._insert_job.cancel.set()
             self.panel.hide()
 
     def _submit(self,operation,args,callback):
-        if self.closed or not self.enabled:return
+        return self._work(DiskWork(_execute,self.store,operation,args),operation,callback)
+
+    def _work(self,job,operation,callback):
+        if self.closed or not self.enabled:return None
         if self.pool is None:
             self.pool=QThreadPool(self);self.pool.setMaxThreadCount(1)
-        job=DiskWork(_execute,self.store,operation,args)
         self.jobs.add(job)
         def done(result,error):
             self.jobs.discard(job)
@@ -70,6 +74,7 @@ class ClipboardHistory(QObject):
             if self.enabled:callback(result)
         job.signals.done.connect(done,Qt.QueuedConnection)
         self.pool.start(job)
+        return job
 
     def observe(self,value):
         if not self.enabled or not value:return
@@ -154,23 +159,25 @@ class ClipboardHistory(QObject):
     def _activate(self,key):
         target=front_target()
         if self.panel is None:return
+        if self._insert_job is not None:self._insert_job.cancel.set()
         editor=QApplication.focusWidget() if target is None else None
         self._action_epoch+=1; epoch=self._action_epoch
-        def ready(value):
-            if not self.panel.isVisible() or epoch!=self._action_epoch or value is None:return
-            kind,payload=value
-            try:
-                if target is None and editor is not None and isValid(editor) and editor is QApplication.focusWidget():
-                    pasted=self._insert_local(editor,kind,payload)
-                else:pasted=kind in ('text','link') and insert_text(payload['text'],target)
-            except (OSError,RuntimeError,ImportError,ValueError,TypeError) as error:
-                LOG.warning('Clipboard history text insertion failed (%s)',type(error).__name__)
-                pasted=False
+        def complete(pasted,kind):
+            if epoch!=self._action_epoch or not self.panel.isVisible():return
             if pasted:
                 self.hide()
                 self.manager.shelf.hide_animated(explicit=True)
             elif kind in ('image','file'):self.panel.feedback('拖入目标窗口')
             else:self.panel.feedback('请先聚焦目标输入框，或拖放')
+        def ready(value):
+            if not self.panel.isVisible() or epoch!=self._action_epoch or value is None:return
+            kind,payload=value
+            if target is None and editor is not None and isValid(editor) and editor is QApplication.focusWidget():
+                complete(self._insert_local(editor,kind,payload),kind)
+            elif target is None or kind not in ('text','link'):complete(False,kind)
+            else:
+                job=DiskWork(lambda cancelled:insert_text(payload['text'],target,cancel=cancelled))
+                self._insert_job=self._work(job,'insert',lambda pasted:complete(pasted,kind))
         self._submit('payload',(key,),ready)
 
     @staticmethod
@@ -225,6 +232,7 @@ class ClipboardHistory(QObject):
     def close(self):
         if self.closed:return
         self.closed=True
+        if self._insert_job is not None:self._insert_job.cancel.set()
         self.manager.clipboard_sync.copy_observed.disconnect(self.observe)
         if self.panel is not None:
             self.panel.close()

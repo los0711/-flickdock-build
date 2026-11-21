@@ -4,8 +4,10 @@ from __future__ import annotations
 import ctypes
 from ctypes import wintypes
 from functools import lru_cache
+from itertools import groupby
 import os
 import sys
+from threading import Event
 
 
 @lru_cache(maxsize=1)
@@ -68,37 +70,9 @@ class _Input(ctypes.Structure):
     _fields_=[('kind',wintypes.DWORD),('value',_InputValue)]
 
 
-class _GuiThreadInfo(ctypes.Structure):
-    _fields_=[('size',wintypes.DWORD),('flags',wintypes.DWORD),('active',wintypes.HWND),
-              ('focus',wintypes.HWND),('capture',wintypes.HWND),('menu',wintypes.HWND),
-              ('move',wintypes.HWND),('caret',wintypes.HWND),('caret_bounds',wintypes.RECT)]
-
-
-def _post_characters(user,target,units):
-    window,pid=target
-    owner=wintypes.DWORD()
-    thread=user.GetWindowThreadProcessId(window,ctypes.byref(owner))
-    if not thread or owner.value!=pid:return False
-    user.GetGUIThreadInfo.argtypes=(wintypes.DWORD,ctypes.POINTER(_GuiThreadInfo))
-    info=_GuiThreadInfo();info.size=ctypes.sizeof(info)
-    if not user.GetGUIThreadInfo(thread,ctypes.byref(info)) or not info.focus:return False
-    user.GetWindowThreadProcessId(info.focus,ctypes.byref(owner))
-    if owner.value!=pid or front_target()!=target:return False
-    user.PostMessageW.argtypes=(wintypes.HWND,wintypes.UINT,wintypes.WPARAM,wintypes.LPARAM)
-    # Deliver all UTF-16 units through the same queue. Mixing VK_PACKET
-    # key events with a synchronous IME commit for surrogates reorders emoji
-    # in Qt controls.
-    return all(user.PostMessageW(info.focus,0x0102,unit,1) for unit in units)
-
-
-def _send_windows(text,target):
-    user=_windows()
-    if any(user.GetAsyncKeyState(key)&0x8000 for key in (0x10,0x11,0x12,0x5B,0x5C)):
-        return False
+def _send_windows_packet(user,text):
     encoded=text.encode('utf-16-le')
     units=[int.from_bytes(encoded[index:index+2],'little') for index in range(0,len(encoded),2)]
-    if any(0xD800<=unit<=0xDFFF for unit in units):
-        return _post_characters(user,target,units)
     events=(_Input*(2*len(units)))()
     for index,unit in enumerate(units):
         events[2*index]=_Input(1,_InputValue(keyboard=_Keyboard(0,unit,4,0,0)))
@@ -107,11 +81,26 @@ def _send_windows(text,target):
     return user.SendInput(len(events),events,ctypes.sizeof(_Input))==len(events)
 
 
-def _send_mac(text,target):
+def _send_windows(text,target,cancel):
+    user=_windows()
+    # Qt queues ordinary key events but commits surrogate pairs immediately
+    # through its input method. Give the preceding native batch time to
+    # dispatch on its own before switching between those two paths.
+    groups=[''.join(chars) for _,chars in groupby(text,key=lambda char:ord(char)>0xFFFF)]
+    if len(groups)>32:return False
+    for index,chars in enumerate(groups):
+        if index and cancel.wait(.045):return False
+        if cancel.is_set() or front_target()!=target:return False
+        if any(user.GetAsyncKeyState(key)&0x8000 for key in (0x10,0x11,0x12,0x5B,0x5C)):return False
+        if not _send_windows_packet(user,chars):return False
+    return True
+
+
+def _send_mac(text,target,cancel):
     import Quartz
     if not Quartz.CGPreflightPostEventAccess():return False
     for start in range(0,len(text),8):
-        if front_target()!=target:return False
+        if cancel.is_set() or front_target()!=target:return False
         piece=text[start:start+8]
         length=len(piece.encode('utf-16-le'))//2
         down=Quartz.CGEventCreateKeyboardEvent(None,0,True)
@@ -124,9 +113,10 @@ def _send_mac(text,target):
     return True
 
 
-def insert_text(text,target):
+def insert_text(text,target,*,cancel=None):
     if not text or len(text)>4096 or target is None or front_target()!=target:return False
     if any(ord(char)<32 and char not in ('\r','\n','\t') for char in text):return False
-    if sys.platform=='win32':return _send_windows(text,target)
-    if sys.platform=='darwin':return _send_mac(text,target)
+    cancel=cancel or Event()
+    if sys.platform=='win32':return _send_windows(text,target,cancel)
+    if sys.platform=='darwin':return _send_mac(text,target,cancel)
     return False
