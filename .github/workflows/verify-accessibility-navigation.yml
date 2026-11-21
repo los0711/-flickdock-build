@@ -1,0 +1,65 @@
+name: Verify Mac accessibility settings navigation
+
+on:
+  push:
+    branches: [ci-mac-accessibility-navigation-1842]
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    if: github.repository == 'los0711/-flickdock-build'
+    runs-on: macos-15
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          architecture: arm64
+      - run: python -m pip install PySide6==6.12.0 'pyobjc-framework-Cocoa>=11,<13'
+      - name: Open the real Settings app from the FlickDock backend
+        run: |
+          QT_QPA_PLATFORM=cocoa python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          from time import monotonic, sleep
+          from AppKit import NSWorkspace
+          from PySide6.QtGui import QDesktopServices
+          from PySide6.QtWidgets import QApplication
+          from mac_permissions import MacPermissionBackend
+
+          app=QApplication([])
+          opened=[]
+          def open_url(url):
+              opened.append(url.toString())
+              return QDesktopServices.openUrl(url)
+          backend=MacPermissionBackend(opener=open_url)
+          before=backend.accessibility()
+          assert backend.request('accessibility')
+          workspace=NSWorkspace.sharedWorkspace()
+          deadline=monotonic()+15
+          while monotonic()<deadline:
+              app.processEvents()
+              foreground=workspace.frontmostApplication()
+              if foreground and foreground.bundleIdentifier()=='com.apple.systempreferences':
+                  break
+              sleep(.05)
+          else:
+              raise AssertionError('System Settings did not come to the front')
+          assert opened==['x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility']
+          assert backend.accessibility()==before
+          report=dict(ok=True, accessibility_pane_url=True, actual_system_settings_opened=True,
+                      permission_unchanged=True)
+          (Path(os.environ['RUNNER_TEMP'])/'mac-accessibility-navigation.json').write_text(json.dumps(report)+'\n')
+          print(json.dumps(report))
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: mac-accessibility-navigation
+          path: ${{ runner.temp }}/mac-accessibility-navigation.json
+          retention-days: 3
