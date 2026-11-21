@@ -1417,7 +1417,11 @@ class ShelfManager:
         self.edge_file_drag.update_pointer(pos,down,eligible=native and not self.outgoing_drag
             and (not down or not native_window_move_active()) and (not over_shelf or over_preview))
 
-        if self.edge_suppressed and not self.edge.activation_region().contains(pos): self.edge_suppressed=False
+        # Only the physical trigger strip can open the shelf. On macOS
+        # activation_region() may span the space the system Dock reserves
+        # beyond the strip, even when no native file destination is ready.
+        over_trigger = self.edge.file_preview_region().contains(pos)
+        if self.edge_suppressed and not over_trigger: self.edge_suppressed=False
         retired_shelves=set()
         if app_deactivated:
             retired=False
@@ -1431,9 +1435,7 @@ class ShelfManager:
                                  and self.clipboard_preview_dialog.frameGeometry().contains(pos))):
                     shelf.hide_animated(explicit=True);retired=True;retired_shelves.add(shelf)
             if retired:self.update_handles()
-        reveal_region=(self.edge.file_preview_region() if sys.platform=='darwin' and self.edge_file_drag.prepared
-                       else self.edge.activation_region())
-        if (self.edge.isVisible() and reveal_region.contains(pos)
+        if (self.edge.isVisible() and over_trigger
                 and not self.edge_suppressed and not self.shelf.isVisible()): self.show_docked()
         for shelf in self.shelves:
             if not shelf.isVisible():
