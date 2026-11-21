@@ -147,5 +147,37 @@ class LanAccountTests(unittest.TestCase):
         wan.peers_changed.emit(wan.peers())
         self.assertIsNone(receiver.incoming(transfer))
 
+    def test_shelf_offer_carries_verified_metadata_and_declines_without_resending(self):
+        source=self.root/'shelf-test.bin'
+        source.write_bytes(b'fixture for LAN shelf delivery')
+        destination=self.root/'shelf-inbox'
+        destination.mkdir()
+        sender,receiver=self.lans
+        intake=dict(id=str(uuid4()),version=1,sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
+                    name='shelf-test.bin',mime_type='application/octet-stream')
+        offers=[]
+        payloads=[]
+        progress=[]
+
+        def receive(offer):
+            offers.append(offer)
+            if len(offers)==1:receiver.accept(offer['id'],destination)
+            else:receiver.decline_shelf_offer(offer['id'])
+
+        receiver.offer_received.connect(receive)
+        receiver.completed.connect(payloads.append)
+        sender.progress.connect(progress.append)
+        sender.send(receiver.device_id,[source],shelf_intake=intake)
+        until(lambda:bool(payloads),seconds=7)
+        self.assertEqual(offers[0]['shelf_intake'],intake)
+        self.assertEqual(offers[0]['peer_id'],self.wans[0].device_id)
+        self.assertTrue(offers[0]['account_device'])
+        self.assertEqual(Path(payloads[0]['paths'][0]).read_bytes(),source.read_bytes())
+        rejected=sender.send(receiver.device_id,[source],shelf_intake=intake)
+        until(lambda:any(row['id']==rejected and row['state']=='error' for row in progress),seconds=7)
+        self.assertEqual(next(row['phase'] for row in progress
+                              if row['id']==rejected and row['state']=='error'),'declined')
+        self.assertEqual(len(payloads),1)
+
 
 if __name__=='__main__':unittest.main()

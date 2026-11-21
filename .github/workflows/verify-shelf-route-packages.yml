@@ -1,0 +1,16 @@
+name: Verify shelf route test packages
+
+on:
+  push:
+    branches: [ci-shelf-route-packages-1841]
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    uses: ./.github/workflows/macos-build.yml
+    with:
+      test_build: true
+  windows:
+    uses: ./.github/workflows/release-windows.yml
