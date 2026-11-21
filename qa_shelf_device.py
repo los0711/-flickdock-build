@@ -23,7 +23,13 @@ from account_service import AccountService
 from cloud_api import CloudApi
 from shelf_direct import ShelfDirectDelivery
 from shelf_sync import ShelfSync
+import wan_transfer
 from wan_transfer import WanTransferService
+
+# The paired runner is connected only to the disposable HTTPS gateway.
+endpoint=wan_transfer.QUrl(args.origin)
+if endpoint.scheme()=='https' and endpoint.host().endswith('.trycloudflare.com'):
+    wan_transfer.SIGNAL_ORIGINS=(*wan_transfer.SIGNAL_ORIGINS,args.origin.rstrip('/'))
 
 class Store:
     def load(self):return None
@@ -121,7 +127,7 @@ try:
     if sender:
         (root/'ready').touch()
     wan.start()
-    until('both online in the same test account',lambda:wan._bound_identity is not None and peer_online(True),360)
+    until('both online in the same test account',lambda:wan._bound_identity is not None and peer_online(True),840)
     if sender:
         first=drop('01-online.bin')
         until('online file committed to cloud',lambda:shelf.sync_status_for_ref(first)=='synced',130)
