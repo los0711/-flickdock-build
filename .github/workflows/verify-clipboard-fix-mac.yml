@@ -1,0 +1,67 @@
+name: Verify retained Apple Silicon installer
+
+on:
+  push:
+    branches: [ci-mac-clipboard-frozen-1840]
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  installer:
+    runs-on: macos-15
+    timeout-minutes: 12
+    env:
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - name: Retrieve the finished installer without rebuilding it
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run download 44907398142 --repo "$GITHUB_REPOSITORY" -n 'FlickDock-macOS-incomplete-arm64-2f558823a820196e46d7322bd2e485f59675e248' -D "$RUNNER_TEMP/retained"
+          python3 - "$RUNNER_TEMP/retained" <<'PY'
+          import hashlib,json,sys
+          from pathlib import Path
+          root=Path(sys.argv[1])
+          report=json.loads((root/'mac-build-1.8.40-arm64.json').read_bytes())
+          assert report['ok'] and report['pkg_payload_verified'] and report['zip_roundtrip_verified']
+          for artifact in report['artifacts']:
+              path=root/artifact['name']
+              with path.open('rb') as source:
+                  assert hashlib.file_digest(source,'sha256').hexdigest()==artifact['sha256']
+          PY
+      - name: Run Finder drag and drop with the exact application from the installer
+        run: |
+          set -eu
+          stage="$RUNNER_TEMP/installer-test"
+          mkdir -p "$stage/profile" "$RUNNER_TEMP/proof"
+          swiftc ci_finder_element.swift -o "$stage/finder-element"
+          pkgutil --expand-full "$RUNNER_TEMP/retained/FlickDock-1.8.40-macOS-arm64.pkg" "$stage/expanded"
+          binary="$(find "$stage/expanded" -type f -path '*/FlickDock.app/Contents/MacOS/FlickDock' -print -quit)"
+          test -x "$binary"
+          printf '%s\n' "$binary" > "$stage/bin"
+          HOME="$stage/profile" QT_QPA_PLATFORM=cocoa FLICKDOCK_FINDER_AX="$stage/finder-element" \
+            "$binary" --verify-finder-magnetic "$RUNNER_TEMP/proof/mac-finder-arm64.json"
+      - name: Verify the packaged overview, translator and screenshot history
+        if: always()
+        run: |
+          set -eu
+          binary="$(cat "$RUNNER_TEMP/installer-test/bin")"
+          for view in overview translator; do
+            profile="$(mktemp -d)"
+            HOME="$profile" APPDATA="$profile" XDG_CONFIG_HOME="$profile" QT_QPA_PLATFORM=cocoa FLICKDOCK_VERIFY_NATIVE_UI=1 \
+              "$binary" --verify-"$view" --verify-output "$RUNNER_TEMP/proof/mac-cocoa-$view-arm64.json"
+          done
+          profile="$(mktemp -d)"
+          HOME="$profile" QT_QPA_PLATFORM=cocoa "$binary" --verify-saved-screenshots "$RUNNER_TEMP/proof/mac-saved-screenshots-arm64.json"
+      - name: Retain native verification
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: verified-retained-mac-arm64
+          path: ${{ runner.temp }}/proof/
+          retention-days: 3
