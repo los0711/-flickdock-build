@@ -6,7 +6,7 @@ import subprocess
 import sys
 import time
 
-from PySide6.QtCore import QPoint, QRect, QRectF, QTimer, Qt
+from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, QTimer, Qt
 from PySide6.QtGui import QColor, QCursor, QImage, QKeySequence, QPainter
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QTextEdit
@@ -279,6 +279,16 @@ def run(root):
             panel.repaint()
             row=next(rect for part,identity,rect in panel._hits if part=='card' and identity==key)
             return (panel._paint_origin()+row.center()*panel._panel_scale).toPoint()
+        def click_cocoa_card(key):
+            point=panel.mapToGlobal(row_point(key))
+            cocoa_pointer(point,'move')
+            wait_for(lambda:panel._stack_progress==1. and panel._entry_progress==1.)
+            point=panel.mapToGlobal(row_point(key))
+            cocoa_pointer(point,'move')
+            QTest.qWait(35)
+            point=panel.mapToGlobal(row_point(key))
+            assert panel._hit(QPointF(panel.mapFromGlobal(point)))==('card',key)
+            cocoa_pointer(point,'click')
         key=runtime.entries[0]['id']
         point=row_point(key)
         if on_mac:
@@ -291,8 +301,7 @@ def run(root):
             cocoa_pointer(seam,'move')
             QTest.qWait(220)
             assert panel.contains_companion(seam) and panel.expanded
-            point=panel.mapToGlobal(row_point(key))
-            cocoa_pointer(point,'move');QTest.qWait(65);cocoa_pointer(point,'click')
+            click_cocoa_card(key)
             report.update(painted_gap_px=round(bounds.top()-anchor.bottom()-1),cocoa_hover=True,seam_stable=True)
         else:
             QTest.mouseClick(panel,Qt.LeftButton,Qt.NoModifier,point)
@@ -327,8 +336,7 @@ def run(root):
             request=root/'activate-history-fixture'
             request.write_text(str(os.getpid()))
             wait_for(native.mac_owns_foreground)
-            point=panel.mapToGlobal(point)
-            cocoa_pointer(point,'move');QTest.qWait(65);cocoa_pointer(point,'click')
+            click_cocoa_card(key)
             report['activation_handoff']=True
         else:QTest.mouseClick(panel,Qt.LeftButton,Qt.NoModifier,point)
         wait_for(lambda:len(activated)==2)
@@ -353,8 +361,7 @@ def run(root):
         point=row_point(key)
         assert current_process()==pid
         if on_mac:
-            point=panel.mapToGlobal(point)
-            cocoa_pointer(point,'move');QTest.qWait(65);cocoa_pointer(point,'click')
+            click_cocoa_card(key)
         else:QTest.mouseClick(panel,Qt.LeftButton,Qt.NoModifier,point)
         wait_for(lambda:(root/'files-incoming.json').is_file())
         assert json.loads((root/'files-incoming.json').read_text('utf8'))==expected
