@@ -136,6 +136,7 @@ class WindowFrames(QObject):
         platform=QGuiApplication.platformName()
         self._display_paced=platform not in ('offscreen','minimal')
         self._use_cocoa_link=platform=='cocoa'
+        self._flush_paced_paint=platform=='windows'
         self._cocoa_link=None
         self._last_dispatch=0.0
         self._next_frame_at=0.0
@@ -356,6 +357,11 @@ class WindowFrames(QObject):
         deadline=self._next_frame_at
         self._last_dispatch=now
         self._dispatch_pulses()
+        # Windows OLE can keep dispatching native timers while deferring
+        # posted QWidget updates. Flush only this host's dirty paint request
+        # so its backing store consumes the state from the same display step.
+        if self._flush_paced_paint and isValid(self.window) and self.window.isVisible():
+            QCoreApplication.sendPostedEvents(self.window,QEvent.UpdateRequest)
         if not self.pulses:return
         if self._next_frame_at!=deadline or self.display_period()!=period:
             self.schedule()

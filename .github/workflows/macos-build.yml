@@ -48,16 +48,33 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           persist-credentials: false
+          fetch-depth: 2
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
           python-version: '3.12'
       - name: Install the Windows runtime for native checks
         run: python -m pip install -r requirements.txt
+      - name: Measure the previous Windows drag implementation with the same rig
+        if: github.ref_name == 'ci-clipboard-files-win-drag-1840'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $baseline = Join-Path $env:RUNNER_TEMP FlickDockDragBaseline
+          git worktree add --detach $baseline HEAD~1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item ci_windows_drag_preview.py -Destination $baseline
+          $env:APPDATA = Join-Path $env:RUNNER_TEMP FlickDockDragProfile-Baseline
+          $env:LOCALAPPDATA = $env:APPDATA
+          python (Join-Path $baseline ci_windows_drag_preview.py) driver (Join-Path $env:RUNNER_TEMP FlickDockDrag-baseline)
       - name: Drag a file through the native OLE preview and measure paint cadence
         shell: pwsh
         run: |
-          $env:APPDATA = Join-Path $env:RUNNER_TEMP FlickDockDragProfile
-          python ci_windows_drag_preview.py driver (Join-Path $env:RUNNER_TEMP FlickDockDrag)
+          foreach ($count in 0, 100) {
+            $env:APPDATA = Join-Path $env:RUNNER_TEMP "FlickDockDragProfile-$count"
+            $env:LOCALAPPDATA = $env:APPDATA
+            python ci_windows_drag_preview.py driver (Join-Path $env:RUNNER_TEMP "FlickDockDrag-$count") $count
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
       - name: Paste native text, image and file payloads into a separate process
         if: always()
         shell: pwsh
@@ -67,7 +84,7 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: windows-native-drag-preview
-          path: ${{ runner.temp }}/FlickDockDrag/drag-preview.json
+          path: ${{ runner.temp }}/FlickDockDrag-*/drag-preview.json
           retention-days: 3
 
   native:

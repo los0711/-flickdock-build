@@ -293,8 +293,7 @@ def _paste_windows_image(png,image,target,cancel):
     if not bmp.open(QIODevice.WriteOnly) or not image.save(bmp,'BMP'):
         return False
     dib=bytes(bmp.data())[14:]  # CF_DIB omits the 14-byte BMP file header
-    png_type=_windows().RegisterClipboardFormatW('PNG')
-    return _paste_windows_formats(((png_type,png),(8,dib)),target,cancel)
+    return _paste_windows_formats((('PNG',png),(8,dib)),target,cancel)
 
 
 def _windows_file_drop(paths):
@@ -312,6 +311,8 @@ def _paste_windows_formats(formats,target,cancel):
         exclude=_excluded_windows_format()
         history=user.RegisterClipboardFormatW('CanIncludeInClipboardHistory')
         cloud=user.RegisterClipboardFormatW('CanUploadToCloudClipboard')
+        formats=tuple((user.RegisterClipboardFormatW(fmt) if isinstance(fmt,str) else fmt,data)
+                      for fmt,data in formats)
         if not all((exclude,history,cloud)) or not all(fmt for fmt,_ in formats):return False
         formats=(*formats,(exclude,bytes([1,0,0,0])),(history,bytes(4)),(cloud,bytes(4)))
         for fmt,data in formats:
@@ -506,8 +507,7 @@ def insert_files(paths,target,*,cancel=None):
     if not _IMAGE_PASTE_LOCK.acquire(blocking=False):return False
     try:
         if sys.platform=='win32':
-            preferred=_windows().RegisterClipboardFormatW('Preferred DropEffect')
-            return _paste_windows_formats(((15,_windows_file_drop(paths)),(preferred,struct.pack('<I',1))),target,cancel)
+            return _paste_windows_formats(((15,_windows_file_drop(paths)),('Preferred DropEffect',struct.pack('<I',1))),target,cancel)
         if sys.platform=='darwin':return _paste_mac_payload(paths,target,cancel,files=True)
         return False
     finally:

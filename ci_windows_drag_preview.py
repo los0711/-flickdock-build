@@ -9,9 +9,8 @@ import subprocess
 import sys
 import time
 
-from PySide6.QtCore import QEvent, QMimeData, QObject, QPoint, QUrl, Qt
+from PySide6.QtCore import QEvent, QEventLoop, QMimeData, QObject, QPoint, QTimer, QUrl, Qt
 from PySide6.QtGui import QCursor, QDrag
-from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QWidget
 
 
@@ -58,7 +57,18 @@ def timing(samples):
                 max_ms=round(max(gaps),2))
 
 
-def run(root):
+def wait_ms(milliseconds):
+    # Let the native dispatcher sleep until its nearest deadline. qWait's
+    # polling sleeps introduce their own cadence into short frame tests.
+    loop=QEventLoop()
+    timer=QTimer()
+    timer.setSingleShot(True);timer.setTimerType(Qt.PreciseTimer)
+    timer.timeout.connect(loop.quit)
+    timer.start(milliseconds)
+    loop.exec()
+
+
+def run(root,population):
     import flickdock
     from display_triggers import display_id
     from flickdock_motion import MotionShadow
@@ -75,11 +85,20 @@ def run(root):
             'right':{'enabled':True,'width':160,'length':100,'position':50}
         }}})
     manager.update_handles();manager.timer.start(20)
+    if population:
+        fixtures=root/'shelf-fixtures';fixtures.mkdir()
+        paths=[]
+        for index in range(population):
+            path=fixtures/f'fixture-{index:03}.txt'
+            path.write_text('Disposable shelf fixture',encoding='utf-8')
+            paths.append(str(path))
+        shelf.add_paths('permanent',paths)
     trace=DragEvents(shelf);app.installEventFilter(trace)
     visual_paints=[]
     draw=MotionShadow.draw
     def record(effect,painter):
-        if effect is shelf.surface_effect:visual_paints.append(time.perf_counter())
+        if effect is shelf.surface_effect and shelf.presentation._timer.isActive():
+            visual_paints.append(time.perf_counter())
         return draw(effect,painter)
     MotionShadow.draw=record
     screen_point=manager.edge.file_preview_region().center()
@@ -89,23 +108,24 @@ def run(root):
     mouse=ctypes.WinDLL('user32').mouse_event
     pressed=False
     report={'refresh_hz':screen.refreshRate(),'geometry':screen.geometry().getRect(),
-            'dpr':screen.devicePixelRatio(),'measurement':'Native QGraphicsEffect paint, not compositor presents'}
+            'dpr':screen.devicePixelRatio(),'populated_items':population,
+            'measurement':'Native QGraphicsEffect paint, not compositor presents'}
 
     def wait_for(condition,label):
         deadline=time.monotonic()+6
         while not condition():
             if time.monotonic()>deadline:raise AssertionError(label)
-            QTest.qWait(12)
+            wait_ms(12)
 
     def glide(start,end,steps):
         for i in range(1,steps+1):
             QCursor.setPos(start+(end-start)*float(i/steps))
-            QTest.qWait(10)
+            wait_ms(10)
 
     try:
         wait_for(lambda:(root/'source-point').is_file(),'OLE source window')
         start=QPoint(*json.loads((root/'source-point').read_text('utf-8')))
-        QCursor.setPos(start);QTest.qWait(200)
+        QCursor.setPos(start);wait_ms(200)
         mouse(2,0,0,0,0);pressed=True
         glide(start,start+QPoint(55,0),8)
         wait_for(lambda:(root/'started').is_file(),'native source drag')
@@ -114,7 +134,7 @@ def run(root):
         glide(approach,screen_point,10)
         wait_for(shelf.isVisible,'trigger preview never opened')
         assert shelf.presentation_kind=='dock'
-        QTest.qWait(450)
+        wait_ms(450)
         report['reveal']=timing(visual_paints)
         global_center=shelf.card.mapToGlobal(shelf.card.rect().center())
         glide(screen_point,global_center,18)
@@ -148,4 +168,5 @@ if __name__=='__main__':
     directory=Path(sys.argv[2]).resolve()
     assert directory.is_relative_to(Path(os.environ['RUNNER_TEMP']).resolve())
     directory.mkdir(parents=True,exist_ok=True)
-    raise SystemExit(source(directory) if sys.argv[1]=='source' else run(directory))
+    population=int(sys.argv[3]) if len(sys.argv)>3 else 0
+    raise SystemExit(source(directory) if sys.argv[1]=='source' else run(directory,population))

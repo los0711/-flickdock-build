@@ -208,7 +208,8 @@ class ShelfWindow(QWidget):
         # The native host remains transparent; this is the card's rounded
         # shadow, confined to the reserved animation surface margins.
         self.surface_effect = MotionShadow(self.card, alpha=SHELF_SHADOW_ALPHA,
-            cache_while=lambda:self.expanded and self.presentation._timer.isActive() and not self.incoming_drop and not self.preview_playing)
+            cache_while=lambda:(self.expanded or sys.platform=='win32' and self._dock_drag_reveal)
+                and self.presentation._timer.isActive() and not self.incoming_drop and not self.preview_playing)
         self.surface_effect.setBlurRadius(20)
         self.surface_effect.setOffset(0, 4)
         self.card.setGraphicsEffect(self.surface_effect)
