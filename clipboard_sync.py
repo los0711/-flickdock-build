@@ -8,7 +8,7 @@ from PySide6.QtGui import QImage,QPixmap,QImageReader
 from PySide6.QtWidgets import QApplication
 from platform_native import native_input_available,copy_activity
 from clipboard_identity import signature,content_keys
-from clipboard_history_native import image_paste_active,image_paste_change,mac_clipboard_image
+from clipboard_history_native import image_paste_active,image_paste_change,mac_clipboard_image,private_clipboard
 from sync_scheduler import SyncScheduler
 from clipboard_inbox import ClipboardInbox
 from virtual_clipboard import describe as describe_virtual,capture as capture_virtual,VirtualClipboardError
@@ -420,6 +420,10 @@ class ClipboardSync(QObject):
             return None
         if not self._native_accessible():return None
         try:
+            mac_clipboard=self._is_native and sys.platform=='darwin'
+            if mac_clipboard and native_input_available() and private_clipboard(image=True):
+                self._native_format_issue='PRIVATE_MAC_PASTEBOARD'
+                return None
             if self._is_native and sys.platform=='win32' and native_input_available() and not self.clipboard.ownsClipboard():
                 if self._native_reader is not None:
                     self._snapshot_available,value=self._native_reader.read(self._sequence())
@@ -433,7 +437,16 @@ class ClipboardSync(QObject):
                 # an ordinary local file copy. Use the ready local payload
                 # before asking that app to render a delayed remote stream.
                 from virtual_clipboard import only_remote_placeholders
-                if mime.hasUrls() and any(url.isLocalFile() for url in mime.urls()) and not only_remote_placeholders(mime):
+                urls=mime.urls() if mime.hasUrls() else ()
+                if mac_clipboard and urls:
+                    retained=self._clock_path.parent.absolute()/'clipboard-history-files'
+                    if any(url.isLocalFile() and Path(os.path.abspath(url.toLocalFile())).is_relative_to(retained)
+                           for url in urls):
+                        # Cocoa or the target can announce URL formats later,
+                        # after the temporary paste's change marker is gone.
+                        self._native_format_issue='PRIVATE_MAC_PASTEBOARD'
+                        return None
+                if any(url.isLocalFile() for url in urls) and not only_remote_placeholders(mime):
                     value=_snapshot_mime(mime)
                     if value is None:
                         self._native_format_issue='VIRTUAL_FILE_SINGLE_ONLY';return None
@@ -1177,6 +1190,12 @@ class ClipboardSync(QObject):
         if sequence is not None and sequence==self._last_sequence:return
         value=self._snapshot();sig=signature(value)
         if not self._snapshot_available:
+            if self._native_format_issue=='PRIVATE_MAC_PASTEBOARD':
+                self._last_sequence=sequence
+                if self._native_receive_interrupted and self._pending is None and self._local_retry is None:
+                    self._native_receive_interrupted=False
+                    self.request_refresh()
+                return
             if self._native_format_issue=='REMOTE_FILE_PLACEHOLDER':
                 self._observe_control_file(sequence);return
             previous,attempts=getattr(self,'_native_read_retry',(None,0))

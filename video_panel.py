@@ -195,6 +195,7 @@ class VideoSourceCard(QFrame):
             finish=row.get('estimated_finish')
             if finish is not None and finish>now:status+=' · 预计剩余 '+self._format_time(math.ceil(finish-now))
         if row['shelved']:status='已放入搁架'
+        elif row.get('shelving'):status='正在放入搁架…'
         self.status.setText(status);self.status.setVisible(bool(status))
         self.status.setToolTip(row['error'] if row['status']=='error' else status)
         self.status.setAccessibleName((status+'：'+row['error']) if row['status']=='error' and row['error'] else status)
@@ -220,14 +221,14 @@ class VideoSourceCard(QFrame):
         size_text=(('约 ' if option['approximate'] and not complete else '')+_size(size)) if size else '大小待确定'
         detail=f"{option['details']} · {size_text}" if option['details'] else size_text
         self.details.setText(detail);self.details.setToolTip(detail);self.details.setAccessibleName(detail)
-        self.download.setEnabled(not complete);self.shelf.setEnabled(not row['shelved'])
+        self.download.setEnabled(not complete);self.shelf.setEnabled(not row['shelved'] and not row.get('shelving'))
         self.folder.setEnabled(complete);self.folder.setToolTip('打开所在文件夹' if complete else '下载完成后可打开所在文件夹')
         glyph='close' if busy else 'check' if complete else 'download'
         self.download.setAccessibleName('取消下载' if busy else '下载');self.download.setToolTip(self.download.accessibleName())
         if getattr(self.download,'_video_glyph',None)!=glyph:
             role='green' if complete else 'secondary' if busy else 'link'
             self.download._video_glyph=glyph;self.download._reference_icon=(glyph,role);self.download.setIcon(icon(glyph,colors(theme)[role]))
-        self.shelf.setToolTip('已放入搁架' if row['shelved'] else '下载后放入搁架')
+        self.shelf.setToolTip('已放入搁架' if row['shelved'] else '正在放入搁架…' if row.get('shelving') else '下载后放入搁架')
         c=colors(theme)
         status_color=c['red'] if row['status']=='error' else c['green'] if complete else c['secondary']
         self.status.setStyleSheet(f'color:{status_color};background:transparent;border:0;')

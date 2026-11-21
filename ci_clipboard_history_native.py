@@ -261,7 +261,7 @@ def run(root):
         on_mac=sys.platform=='darwin'
         if on_mac:
             from clipboard_sync import ClipboardSync
-            client=ClipboardSync(Account(),Events(),root/'client',enabled=False)
+            client=ClipboardSync(Account(),Events(),root/'saved',enabled=False)
             client.copy_observed.connect(native_copies.append)
             # Observe the production upload boundary with a disposable cloud
             # client. No user data or credentials enter this native test.
@@ -411,6 +411,25 @@ def run(root):
             QTest.qWait(160)
             wait_for(lambda:not runtime.jobs)
             assert [row['id'] for row in runtime.entries if row['kind']=='file']==[key]
+            from PySide6.QtCore import QMimeData, QUrl
+            mime=QMimeData();mime.setUrls([QUrl.fromLocalFile(attachment[0])])
+            native_board=client.clipboard
+            native_sequence=client._sequence
+            # Simulate an extra file-reference notification after the native
+            # history paste has finished, without changing the real pasteboard.
+            begin_cloud_check()
+            client.clipboard=SimpleNamespace(mimeData=lambda:mime)
+            late_sequence=native_sequence()+1000000
+            client._sequence=lambda:late_sequence
+            try:
+                client._changed()
+                assert client._native_format_issue=='PRIVATE_MAC_PASTEBOARD'
+            finally:
+                client.clipboard=native_board
+                client._sequence=native_sequence
+                client._last_sequence=native_sequence()
+            end_cloud_check()
+            assert app.clipboard().text()==SENTINEL
             report['file_paste_history_duplicates']=0
             report['history_paste_cloud_uploads']=len(uploads)
             report['history_paste_reopened_text']=True

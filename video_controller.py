@@ -81,7 +81,8 @@ class VideoController(QObject):
             for old in self.sources():
                 if old['status']=='complete' and old['path']:
                     self._downloaded[self._source_identity(old)]=(old['path'],old['received'],None,True,old.get('actual_video_codec',''))
-            self.entries=[entry for entry in self.entries if any(row['job'] or row['status']=='queued' for row in entry['sources'])]
+            self.entries=[entry for entry in self.entries
+                          if any(row['job'] or row['status']=='queued' or row.get('shelving') for row in entry['sources'])]
             added=[]
             for metadata in result['result']['entries']:
                 if any((entry['id'],entry['url'])==(metadata['id'],metadata['url']) for entry in self.entries):continue
@@ -162,10 +163,23 @@ class VideoController(QObject):
         row.update(status='queued',error='');self._kick()
 
     def _shelve(self,row):
-        if row['shelved']:return
+        if row['shelved'] or row.get('shelving'):return
+        row['shelving']=True
+        def committed():
+            row.update(shelved=True,shelving=False)
+            if not self.closed:self.changed.emit()
+        def failed(message='未能放入搁架，请重试。'):
+            row['shelving']=False
+            if not self.closed:
+                self.message=message
+                self.message_error=True
+                self.changed.emit()
         try:
-            self.manager.shelf.add_paths('permanent',[row['path']]);row['shelved']=True
-        except (OSError,ValueError) as error:self.message=str(error);self.message_error=True
+            # The download is already a durable local file. Retain its path
+            # while using the exact same cloud intake rules as a file drop.
+            self.manager.shelf.import_paths('permanent',[row['path']],on_committed=committed,on_failed=failed,
+                                            direct_drop=True,keep_reference=True)
+        except (OSError,ValueError) as error:failed(str(error))
 
     @staticmethod
     def _source_identity(row):

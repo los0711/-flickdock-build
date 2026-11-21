@@ -968,7 +968,7 @@ class ShelfWindow(QWidget):
         self.manager.update_handles()
 
     def import_paths(self,mode,refs,on_committed=None,on_failed=None,*,_checked=False,force_copy=False,
-                     _capacity_warning=False,direct_drop=False):
+                     _capacity_warning=False,direct_drop=False,keep_reference=False):
         """Cloud capacity never prevents keeping a file on the local shelf."""
         refs=list(refs)
         if not _checked and hasattr(self.manager,'check_cloud_capacity'):
@@ -979,7 +979,7 @@ class ShelfWindow(QWidget):
                     if on_failed:on_failed('搁架已切换，本次放入已取消。')
                     return
                 self.import_paths(mode,refs,on_committed,on_failed,_checked=True,force_copy=force_copy,
-                                  _capacity_warning=insufficient,direct_drop=direct_drop)
+                                  _capacity_warning=insufficient,direct_drop=direct_drop,keep_reference=keep_reference)
             self.manager.check_cloud_capacity(refs,checked);return
         def store(paths):
             kwargs={'direct_drop':True} if direct_drop and not _capacity_warning and mode=='permanent' else {}
@@ -994,7 +994,7 @@ class ShelfWindow(QWidget):
                 self.manager.show_cloud_capacity_notice(paths);return
             offer=getattr(self.manager,'offer_large_intake',None)
             if offer:offer(paths)
-        if not force_copy and self.manager.settings.capture_mode!='copy':
+        if not force_copy and (keep_reference or self.manager.settings.capture_mode!='copy'):
             store(refs)
             committed(refs)
             return

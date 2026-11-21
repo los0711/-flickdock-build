@@ -129,7 +129,11 @@ class VideoFormatTests(unittest.TestCase):
 class VideoMatrixTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory(prefix='flickdock-video-matrix-');self.root=Path(self.temp.name)
-        self.owner=QWidget();self.events=[];self.owner.add_paths=lambda mode,paths:self.events.append((mode,paths))
+        self.owner=QWidget();self.events=[]
+        def import_completed(mode,paths,*,on_committed,**options):
+            self.events.append((mode,paths))
+            on_committed()
+        self.owner.import_paths=import_completed
         self.settings=SettingsStore(self.root/'profile');self.settings.update(theme='dark',video_download_dir=str(self.root/'downloads'))
         self.manager=SimpleNamespace(app=APP,shelf=self.owner,settings=self.settings,motion=False)
         self.controller=VideoController(self.manager);self.entry=entry_fixture();self.controller.entries=[self.entry]
@@ -397,6 +401,49 @@ class VideoMatrixTests(unittest.TestCase):
             card.folder.click();reveal.assert_called_once_with(str(path))
         card.shelf.click();self.controller.action(row,'shelf');self.assertEqual(self.events,[('permanent',[str(path)])])
         self.assertFalse(card.shelf.isEnabled());self.assertEqual(path.read_bytes(),b'completed-download-fixture')
+
+    def test_completed_video_uses_the_real_drop_sync_entry_and_keeps_its_download_path(self):
+        from unittest.mock import Mock
+        from test_html_native_workspace import WorkspaceTests
+        fixture=WorkspaceTests()
+        fixture.setUp()
+        original=self.manager.shelf
+        try:
+            self.manager.shelf=fixture.shelf
+            fixture.settings.update(capture_mode='copy')
+            path=self.root/'downloaded.mp4';path.write_bytes(b'completed video fixture')
+            ref=str(path.resolve())
+            caps=[]
+            fixture.manager.check_cloud_capacity=lambda refs,callback:caps.append((refs,callback))
+            fixture.manager.save_after_intake=Mock()
+            mark=fixture.manager.shelf_direct=SimpleNamespace(mark_drop=Mock())
+            row=self.entry['sources'][0]
+            row.update(path=ref,status='complete')
+            with patch.object(self.controller,'_start_download') as download:
+                self.controller.action(row,'shelf')
+                self.controller.action(row,'shelf')
+                self.assertEqual(len(caps),1)
+                self.assertEqual(caps[0][0],[ref])
+                self.assertFalse(row['shelved'])
+                self.assertTrue(row['shelving'])
+                caps[0][1](False)
+                self.assertTrue(row['shelved'])
+                self.assertIn(ref,fixture.shelf.files['permanent'])
+                mark.mark_drop.assert_called_once_with([ref])
+                fixture.manager.save_after_intake.assert_called_once_with()
+
+                # Re-parsing after the first insertion reuses the download
+                # path. The existing shelf item must not be sent again.
+                row['shelved']=False
+                self.controller.action(row,'shelf')
+                caps[1][1](False)
+                self.assertEqual(fixture.shelf.files['permanent'].count(ref),1)
+                mark.mark_drop.assert_called_once_with([ref])
+                download.assert_not_called()
+            self.assertEqual(path.read_bytes(),b'completed video fixture')
+        finally:
+            self.manager.shelf=original
+            fixture.tearDown()
 
     def test_source_icon_tracks_its_format_and_double_click_uses_default_player(self):
         row=self.entry['sources'][0];row['option']['extension']='webm'

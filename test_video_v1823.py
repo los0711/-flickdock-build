@@ -125,7 +125,11 @@ class VideoTests(unittest.TestCase):
     def test_controller_uses_actual_download_for_transfer_shelf_and_cleans_cancelled_stage(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);settings=SettingsStore(root/'profile');settings.update(video_download_dir=str(root/'downloads'),theme='dark')
-            events=[];shelf=QWidget();shelf.add_paths=lambda mode,paths:events.append(('shelf',paths))
+            events=[];shelf=QWidget()
+            def import_completed(mode,paths,*,on_committed,**options):
+                events.append(('shelf',paths))
+                on_committed()
+            shelf.import_paths=import_completed
             manager=SimpleNamespace(app=APP,settings=settings,shelf=shelf,queue_transfer_paths=lambda mode,paths:events.append(('transfer',paths)))
             controller=VideoController(manager);dialog=VideoDialog(manager,controller)
             def factory(request,parent):return VideoJob(dict(request,fixture_http=True),parent)
