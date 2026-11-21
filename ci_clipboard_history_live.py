@@ -82,13 +82,14 @@ def run(root, credentials):
         assert account.signed_in
         wait(lambda:client.scheduler.connected,35)
         if on_mac:
-            if latest().get('id') is None:
-                mime=QMimeData();mime.setText(ready);board.setMimeData(mime)
+            mime=QMimeData();mime.setText(ready);board.setMimeData(mime)
             report['phase']='Windows fixture and history retention'
             wait(lambda:any(name==seed for _,name in received) and any(row['kind']=='file' for row in history.entries))
+            wait(lambda:not history.jobs,8)
             seed_id=next(identity for identity,name in received if name==seed)
             assert latest()['id']==seed_id
-            item=next(row for row in history.entries if row['kind']=='file')
+            entries={row['id'] for row in history.entries}
+            item=next(row for row in history.entries if row['kind']=='file' and row['title']==seed)
             kind,files=history.store.execute('payload',item['id'])
             assert kind=='file' and len(files)==1
 
@@ -129,7 +130,7 @@ def run(root, credentials):
                 assert client._native_format_issue=='PRIVATE_MAC_PASTEBOARD'
                 assert latest()['id']==seed_id
             assert not mutations,mutations
-            assert len(history.entries)==1
+            assert {row['id'] for row in history.entries}==entries
             report.update(native_history_pastes=3,unmarked_reference_publications=3,
                           history_cloud_mutations=len(mutations),original_clipboard_restored=True)
 
@@ -140,6 +141,7 @@ def run(root, credentials):
         else:
             report['phase']='Mac peer ready'
             wait(lambda:board.mimeData().hasText() and board.mimeData().text()==ready)
+            received.clear()
             report['phase']='Windows genuine file copy'
             write_file(seed,'Windows fixture')
             wait(lambda:client._seen and client._pending is None and client.view.get('phase')=='synced')
