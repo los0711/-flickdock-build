@@ -1530,6 +1530,8 @@ class ShelfWindow(QWidget):
 
     def hover_region_contains(self,point):
         if not self.isVisible(): return False
+        history=getattr(self.manager,'clipboard_history',None)
+        if history is not None and history.contains(point):return True
         dialog=getattr(self.manager,'clipboard_preview_dialog',None)
         if dialog is not None and dialog.isVisible() and dialog.frameGeometry().contains(point):return True
         capacities=[self.zones['permanent'].capacity_button]
@@ -1630,6 +1632,8 @@ class ShelfWindow(QWidget):
         return self._file_choosing or (time.monotonic() if now is None else now)<self._picker_return_until
 
     def _dismiss_clipboard_preview(self):
+        history=getattr(self.manager,'clipboard_history',None)
+        if history is not None:history.hide()
         dialog=getattr(self.manager,'clipboard_preview_dialog',None)
         if dialog is not None and dialog.isVisible():dialog.close()
 

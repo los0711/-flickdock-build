@@ -40,3 +40,5 @@ Source-language detection runs locally; flags are bundled static resources.
 Notice fusion uses circular-cap Bézier connections following the Paper.js v0.12.18 Meta Balls example (MIT), originally by SATO Hiroyuki; rendered with existing Qt paths without embedding Paper.js. Source: https://github.com/paperjs/paper.js/blob/v0.12.18/examples/Paperjs.org/MetaBalls.html ; license: licenses/Paper-Notice-Motion-LICENSE.txt.
 
 The translator's loading text adapts the motion of Kokonut UI's AI Text Loading component to Qt. Source: https://kokonutui.com/docs/ai/ai-text-loading. License: licenses/KokonutUI-MIT.txt.
+
+The local clipboard history stack adapts the motion of Kokonut UI's Notification Stack to Qt. Source: https://kokonutui.com/docs/cards/notification-stack. License: licenses/KokonutUI-MIT.txt.

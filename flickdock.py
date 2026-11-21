@@ -270,6 +270,9 @@ class ShelfManager:
         self.pointer_paste.permission_changed.connect(self._refresh_paste_permission)
         self._applied_settings = dict(self.settings._data)
         self.settings.changed.connect(self.apply_settings)
+        from clipboard_history_runtime import ClipboardHistory
+        self.clipboard_history=ClipboardHistory(self,BASE)
+        self.clipboard_history.set_enabled(self.settings.clipboard_history_enabled and not self.cocoa_smoke)
         QTimer.singleShot(0,self.warm_overview)
         QTimer.singleShot(350,self.warm_overview)
         if not self.cocoa_smoke and not os.environ.get('PYTEST_CURRENT_TEST') and not os.environ.get('FLICKDOCK_NO_PREWARM'):
@@ -1047,6 +1050,8 @@ class ShelfManager:
         if 'magnetic_edges' in changed:
             self.edge_file_drag.cancel()
             self.edge_absorb.configure_regions(self.settings.magnetic_edges)
+        if 'clipboard_history_enabled' in changed:
+            self.clipboard_history.set_enabled(self.settings.clipboard_history_enabled and not self.cocoa_smoke)
         if changed & {'clipboard_sync_enabled','clipboard_notice_seen'}:
             self.clipboard_sync.set_enabled(self._clipboard_runtime_enabled())
             if not self._clipboard_runtime_enabled() and hasattr(self,'clipboard_notice'):self.clipboard_notice.supersede()
@@ -1403,6 +1408,7 @@ class ShelfManager:
             if edge.values()['enabled'] and edge.display.geometry().contains(pos):self.edge=edge;break
         self.drop_bridge.sync(self.shelf,dragging=bool(mouse_buttons_mask()&1))
         if self.settings_open():
+            self.clipboard_history.hide()
             self.edge_file_drag.update_pointer(pos,bool(mouse_buttons_mask()&1),eligible=False)
             if self._settings_prompt_active():
                 self.dock_preview.hide();self.settings_edge_hint.hide()
@@ -1425,6 +1431,7 @@ class ShelfManager:
         over_preview=any(rect.contains(pos) for rect in self._magnetic_preview_regions())
         self.edge_file_drag.update_pointer(pos,down,eligible=native and not self.outgoing_drag
             and (not down or not native_window_move_active()) and (not over_shelf or over_preview))
+        self.clipboard_history.sync(self.shelf,pos,down)
 
         # Only the physical trigger strip can open the shelf. On macOS
         # activation_region() may span the space the system Dock reserves
@@ -1535,6 +1542,7 @@ class ShelfManager:
         if getattr(self,'clipboard_preview_dialog',None) is not None:self.clipboard_preview_dialog.hide()
         if getattr(self,'mac_permissions_dialog',None) is not None:self.mac_permissions_dialog.hide()
         if hasattr(self,'clipboard_presenter'):self.clipboard_presenter.close()
+        if hasattr(self,'clipboard_history'):self.clipboard_history.close()
         if self.update_dialog is not None:self.update_dialog.hide()
         if self.update_notice is not None:
             self.update_notice.hide()

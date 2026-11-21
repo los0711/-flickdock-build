@@ -322,7 +322,7 @@ class ClipboardSync(QObject):
         self._notified_activity=None;self._content_read=None;self._content_read_failed=None
         self._copy_history=[];self._current_content_keys=None
         self._sequence=native_sequence if self._is_native else lambda:None
-        self.enabled=enabled;self._local_observation=False;self.closed=False;self._epoch=0;self._generation=0;self._applying=False
+        self.enabled=enabled;self._local_observation=False;self._local_observers=set();self.closed=False;self._epoch=0;self._generation=0;self._applying=False
         self._native_access=self._native_accessible()
         self._clock_anchor=None;self._local_clock_anchor=(time.monotonic(),round(time.time()*1000))
         self._observed_clock=0;self._local_fence=None;self._local_retry=None
@@ -559,12 +559,14 @@ class ClipboardSync(QObject):
             if sys.platform=='darwin' and self._is_native:self._mac_changed(initial=True);self.mac_poll.start()
         elif not self._local_observation:self.mac_poll.stop()
 
-    def set_local_observation(self,enabled):
-        """Reuse the native observer for translation without enabling cloud sync."""
-        self._local_observation=bool(enabled)
+    def set_local_observation(self,enabled,*,source='translation'):
+        """Share native observations while local tools manage their own settings."""
+        if enabled:self._local_observers.add(source)
+        else:self._local_observers.discard(source)
+        self._local_observation=bool(self._local_observers)
         if self.closed:return
         if sys.platform=='darwin' and self._is_native:
-            if self.enabled or enabled:
+            if self.enabled or self._local_observation:
                 self._mac_changed(initial=True);self.mac_poll.start()
             else:self.mac_poll.stop()
 

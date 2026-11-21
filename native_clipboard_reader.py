@@ -54,6 +54,8 @@ def _read_result(directory,cancel):
             image=QImage(str(path));data={'image':image}
         if image.isNull():raise ValueError('Invalid clipboard image')
     elif kind is not None:raise ValueError('Unknown clipboard payload')
+    if value.get('history_private') is True and isinstance(data,dict):
+        data['_history_private']=True
     if cancel.is_set():raise InterruptedError()
     return dict(ok=True,sequence=sequence,value=(kind,data) if kind else None)
 
@@ -179,12 +181,14 @@ def run_worker(path):
         stage='INITIALIZE'
         from PySide6.QtGui import QGuiApplication
         from clipboard_sync import native_sequence,_snapshot_mime,native_format_count
+        from clipboard_history_native import private_clipboard
         from virtual_clipboard import DESCRIPTOR_MIME,describe,materialize,VirtualClipboardError,only_remote_placeholders
         app=QGuiApplication.instance() or QGuiApplication([]);clipboard=app.clipboard()
         if native_sequence()!=expected:raise VirtualClipboardError('NATIVE_READ_REPLACED')
         stage='CAPTURE'
         for attempt in range(2):
             app.processEvents();before=native_sequence();mime=clipboard.mimeData()
+            history_private=private_clipboard()
             if mime is None:raise ValueError('Clipboard unavailable')
             if mime.hasUrls() and any(url.isLocalFile() for url in mime.urls()) and not only_remote_placeholders(mime):value=_snapshot_mime(mime)
             elif mime.hasFormat(DESCRIPTOR_MIME):
@@ -201,6 +205,7 @@ def run_worker(path):
         if kind=='image':
             output=dict(ok=True,sequence=sequence,kind=kind,mime=_store_image(directory,data));data=None
         else:output=dict(ok=True,sequence=sequence,kind=kind,data=data)
+        if history_private:output['history_private']=True
         encoded=json.dumps(output,ensure_ascii=False).encode('utf8')
         if len(encoded)>MAX_METADATA_BYTES:raise ValueError('Clipboard payload too large')
         (directory/'result.json').write_bytes(encoded);return 0
