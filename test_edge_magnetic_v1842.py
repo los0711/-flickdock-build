@@ -126,13 +126,15 @@ class PreviewPriorityTests(unittest.TestCase):
     def test_repeated_moves_reuse_the_native_target_mask(self):
         from PySide6.QtGui import QRegion
         self.enter()
-        with patch('edge_file_drag.QRegion',wraps=QRegion) as region:
+        with (patch('edge_file_drag.QRegion',wraps=QRegion) as region,
+              patch('edge_file_drag.file_urls') as read_urls):
             for dy in range(-25,25):
                 point=self.point+QPoint(0,dy)
                 self.gate.update_pointer(point,True)
                 event=QDragEnterEvent(QPoint(),Qt.CopyAction,self.mime,Qt.LeftButton,Qt.NoModifier)
                 self.gate.observe_native_move(event,point)
             region.assert_not_called()
+            read_urls.assert_not_called()
         self.assertTrue(self.gate.validated)
 
     def test_preview_wins_even_a_late_drop_addressed_to_edge(self):

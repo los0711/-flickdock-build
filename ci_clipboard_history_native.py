@@ -43,9 +43,15 @@ def target(root):
             super().keyPressEvent(event)
 
         def canInsertFromMimeData(self,mime):
-            return mime.hasImage() or super().canInsertFromMimeData(mime)
+            return mime.hasUrls() or mime.hasImage() or super().canInsertFromMimeData(mime)
 
         def insertFromMimeData(self,mime):
+            if mime.hasUrls():
+                paths=[Path(url.toLocalFile()) for url in mime.urls()]
+                output=root/'files-incoming.tmp'
+                output.write_text(json.dumps([p.read_text(encoding='utf-8') for p in paths]),encoding='utf-8')
+                output.replace(root/'files-incoming.json')
+                return
             if not mime.hasImage():
                 super().insertFromMimeData(mime)
                 return
@@ -190,6 +196,7 @@ def run(root):
 
     class ClipboardObservation(QObject):
         copy_observed=Signal(object)
+        cloud_files_received=Signal(str,object,object)
 
         def set_local_observation(self, enabled, *, source):
             return
@@ -311,11 +318,34 @@ def run(root):
         actual=json.loads((root/'image-incoming.json').read_bytes())
         assert actual=={'color':IMAGE_COLOR,'size':[47,29]},actual
         wait_for(lambda:runtime._insert_job is None and app.clipboard().text()==SENTINEL)
+        cache=root/'saved'/'clipboard-cache'/'clip-fixture'
+        contents=cache/'files'
+        contents.mkdir(parents=True)
+        paths=[contents/'测 试.txt',contents/'Second attachment.txt']
+        expected=['First attachment bytes','Second attachment bytes']
+        for path,data in zip(paths,expected):path.write_text(data,encoding='utf-8')
+        manager.clipboard_sync.cloud_files_received.emit('cloud-file-fixture',tuple(map(str,paths)),cache)
+        wait_for(lambda:runtime.total==3)
+        for path in paths:path.unlink()
+        panel.show_all()
+        wait_for(lambda:panel._stack_progress==1.)
+        panel.repaint()
+        key=next(entry['id'] for entry in runtime.entries if entry['kind']=='file')
+        point=row_point(key)
+        assert current_process()==pid
+        if on_mac:
+            point=panel.mapToGlobal(point)
+            cocoa_pointer(point,'move');QTest.qWait(65);cocoa_pointer(point,'click')
+        else:QTest.mouseClick(panel,Qt.LeftButton,Qt.NoModifier,point)
+        wait_for(lambda:(root/'files-incoming.json').is_file())
+        assert json.loads((root/'files-incoming.json').read_text('utf8'))==expected
+        wait_for(lambda:runtime._insert_job is None and app.clipboard().text()==SENTINEL)
+        report['cloud_files_inserted']=True
         if on_mac:
             screenshot=subprocess.run(['/usr/sbin/screencapture','-x','-c','-R85,80,160,100'],
                                       capture_output=True,timeout=12)
             if screenshot.returncode==0:
-                wait_for(lambda:runtime.total==3)
+                wait_for(lambda:runtime.total==4)
                 report['system_capture']=True
             else:
                 report['system_capture']='unavailable_in_ci'

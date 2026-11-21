@@ -9,7 +9,7 @@ from PySide6.QtGui import QDrag, QImage, QPixmap
 from PySide6.QtWidgets import QApplication, QLineEdit, QPlainTextEdit, QTextEdit
 from shiboken6 import isValid
 
-from clipboard_history_native import (front_target, insert_image, insert_text, mac_history_paste_blocker,
+from clipboard_history_native import (front_target, insert_files, insert_image, insert_text, mac_history_paste_blocker,
                                       private_clipboard, restore_mac_target)
 from clipboard_history_panel import ClipboardHistoryPanel
 from clipboard_history_store import ClipboardHistoryStore, PAGE
@@ -51,6 +51,8 @@ class ClipboardHistory(QObject):
         self.screenshots.received.connect(self._saved_screenshot)
         self.screenshots.failed.connect(self._screenshot_error)
         manager.clipboard_sync.copy_observed.connect(self.observe)
+        self._cloud_files_signal=getattr(manager.clipboard_sync,'cloud_files_received',None)
+        if self._cloud_files_signal is not None:self._cloud_files_signal.connect(self._remember_cloud_files)
 
     def set_enabled(self,enabled):
         enabled=bool(enabled)
@@ -80,8 +82,8 @@ class ClipboardHistory(QObject):
             self.jobs.discard(job)
             if self.closed:return
             if error:
-                LOG.warning('Clipboard history %s failed (%s)',operation,type(error).__name__,
-                            exc_info=(type(error),error,error.__traceback__))
+                LOG.warning('Clipboard history %s failed (%s, errno=%s)',operation,
+                            type(error).__name__,getattr(error,'errno',None))
                 if self.panel:self.panel.feedback('剪贴板历史暂不可用')
                 return
             if self.enabled:callback(result)
@@ -116,6 +118,9 @@ class ClipboardHistory(QObject):
             if self.panel:self.panel.feedback('历史存储繁忙')
             return
         self._submit('remember',(value,),lambda key:self._refresh() if key else None)
+
+    def _remember_cloud_files(self,identity,paths,directory):
+        self._submit('remember_cloud_files',(identity,paths,directory),lambda key:self._refresh() if key else None)
 
     def _refresh(self):
         self._refresh_epoch+=1
@@ -224,7 +229,7 @@ class ClipboardHistory(QObject):
             kind,payload=value
             if target is None and editor is not None and isValid(editor) and editor is QApplication.focusWidget():
                 complete(self._insert_local(editor,kind,payload),kind)
-            elif target is None or kind not in ('text','link','image'):complete(False,kind)
+            elif target is None:complete(False,kind)
             else:
                 blocker=mac_history_paste_blocker() if self.panel._cocoa_hover else None
                 if blocker:
@@ -232,7 +237,9 @@ class ClipboardHistory(QObject):
                              else '请在 Mac 权限设置中将剪贴板设为始终允许')
                     self.panel.feedback(message)
                     return
-                insert,data=(insert_image,payload) if kind=='image' else (insert_text,payload['text'])
+                if kind=='file':insert,data=insert_files,payload
+                elif kind=='image':insert,data=insert_image,payload
+                else:insert,data=insert_text,payload['text']
                 def dispatch(deadline):
                     if self.closed or epoch!=self._action_epoch or not self.panel.isVisible():return
                     current=front_target()
@@ -310,6 +317,7 @@ class ClipboardHistory(QObject):
         self.screenshots.close()
         if self._insert_job is not None:self._insert_job.cancel.set()
         self.manager.clipboard_sync.copy_observed.disconnect(self.observe)
+        if self._cloud_files_signal is not None:self._cloud_files_signal.disconnect(self._remember_cloud_files)
         if self.panel is not None:
             self.panel.close()
             self.panel.deleteLater()

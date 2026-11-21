@@ -255,8 +255,9 @@ class EdgeFileDrag(QObject):
 
     def _native_move(self, event, position, *, entering=False):
         target=self._receive_target(event,position)
-        urls=file_urls(event.mimeData()) if target is not None else ()
-        if not urls:
+        admitted=target is not None and not entering and self._seen_file
+        urls=file_urls(event.mimeData()) if target is not None and not admitted else ()
+        if not admitted and not urls:
             event.ignore()
             if entering:
                 self._cancelled_target = self._target.signature() if self._target else None
@@ -273,8 +274,9 @@ class EdgeFileDrag(QObject):
                 or not self.allowed() or not event.possibleActions()&Qt.CopyAction):return
         target=self.visual.target_at(position)
         if target is None:return
-        urls=file_urls(event.mimeData())
-        if urls:self._observe_file(position,target,urls,entering=entering)
+        admitted=not entering and self._seen_file
+        urls=() if admitted else file_urls(event.mimeData())
+        if admitted or urls:self._observe_file(position,target,urls,entering=entering)
 
     def _observe_file(self,position,target,urls,*,entering=False):
         first = not self._seen_file
@@ -288,7 +290,7 @@ class EdgeFileDrag(QObject):
         self.visual.follow(position,target=target)
         if self.on_file_move is not None:
             self.on_file_move(QPoint(position))
-            if not self.closed:self._prepare(self._target)
+            if not self.closed and (first or entering):self._prepare(self._target)
         if first:
             self.note('edge.magnetic.native_file_enter')
 

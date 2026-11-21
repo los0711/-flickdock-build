@@ -4,8 +4,11 @@ from __future__ import annotations
 from contextlib import closing
 import hashlib
 import json
+import os
 from pathlib import Path
+import shutil
 import sqlite3
+import tempfile
 import time
 from urllib.parse import urlsplit
 
@@ -30,6 +33,7 @@ class ClipboardHistoryStore:
     def __init__(self,root):
         self.root=Path(root)
         self.path=self.root/'clipboard-history.sqlite3'
+        self.files=self.root/'clipboard-history-files'
 
     def _snapshot(self,value):
         if not value:return None
@@ -68,6 +72,46 @@ class ClipboardHistoryStore:
             return 'file',title[:160],'\n'.join(paths)[:640],json.dumps(paths).encode('utf-8'),b'',''
         return None
 
+    @staticmethod
+    def _keep_file(source,target):
+        try:
+            return os.link(source,target)
+        except OSError:
+            return shutil.copy2(source,target)
+
+    def _remember_cloud_files(self,db,identity,paths,directory):
+        source_root=(Path(directory)/'files').resolve()
+        if source_root.parent.parent!= (self.root/'clipboard-cache').resolve():return None
+        paths=[Path(path) for path in paths]
+        if not paths or any(path.is_symlink() or path.is_junction()
+                            or path.resolve().parent!=source_root or not path.exists()
+                            for path in paths):return None
+        key=hashlib.sha256(b'cloud-files\0'+identity.encode('utf-8')).hexdigest()
+        target_root=self.files/key
+        retained=[str(target_root/path.name) for path in paths]
+        title=paths[0].name if len(paths)==1 else f'{len(paths)} 个文件'
+        payload=json.dumps(retained,ensure_ascii=False).encode('utf-8')
+        if not target_root.is_dir():
+            self.files.mkdir(mode=0o700,parents=True,exist_ok=True)
+            with tempfile.TemporaryDirectory(prefix='receiving-',dir=self.files) as temporary:
+                staging=Path(temporary)/'files'
+                staging.mkdir()
+                for source in paths:
+                    target=staging/source.name
+                    if source.is_dir():shutil.copytree(source,target,copy_function=self._keep_file)
+                    else:self._keep_file(source,target)
+                staging.rename(target_root)
+        db.execute('''INSERT INTO clips VALUES (?,?,?,?,?,?,?,0)
+            ON CONFLICT(id) DO UPDATE SET updated=excluded.updated''',
+            (key,'file',title[:160],'\n'.join(path.name for path in paths)[:640],payload,b'',time.time()))
+        return key
+
+    def _remove_retained_files(self,keys):
+        for key in keys:
+            if len(key)!=64 or any(c not in '0123456789abcdef' for c in key):continue
+            directory=self.files/key
+            if directory.is_dir():shutil.rmtree(directory)
+
     def execute(self,operation,*arguments):
         snapshot=self._snapshot(arguments[0]) if operation=='remember' else None
         if operation=='remember' and (snapshot is None or len(snapshot[3])>MAX_ITEM_BYTES):return None
@@ -82,6 +126,8 @@ class ClipboardHistoryStore:
             )''')
             db.execute('CREATE INDEX IF NOT EXISTS clips_order ON clips (pinned DESC, updated DESC)')
             db.execute('CREATE TABLE IF NOT EXISTS clip_images (fingerprint TEXT PRIMARY KEY, clip_id TEXT NOT NULL)')
+            if operation=='remember_cloud_files':
+                return self._remember_cloud_files(db,*arguments)
             if operation=='remember':
                 kind,title,excerpt,payload,thumb,fingerprint=snapshot
                 key=hashlib.sha256(kind.encode()+b'\0'+payload).hexdigest()
@@ -103,10 +149,15 @@ class ClipboardHistoryStore:
             if operation=='remove':
                 db.execute('DELETE FROM clip_images WHERE clip_id=?',arguments)
                 db.execute('DELETE FROM clips WHERE id=?',arguments)
+                db.commit()
+                self._remove_retained_files(arguments)
                 return True
             if operation=='clear':
+                files=[row[0] for row in db.execute("SELECT id FROM clips WHERE kind='file'")]
                 db.execute('DELETE FROM clip_images')
                 db.execute('DELETE FROM clips')
+                db.commit()
+                self._remove_retained_files(files)
                 return True
             if operation=='payload':
                 row=db.execute('SELECT kind,payload FROM clips WHERE id=?',arguments).fetchone()

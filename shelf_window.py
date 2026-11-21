@@ -1229,9 +1229,12 @@ class ShelfWindow(QWidget):
             self.presentation.kick({'sx':-.45,'sy':.65})
         tile.pulse('drop',lambda:self._finish_intake(epoch))
 
-    def accepts_content_drop(self, event):
+    def accepts_content_drop(self, event, *, admitted=False):
         if self.manager.outgoing_drag or self.dragging or confirmation_active(self):
             return False
+        # During OLE DragOver, asking for MIME data can synchronously call the
+        # source process. An accepted DragEnter already proved content support.
+        if admitted:return True
         source = event.source()
         if isinstance(source, QWidget) and (source is self or self.isAncestorOf(source)):
             return False
@@ -1244,7 +1247,8 @@ class ShelfWindow(QWidget):
         zone.set_incoming_drag(active,position,accepted=accepted)
 
     def dragEnterEvent(self,event,*,origin=None):
-        if self.accepts_content_drop(event):
+        self._content_drag_admitted=self.accepts_content_drop(event)
+        if self._content_drag_admitted:
             self.observe_edge_file_move(event,entering=True,origin=origin)
             self.active_mode = "permanent"
             self._highlight_content_drop(True,(origin or self).mapToGlobal(event.position().toPoint()))
@@ -1255,7 +1259,7 @@ class ShelfWindow(QWidget):
             event.ignore()
 
     def dragMoveEvent(self,event,*,origin=None):
-        if self.accepts_content_drop(event):
+        if self.accepts_content_drop(event,admitted=getattr(self,'_content_drag_admitted',False)):
             self.observe_edge_file_move(event,origin=origin)
             self._highlight_content_drop(True,(origin or self).mapToGlobal(event.position().toPoint()))
             self.touch()
@@ -1265,10 +1269,12 @@ class ShelfWindow(QWidget):
             event.ignore()
 
     def dragLeaveEvent(self, event):
+        self._content_drag_admitted=False
         self._highlight_content_drop(False)
         event.accept()
 
     def dropEvent(self,event,*,origin=None):
+        self._content_drag_admitted=False
         accepted=self.accepts_content_drop(event) and self.receive_drop_event(event,"permanent",origin=origin)
         self._highlight_content_drop(False,accepted=accepted)
         if accepted:

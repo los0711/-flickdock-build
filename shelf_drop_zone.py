@@ -114,7 +114,7 @@ class DropZone(QFrame):
             event.ignore()
 
     def dragMoveEvent(self, event):
-        if self.shelf.accepts_content_drop(event):
+        if self.shelf.accepts_content_drop(event,admitted=self.drop_highlight):
             self.shelf.observe_edge_file_move(event,origin=self)
             self.set_incoming_drag(True,event.position().toPoint())
             self.shelf.touch()

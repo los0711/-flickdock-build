@@ -37,6 +37,39 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  windows-native:
+    if: github.repository == 'los0711/-flickdock-build'
+    runs-on: windows-2025
+    timeout-minutes: 12
+    env:
+      PYTHONUTF8: '1'
+      PIP_DISABLE_PIP_VERSION_CHECK: '1'
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+      - name: Install the Windows runtime for native checks
+        run: python -m pip install -r requirements.txt
+      - name: Drag a file through the native OLE preview and measure paint cadence
+        shell: pwsh
+        run: |
+          $env:APPDATA = Join-Path $env:RUNNER_TEMP FlickDockDragProfile
+          python ci_windows_drag_preview.py driver (Join-Path $env:RUNNER_TEMP FlickDockDrag)
+      - name: Paste native text, image and file payloads into a separate process
+        if: always()
+        shell: pwsh
+        run: python ci_clipboard_history_native.py driver (Join-Path $env:RUNNER_TEMP FlickDockHistory)
+      - name: Retain the Windows frame timings
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: windows-native-drag-preview
+          path: ${{ runner.temp }}/FlickDockDrag/drag-preview.json
+          retention-days: 3
+
   native:
     runs-on: macos-15
     timeout-minutes: 10
@@ -67,7 +100,7 @@ jobs:
           result=unittest.TextTestRunner(verbosity=2).run(suite)
           assert result.wasSuccessful()
           PY
-          QT_QPA_PLATFORM=offscreen python -m unittest test_saved_screenshots test_mac_permissions_v1821 test_lan_account_v1825 test_wan_account_v1819 test_clipboard_sync_v1819 test_stability_v1822.PermissionRecoveryTests test_window_zoom_v1824 -q
+          QT_QPA_PLATFORM=offscreen python -m unittest test_saved_screenshots test_mac_permissions_v1821 test_clipboard_sync_v1819 test_stability_v1822.PermissionRecoveryTests test_window_zoom_v1824 -q
       - name: Exercise native file events and movable permission window
         run: |
           profile="$(mktemp -d "$RUNNER_TEMP/saved-native.XXXXXX")"

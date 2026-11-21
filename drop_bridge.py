@@ -24,6 +24,7 @@ class DropBridge(QWidget):
         keep_tool_visible_when_inactive(self)
 
     def sync(self,shelf,*,dragging=False):
+        if shelf is not self.shelf:self._entered=False
         self.shelf=shelf
         valid=(shelf and shelf.isVisible() and shelf.presentation_kind=='dock' and shelf.visible_state!='hiding'
                and not self.manager.settings_open() and not self.manager.outgoing_drag)
@@ -45,7 +46,11 @@ class DropBridge(QWidget):
             event.acceptProposedAction()
         else:event.ignore()
 
-    def dragMoveEvent(self,event):self.dragEnterEvent(event)
+    def dragMoveEvent(self,event):
+        if self.shelf and self.shelf.accepts_content_drop(event,admitted=self._entered):
+            self.shelf._highlight_content_drop(True,self.mapToGlobal(event.position().toPoint()))
+            event.acceptProposedAction()
+        else:event.ignore()
 
     def dragLeaveEvent(self,event):
         self._entered=False

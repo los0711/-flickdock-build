@@ -506,6 +506,41 @@ class ClipboardTests(unittest.TestCase):
         item=package(('text',dict(text=text,html='')),folder)
         self.assertIsNotNone(item);self.assertEqual(unpack('text',item['path'],folder)[1]['text'],text)
 
+    def test_received_cloud_files_survive_history_restart_and_cache_expiry(self):
+        from clipboard_history_runtime import ClipboardHistory
+        from clipboard_history_store import ClipboardHistoryStore
+
+        receiver=self.clients[0]
+        base=self.base/'0'
+        history=ClipboardHistory(SimpleNamespace(app=APP,clipboard_sync=receiver),base)
+        history.set_enabled(True)
+        try:
+            source=self.base/'文件 with spaces.txt';source.write_bytes(b'cloud fixture')
+            observed=[];receiver.copy_observed.connect(observed.append)
+            mime=QMimeData()
+            mime.setUrls([QUrl.fromLocalFile(str(source))])
+            self.clips[1].setMimeData(mime)
+            until(lambda:history.total==1)
+            row=history.entries[0]
+            cached=Path(self.clips[0].mimeData().urls()[0].toLocalFile())
+            self.assertEqual(row['kind'],'file')
+            self.assertEqual(observed,[])
+            history.close()
+            receiver.set_enabled(False);self.clips[0].clear()
+            with patch('clipboard_sync.time.time',return_value=time.time()+90000):
+                receiver._cleanup()
+            until(lambda:not receiver._jobs)
+            self.assertFalse(cached.exists())
+            reopened=ClipboardHistoryStore(base)
+            kind,retained=reopened.execute('payload',row['id'])
+            self.assertEqual(kind,'file')
+            self.assertEqual(Path(retained[0]).read_bytes(),b'cloud fixture')
+            reopened.execute('remove',row['id'])
+            self.assertFalse(any(Path(path).exists() for path in retained))
+            self.assertTrue(source.is_file())
+        finally:
+            history.close()
+
     def test_receive_cache_failure_releases_fetch_and_retries_without_changing_native_copy(self):
         client=self.clients[0]
         with patch.object(client,'_directory',side_effect=OSError('temporary cache permission')):

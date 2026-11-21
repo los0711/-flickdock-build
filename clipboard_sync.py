@@ -276,6 +276,7 @@ class ClipboardSync(QObject):
     copy_result=Signal(bool,dict)
     copy_started=Signal()
     copy_observed=Signal(object)
+    cloud_files_received=Signal(str,object,object)
     copy_repeated=Signal(object)
     # Keep original image bytes as a shared Python object, rather than copying
     # a potentially 20 MB value through QVariantMap for each status update.
@@ -786,6 +787,8 @@ class ClipboardSync(QObject):
         self._priority_flags(waiting=False,receiving=False)
         self._seen=head['id'];self._applied_version=max(self._applied_version,head_version(head))
         self.inbox.applied(self._inbox_account(),head)
+        if value[0]=='files':
+            self.cloud_files_received.emit(head['id'],tuple(value[1]),pending['directory'])
         self._remember_content(value)
         self._observed_clock=max(self._observed_clock,head.get('copied_at',head.get('at',0)))
         known=self._known_cloud_head

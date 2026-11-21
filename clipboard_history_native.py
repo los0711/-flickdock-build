@@ -8,6 +8,8 @@ from ctypes import wintypes
 from functools import lru_cache
 from itertools import groupby
 import os
+from pathlib import Path
+import struct
 import sys
 import time
 from threading import Event, Lock
@@ -291,18 +293,27 @@ def _paste_windows_image(png,image,target,cancel):
     if not bmp.open(QIODevice.WriteOnly) or not image.save(bmp,'BMP'):
         return False
     dib=bytes(bmp.data())[14:]  # CF_DIB omits the 14-byte BMP file header
+    png_type=_windows().RegisterClipboardFormatW('PNG')
+    return _paste_windows_formats(((png_type,png),(8,dib)),target,cancel)
+
+
+def _windows_file_drop(paths):
+    # DROPFILES with fWide, followed by a double-NUL-terminated WCHAR list.
+    return struct.pack('<IiiII',20,0,0,0,1)+('\0'.join(paths)+'\0\0').encode('utf-16-le')
+
+
+def _paste_windows_formats(formats,target,cancel):
     user,kernel,ole,gdi=_windows_clipboard_api()
     owner=user.CreateWindowExW(0,'STATIC','',0,0,0,0,0,-3,None,None,None)  # HWND_MESSAGE
     if not owner:return False
     original,temporary={},{}
-    owns_image=False
+    owns_clipboard=False
     try:
-        png_type=user.RegisterClipboardFormatW('PNG')
         exclude=_excluded_windows_format()
         history=user.RegisterClipboardFormatW('CanIncludeInClipboardHistory')
         cloud=user.RegisterClipboardFormatW('CanUploadToCloudClipboard')
-        if not all((png_type,exclude,history,cloud)):return False
-        formats=((png_type,png),(8,dib),(exclude,bytes([1,0,0,0])),(history,bytes(4)),(cloud,bytes(4)))
+        if not all((exclude,history,cloud)) or not all(fmt for fmt,_ in formats):return False
+        formats=(*formats,(exclude,bytes([1,0,0,0])),(history,bytes(4)),(cloud,bytes(4)))
         for fmt,data in formats:
             handle=_windows_buffer(kernel,data)
             if not handle:return False
@@ -314,7 +325,7 @@ def _paste_windows_image(png,image,target,cancel):
                 return False
             if cancel.is_set() or front_target()!=target or not user.EmptyClipboard():
                 return False
-            owns_image=True
+            owns_clipboard=True
             try:
                 installed=_set_windows_formats(user,temporary)
             finally:
@@ -331,9 +342,9 @@ def _paste_windows_image(png,image,target,cancel):
         return True
     finally:
         try:
-            if owns_image and user.GetClipboardOwner()==owner:
+            if owns_clipboard and user.GetClipboardOwner()==owner:
                 with _open_windows_clipboard(user,owner,1.) as opened:
-                    if not opened:raise OSError('Could not reopen clipboard after image paste')
+                    if not opened:raise OSError('Could not reopen clipboard after history paste')
                     if user.GetClipboardOwner()==owner:
                         _mark_paste_change(user.GetClipboardSequenceNumber())
                         if not user.EmptyClipboard():raise OSError('Could not restore clipboard')
@@ -387,11 +398,11 @@ def _wait_mac_paste_read(provider,board,sequence):
     return True
 
 
-def _paste_mac_payload(payload,target,cancel,*,image):
+def _paste_mac_payload(payload,target,cancel,*,image=False,files=False):
     import Quartz
     import objc
     from AppKit import NSImage, NSPasteboard, NSPasteboardItem
-    from Foundation import NSData
+    from Foundation import NSData, NSURL
 
     # Restoring the user's clipboard requires reading it first. Gate that
     # read before touching any data so repeated card clicks cannot prompt TCC.
@@ -410,9 +421,14 @@ def _paste_mac_payload(payload,target,cancel,*,image):
                 total+=data.length()
                 if total>_MAX_BACKUP_BYTES or not backup.setData_forType_(data,fmt):return False
             original.append(backup)
-        item=NSPasteboardItem.alloc().init()
         formats={}
-        if image:
+        if files:
+            values=[]
+            for path in payload:
+                url=NSURL.fileURLWithPath_(path)
+                raw=url.absoluteString().encode('utf8')
+                values.append({'public.file-url':NSData.dataWithBytes_length_(raw,len(raw))})
+        elif image:
             data=NSData.dataWithBytes_length_(payload,len(payload))
             formats['public.png']=data
             native_image=NSImage.alloc().initWithData_(data)
@@ -421,13 +437,17 @@ def _paste_mac_payload(payload,target,cancel,*,image):
         else:
             encoded=payload.encode('utf8')
             formats['public.utf8-plain-text']=NSData.dataWithBytes_length_(encoded,len(encoded))
-        provider=_mac_paste_provider_type().alloc().init()
-        provider.formats=formats
-        provider.received=Event()
-        provider.error=None
-        provider.finished=False
-        if not item.setDataProvider_forTypes_(provider,list(formats)):return False
-        if not item.setData_forType_(NSData.data(),'org.nspasteboard.TransientType'):return False
+        providers=[];items=[];received=Event()
+        for entry in values if files else (formats,):
+            item=NSPasteboardItem.alloc().init()
+            provider=_mac_paste_provider_type().alloc().init()
+            provider.formats=entry
+            provider.received=received
+            provider.error=None
+            provider.finished=False
+            if not item.setDataProvider_forTypes_(provider,list(entry)):return False
+            if not item.setData_forType_(NSData.data(),'org.nspasteboard.TransientType'):return False
+            items.append(item);providers.append(provider)
         down=Quartz.CGEventCreateKeyboardEvent(None,9,True)  # kVK_ANSI_V
         up=Quartz.CGEventCreateKeyboardEvent(None,9,False)
         if down is None or up is None or cancel.is_set() or front_target()!=target or board.changeCount()!=baseline:
@@ -435,17 +455,19 @@ def _paste_mac_payload(payload,target,cancel,*,image):
         sequence=board.clearContents()
         _mark_paste_change(sequence)
         try:
-            installed=board.writeObjects_([item])
+            installed=board.writeObjects_(items)
             sequence=board.changeCount()
             _mark_paste_change(sequence)
             if not installed or cancel.is_set() or front_target()!=target:return False
             for event in (down,up):
                 Quartz.CGEventSetFlags(event,Quartz.kCGEventFlagMaskCommand)
                 Quartz.CGEventPostToPid(target,event)
-            if not _wait_mac_paste_read(provider,board,sequence):return False
+            if not _wait_mac_paste_read(providers[0],board,sequence):return False
             # Start the restoration grace after the consumer requested data,
             # rather than after dispatching an asynchronous keyboard event.
             time.sleep(_PASTE_GRACE_SECONDS)
+            for provider in providers:
+                if provider.error is not None:raise provider.error
             return True
         finally:
             if board.changeCount()==sequence:
@@ -471,6 +493,22 @@ def insert_image(png,target,*,cancel=None):
             png=encode_png(image)
         if sys.platform=='win32':return _paste_windows_image(png,image,target,cancel)
         if sys.platform=='darwin':return _paste_mac_payload(png,target,cancel,image=True)
+        return False
+    finally:
+        _IMAGE_PASTE_LOCK.release()
+
+
+def insert_files(paths,target,*,cancel=None):
+    """Send native Paste with file URLs, then restore the clipboard snapshot."""
+    cancel=cancel or Event()
+    if not paths or target is None or front_target()!=target or cancel.is_set():return False
+    if not all(Path(path).is_absolute() and Path(path).exists() for path in paths):return False
+    if not _IMAGE_PASTE_LOCK.acquire(blocking=False):return False
+    try:
+        if sys.platform=='win32':
+            preferred=_windows().RegisterClipboardFormatW('Preferred DropEffect')
+            return _paste_windows_formats(((15,_windows_file_drop(paths)),(preferred,struct.pack('<I',1))),target,cancel)
+        if sys.platform=='darwin':return _paste_mac_payload(paths,target,cancel,files=True)
         return False
     finally:
         _IMAGE_PASTE_LOCK.release()

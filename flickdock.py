@@ -1423,40 +1423,43 @@ class ShelfManager:
             from dock_geometry import cocoa_screen_pointer
             pos=cocoa_screen_pointer(pos)
         self._refresh_fullscreen_edges(now)
-        self.translation.reconcile_pointer(pos, mouse_buttons_mask())
+        mask=mouse_buttons_mask()
+        down=bool(mask&1)
+        self.translation.reconcile_pointer(pos,mask)
         # Cocoa may move a preallocated tool surface beneath a stationary
         # pointer without delivering Enter/Move to its children. Reconcile on
-        # the existing native input tick, including while a drag is active.
-        for shelf in self.shelves:
-            if shelf.isVisible() and not shelf.expanded:
-                shelf.zones['permanent']._reconcile_card_hover(pos)
+        # the existing native input tick. Native drop events own drag feedback.
+        if sys.platform=='darwin' and not down:
+            for shelf in self.shelves:
+                if shelf.isVisible() and not shelf.expanded:
+                    shelf.zones['permanent']._reconcile_card_hover(pos)
         for edge in getattr(self,'edges',{}).values():
             if edge.values()['enabled'] and edge.display.geometry().contains(pos):self.edge=edge;break
-        self.drop_bridge.sync(self.shelf,dragging=bool(mouse_buttons_mask()&1))
+        self.drop_bridge.sync(self.shelf,dragging=down)
         if self.settings_open():
             self.clipboard_history.hide()
-            self.edge_file_drag.update_pointer(pos,bool(mouse_buttons_mask()&1),eligible=False)
+            self.edge_file_drag.update_pointer(pos,down,eligible=False)
             if self._settings_prompt_active():
                 self.dock_preview.hide();self.settings_edge_hint.hide()
-                self.reset_drag_gesture();self.was_down=bool(mouse_buttons_mask()&1);return
+                self.reset_drag_gesture();self.was_down=down;return
             from display_triggers import trigger_active
             if trigger_active(self.edge.values()) and (self.edge.activation_region().contains(pos) or self.settings_edge_hint.contains_pointer(pos)):
                 if not self.settings_edge_hint.isVisible():self.settings_edge_hint.show_hint()
             else:self.settings_edge_hint.hide()
-            self.reset_drag_gesture();self.was_down=bool(mouse_buttons_mask()&1);return
+            self.reset_drag_gesture();self.was_down=down;return
         self.settings_edge_hint.hide()
         app_active=self.app.applicationState() == Qt.ApplicationState.ApplicationActive
         app_deactivated=self._app_was_active and not app_active
         self._app_was_active=app_active
         native=native_input_available()
-        mask=mouse_buttons_mask()
-        down=bool(mask&1); new_press=bool(mask&~self._button_mask); self._button_mask=mask
+        new_press=bool(mask&~self._button_mask); self._button_mask=mask
         # Pointer motion can expose the native edge destination; only its
         # real OLE/Cocoa file events may start the independent visual field.
         over_shelf=any(s.isVisible() and s.visual_geometry().contains(pos) for s in self.shelves)
         over_preview=any(rect.contains(pos) for rect in self._magnetic_preview_regions())
+        moving=native and down and native_window_move_active()
         self.edge_file_drag.update_pointer(pos,down,eligible=native and not self.outgoing_drag
-            and (not down or not native_window_move_active()) and (not over_shelf or over_preview))
+            and not moving and (not over_shelf or over_preview))
         history_inside=self.clipboard_history.sync(self.shelf,pos)
 
         # Only the physical trigger strip can open the shelf. On macOS
@@ -1529,7 +1532,6 @@ class ShelfManager:
         # Python 3.12 on Windows uses a coarse GetTickCount clock for monotonic.
         # QPC timestamps avoid quantised dt corrupting velocity/acceleration.
         sample_time=time.perf_counter()
-        moving=native_window_move_active()
         magnetic_drag=down and self._magnetic_preempts_shake(pos)
         if magnetic_drag:
             self._content_gesture_at=None
