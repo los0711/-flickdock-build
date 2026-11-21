@@ -22,6 +22,7 @@ class MacPermissionsDialog(ReferenceModalDialog):
         self.setFont((parent or manager.shelf).font())
         self._awaiting_system=False
         self._guided_flow=False
+        self._accessibility_guide=None
         self.manager=manager;self.backend=backend or MacPermissionBackend();self.states={};self._guided=set()
         self.setWindowTitle('FlickDock · Mac 权限设置');self.rows={}
         self.title_bar=QWidget(self.body)
@@ -68,6 +69,20 @@ class MacPermissionsDialog(ReferenceModalDialog):
     def _paste_permissions_ready(self):
         return all(self.states[k] in ('allowed','legacy','not_required') for k in ('clipboard','accessibility'))
 
+    def _show_accessibility_guide(self):
+        from platform_native import native_input_available
+        if self.bundle is None or not native_input_available() or not hasattr(self.backend,'accessibility'):
+            return
+        if self._accessibility_guide is None:
+            from mac_permission_guide import MacAccessibilityGuide
+            guide=MacAccessibilityGuide(self.bundle,self.backend,self._theme,self.font(),self._reveal_current_application)
+            self.destroyed.connect(guide.deleteLater)
+            self._accessibility_guide=guide
+        self._accessibility_guide.start()
+
+    def _stop_accessibility_guide(self):
+        if self._accessibility_guide is not None:self._accessibility_guide.stop()
+
     def apply_theme(self):
         self._theme=self.manager.settings.theme;c=colors(self._theme);self.set_surface_theme(self._theme);self.close_button.dark=self._theme=='dark'
         self.setStyleSheet(f"QDialog{{background:transparent;}} QLabel{{color:{c['text']};background:transparent;border:0;font-size:12px;}} QFrame#permissionRow{{background:{c['card']};border:0;border-radius:{c['radius_card']}px;}} QPushButton{{color:{c['text']};background:{c['control']};border:1px solid transparent;border-radius:{c['radius_control']}px;padding:6px 12px;}} QPushButton:hover{{background:{c['hover']};}} QPushButton:pressed{{background:{c['selected']};}} QPushButton:disabled{{color:{c['muted']};}} QPushButton[keyboardFocus=\"true\"]{{border:1px solid {c['link']};}}")
@@ -99,11 +114,15 @@ class MacPermissionsDialog(ReferenceModalDialog):
         else:self.setup_button.setText('继续设置' if self._guided else '检查并设置')
 
     def _application_state(self,state):
-        if self._awaiting_system and state==Qt.ApplicationActive:self._return_timer.start(150)
+        guide=self._accessibility_guide
+        if (self._awaiting_system and state==Qt.ApplicationActive
+                and (guide is None or not guide.app_icon.drag_active)):
+            self._return_timer.start(150)
 
     def _returned_to_app(self):
         if not self._awaiting_system:return
         self._awaiting_system=False
+        self._stop_accessibility_guide()
         self.show()
         self.refresh()
         close_after_setup=self._guided_flow and self._paste_permissions_ready()
@@ -138,6 +157,8 @@ class MacPermissionsDialog(ReferenceModalDialog):
             logging.getLogger(__name__).exception('Mac permission setup action failed')
             self.hint.setText('系统未完成授权请求，请在“系统设置 → 隐私与安全性”中检查 FlickDock。')
         self.refresh()
+        if opened and kind=='accessibility' and self.states['accessibility']!='allowed':
+            self._show_accessibility_guide()
         if not opened:
             self._awaiting_system=False
             self._guided_flow=False
@@ -165,6 +186,7 @@ class MacPermissionsDialog(ReferenceModalDialog):
         self._awaiting_system=False
         self._guided_flow=False
         self._return_timer.stop()
+        self._stop_accessibility_guide()
         super().closeEvent(event)
 
     def hideEvent(self,event):

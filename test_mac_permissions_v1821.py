@@ -3,7 +3,7 @@ import unittest,tempfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock,patch
-from PySide6.QtCore import Qt,QRect,QMimeData,QUrl
+from PySide6.QtCore import Qt,QRect,QMimeData,QSize,QUrl
 from PySide6.QtWidgets import QWidget
 from mac_permissions import MacPermissionBackend,background_clipboard_allowed
 from mac_permissions_ui import MacPermissionsDialog
@@ -131,6 +131,40 @@ class ClipboardPermissionTests(unittest.TestCase):
 
 
 class PermissionUITests(unittest.TestCase):
+    def test_permission_guide_stays_outside_settings_on_small_and_secondary_displays(self):
+        from mac_permission_guide import guide_geometry
+        area=QRect(-1440,24,1440,852);size=QSize(306,132)
+        window=QRect(-1300,42,870,600)
+        position=guide_geometry(window,area,size)
+        self.assertEqual(position.top(),window.bottom()+11)
+        window.moveBottom(area.bottom()-8)
+        position=guide_geometry(window,area,size)
+        self.assertTrue(area.contains(position))
+        self.assertFalse(position.intersects(window))
+        self.assertGreater(position.left(),window.right())
+        self.assertTrue(guide_geometry(area,area,size).isEmpty())
+
+    def test_permission_guide_drags_exact_bundle_and_disappears_after_grant(self):
+        from mac_permission_guide import MacAccessibilityGuide
+        bundle=Path('/Applications/FlickDock.app')
+        backend=SimpleNamespace(accessibility=Mock(return_value='denied'))
+        reveal=Mock()
+        guide=MacAccessibilityGuide(bundle,backend,'light',APP.font(),reveal)
+        try:
+            area=APP.primaryScreen().availableGeometry()
+            window=QRect(area.x()+4,area.y()+4,area.width()-330,area.height()-8)
+            with patch('mac_permission_guide.settings_window',return_value=window):
+                guide.start();flush()
+                self.assertTrue(guide.isVisible())
+                self.assertFalse(guide.geometry().intersects(window))
+                self.assertEqual(guide.app_icon.mime_data().urls(),[QUrl.fromLocalFile(str(bundle))])
+                guide.app_icon.click();reveal.assert_called_once()
+                backend.accessibility.return_value='allowed'
+                guide._follow_settings()
+                self.assertFalse(guide.isVisible())
+                self.assertFalse(guide.timer.isActive())
+        finally:guide.stop();guide.deleteLater();flush()
+
     def test_finder_button_selects_the_running_bundle(self):
         from PySide6.QtWidgets import QPushButton
         bundle=Path('/Applications/FlickDock.app')
