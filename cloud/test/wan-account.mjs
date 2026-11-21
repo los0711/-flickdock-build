@@ -53,6 +53,34 @@ try{
   const ownOffer=await sb.wait(row=>row.type==='request'&&row.id===request.id);
   assert.equal(ownOffer.peer.id,sa.id);assert.equal(ownOffer.account_device,true);assert.equal(ownOffer.account_id,a.account.id);
   console.log('PASS same-account first transfer without code, canonical name, badge and LAN identity');
+  const shelfIntake={id:randomUUID(),version:1,sha256:hash('file fixture'),name:'original.txt',mime_type:'text/plain'};
+  async function advertise(peer,lan_id){
+    const after=peer.messages.length;
+    peer.send({type:'hello',name:'Fixture',platform:'windows',lan_id,features:['shelf-drop-v1']});
+    const identity=await peer.wait(row=>row.type==='identity',after);
+    assert.equal(identity.shelf_drop_v1,true);
+  }
+  await advertise(sa,'a'.repeat(32));
+  const legacy={...spec(),shelf_intake:shelfIntake,peer:sb.id};
+  sa.send(legacy);
+  assert.match((await sa.wait(row=>row.type==='error'&&row.id===legacy.id)).message,/不支持搁架直传/);
+  assert(!sb.messages.some(row=>row.id===legacy.id));
+  await advertise(sb,'b'.repeat(32));
+  await advertise(sc,'c'.repeat(32));
+  const foreign={...spec(),shelf_intake:shelfIntake,peer:sb.id};
+  sc.send(foreign);
+  await sc.wait(row=>row.type==='error'&&row.id===foreign.id);
+  assert(!sb.messages.some(row=>row.id===foreign.id));
+  const shelfRequest={...spec(),shelf_intake:shelfIntake,peer:sb.id};
+  sa.send(shelfRequest);
+  const shelfOffer=await sb.wait(row=>row.type==='request'&&row.id===shelfRequest.id);
+  assert.equal(shelfOffer.account_device,true);
+  assert.deepEqual(shelfOffer.shelf_intake,shelfIntake);
+  sb.send({type:'accept',id:shelfRequest.id});
+  await sa.wait(row=>row.type==='begin'&&row.id===shelfRequest.id);
+  sa.send({type:'cancel',id:shelfRequest.id});
+  await sb.wait(row=>row.type==='cancelled'&&row.id===shelfRequest.id);
+  console.log('PASS shelf-drop capability, same-account acceptance, legacy fallback and cross-account isolation');
   const unrelated={...spec(),peer:sb.id};sc.send(unrelated);
   assert.match((await sc.wait(row=>row.type==='error'&&row.id===unrelated.id)).message,/首次传输/);
   const pipe=randomBytes(16).toString('hex'),pipePath='/v1/wan/cloud/'+pipe;
