@@ -243,6 +243,13 @@
           "sha256": "b06998e630427097d2c6c0395db25764e23a0fde9b137188c34840baff5e6362",
           "archive": "https://gitee.com/rooogerluo/flick-dock-macos-releases-12/releases/download/v1.8.39/FlickDock-1.8.39-macOS-arm64.pkg",
           "originKey": "v1.8.39/sha256-b06998e630427097d2c6c0395db25764e23a0fde9b137188c34840baff5e6362/FlickDock-1.8.39-macOS-arm64.pkg"
+        },
+        {
+          "name": "FlickDock-Setup-1.8.39.exe",
+          "bytes": 69909748,
+          "sha256": "af6d884a584ccef57cc767bd69947873a6cf5ee37ebe919ce4b7e6d8469c4fbd",
+          "archive": "https://github.com/los0711/-flickdock-build/releases/download/v1.8.39/FlickDock-Setup-1.8.39.exe",
+          "originKey": "v1.8.39/sha256-af6d884a584ccef57cc767bd69947873a6cf5ee37ebe919ce4b7e6d8469c4fbd/FlickDock-Setup-1.8.39.exe"
         }
       ],
       "r2Removed": false
