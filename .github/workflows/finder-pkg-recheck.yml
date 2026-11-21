@@ -1,0 +1,57 @@
+name: Finder recheck of the built installer
+
+on:
+  push:
+    branches: [fix-mac-finder-magnetic-1841]
+    paths: ['.github/workflows/finder-pkg-recheck.yml']
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  finder:
+    if: github.repository == 'los0711/-flickdock-build'
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: FlickDock-macOS-incomplete-arm64-1f3eda9d4db4b185f7abba2107d0123c785290d8
+          run-id: 44864457982
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/built-release
+      - name: Reverify exact installer in a fresh Finder desktop
+        run: |
+          set -eu
+          release="$RUNNER_TEMP/built-release"
+          pkg="$release/FlickDock-1.8.41-macOS-arm64.pkg"
+          reports="$RUNNER_TEMP/finder-recheck"
+          mkdir -p "$reports"
+          shasum -a 256 "$pkg" | tee "$reports/installer-sha256.txt"
+          pkgutil --expand-full "$pkg" "$RUNNER_TEMP/finder-expanded"
+          binary="$(find "$RUNNER_TEMP/finder-expanded" -type f -path '*/FlickDock.app/Contents/MacOS/FlickDock' -print -quit)"
+          test -x "$binary"
+          swiftc ci_finder_element.swift -o "$RUNNER_TEMP/finder-element"
+          for run in 1 2; do
+            osascript -e 'tell application "Finder" to close every Finder window'
+            osascript -e 'tell application "Finder" to activate'
+            mkdir -p "$reports/trial-$run/profile"
+            HOME="$reports/trial-$run/profile" QT_QPA_PLATFORM=cocoa FLICKDOCK_FINDER_AX="$RUNNER_TEMP/finder-element" \
+              "$binary" --verify-finder-magnetic "$reports/trial-$run/report.json"
+          done
+          mkdir -p "$reports/overview/profile"
+          HOME="$reports/overview/profile" QT_QPA_PLATFORM=offscreen "$binary" --verify-overview \
+            --verify-output "$reports/overview/report.json" --verify-capture "$reports/overview/screenshot.png"
+      - name: Retain the Finder recheck report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: finder-pkg-recheck-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/finder-recheck/**/report.json
+            ${{ runner.temp }}/finder-recheck/installer-sha256.txt
+          if-no-files-found: warn
