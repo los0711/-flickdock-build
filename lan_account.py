@@ -23,6 +23,7 @@ class LanAccountAuthorizer(QObject):
     def __init__(self,lan,wan):
         super().__init__(lan);self.lan=lan;self.wan=wan;self._lock=threading.RLock()
         self._identity=None;self._peers={};self._waiting={};self._tickets={}
+        self._deferred={}
         self._prepare.connect(self._send);wan.lan_authorization.connect(self._receive)
         wan.account_service.account_changed.connect(self._refresh);wan.peers_changed.connect(self._refresh)
         self._refresh();lan.account_authorizer=self
@@ -40,14 +41,30 @@ class LanAccountAuthorizer(QObject):
 
     def _refresh(self,*_):
         identity=self._session();rows=self.wan.peers()
+        ready=[]
         with self._lock:
             if identity!=self._identity:
                 for waiting in self._waiting.values():
                     waiting['error']='账号已改变，局域网发送已取消。';waiting['done'].set()
-                self._waiting.clear();self._tickets.clear();self._identity=identity
+                self._waiting.clear();self._tickets.clear();self._deferred.clear();self._identity=identity
             self._peers={row['lan_id']:dict(row) for row in rows
                          if row.get('account_device') is True and HEX32.fullmatch(str(row.get('lan_id','')))
                          and HEX64.fullmatch(str(row.get('id','')))}
+            if not self.wan._connected or self.wan._closing:
+                self._deferred.clear()
+                return
+            bound=self._active()
+            peers={row['id'] for row in self._peers.values()}
+            now=time.monotonic()
+            for key,(deadline,value) in tuple(self._deferred.items()):
+                peer,_=key
+                if deadline<=now:
+                    del self._deferred[key]
+                elif bound and peer in peers:
+                    del self._deferred[key]
+                    ready.append(dict(peer=peer,value=value))
+        for message in ready:
+            self._receive(message)
 
     def prepare(self,transfer,peer,entries):
         with self._lock:
@@ -81,16 +98,25 @@ class LanAccountAuthorizer(QObject):
         if value.get('type')!='lan-transfer' or not HEX32.fullmatch(str(value.get('id',''))):return
         now=time.monotonic()
         with self._lock:
-            if not self._active() or self._identity!=self._session():return
+            if (self._identity is None or self._identity!=self._session() or
+                    self.wan._closing or not self.wan._connected):return
+            bound=self._active()
             if value.get('action')=='accepted':
+                if not bound:return
                 waiting=self._waiting.get(value['id'])
                 if waiting is not None and waiting['peer']==peer and waiting['identity']==self._identity:
                     waiting['accepted']=True;waiting['done'].set()
                 return
-            if (value.get('action')!='prepare' or not all(HEX64.fullmatch(str(value.get(key,''))) for key in ('token','digest','fingerprint'))
+            if (value.get('action')!='prepare' or not all(isinstance(value.get(key),str) and HEX64.fullmatch(value[key]) for key in ('token','digest','fingerprint'))
                     or not secrets.compare_digest(value['fingerprint'],self.lan.fingerprint)):return
             source=next((row for row in self._peers.values() if row['id']==peer),None)
-            if source is None:return
+            if not bound or source is None:
+                # The server can relay consent before this client's bind reply
+                # or peer list. Keep it briefly, scoped to this local session.
+                self._deferred={key:entry for key,entry in self._deferred.items() if entry[0]>now}
+                if len(self._deferred)<MAX_TICKETS:
+                    self._deferred.setdefault((peer,value['id']),(now+AUTHORIZATION_SECONDS,dict(value)))
+                return
             self._tickets={key:ticket for key,ticket in self._tickets.items() if now-ticket['at']<TICKET_LIFETIME_SECONDS}
             previous=self._tickets.get(value['id'])
             if previous is not None and any(previous[key]!=value[key] for key in ('token','digest')):return

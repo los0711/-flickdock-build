@@ -61,6 +61,11 @@ class MacPermissionBackend:
         from PySide6.QtGui import QDesktopServices
         return (self.opener or QDesktopServices.openUrl)(QUrl('x-apple.systempreferences:com.apple.preference.security?'+self.PANES[kind]))
 
+    def reveal_application(self,bundle):
+        from Foundation import NSURL
+        workspace=self._appkit().NSWorkspace.sharedWorkspace()
+        workspace.activateFileViewerSelectingURLs_([NSURL.fileURLWithPath_(str(bundle))])
+
     def choose_screenshot_folders(self):
         from Foundation import NSURL,NSUserDefaults
         from pathlib import Path
@@ -81,7 +86,7 @@ class MacPermissionBackend:
         if kind=='files':return self.choose_screenshot_folders()
         # Never infer a grant from opening Settings, a successful read, or a
         # remembered setup step. inspect() always queries the current OS state.
-        if kind=='clipboard' and self.clipboard() in ('default','ask'):
+        if kind=='clipboard' and self.clipboard()=='default':
             # Register this app in the pasteboard privacy pane if necessary.
             # This explicit user action neither writes nor uploads the content.
             self._appkit().NSPasteboard.generalPasteboard().pasteboardItems()

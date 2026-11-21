@@ -8,11 +8,11 @@ from mac_permissions import MacPermissionBackend
 
 
 class MacPermissionsDialog(ReferenceModalDialog):
-    ROWS=(('clipboard','剪贴板','后台同步需要“始终允许”。'),
-          ('accessibility','直接粘贴','允许 FlickDock 将历史内容粘贴到其他应用。'),
-          ('input','输入监控','仅在系统仍阻止跨应用按键监听时需要。'),
-          ('network','本地网络','用于发现附近设备及局域网互传。'),
-          ('files','截图文件夹','读取新保存的截图文件，原文件继续保留。'))
+    ROWS=(('clipboard','剪贴板','记录复制历史、后台同步，以及粘贴历史时恢复原剪贴板。'),
+          ('accessibility','辅助功能','把历史内容直接粘贴到其他 App。'),
+          ('input','输入监控','可选，用于鼠标指向搁架时捕获粘贴快捷键。'),
+          ('network','本地网络','使用局域网互传时需要。'),
+          ('files','截图文件夹','截图软件使用自定义保存目录时，可在这里选择。'))
     LABELS={'allowed':'已允许','legacy':'系统无需单独授权','denied':'未允许','ask':'需要设为始终允许',
             'default':'尚未设置','unknown':'需在系统中确认','not_required':'当前监听已可用',
             'observed':'已发现附近设备','on_demand':'按所选文件授权'}
@@ -29,11 +29,16 @@ class MacPermissionsDialog(ReferenceModalDialog):
         self.title=QLabel('Mac 权限设置',self.title_bar);head.addWidget(self.title,1)
         close=SettingsCloseButton(self.title_bar,glyph_size=14);self.close_button=close;close.setFixedSize(28,28);close.clicked.connect(self.close);head.addWidget(close);self.body_layout.addWidget(self.title_bar)
         from platform_native import app_bundle
-        bundle=app_bundle()
-        self.application_path=QLabel('当前应用：'+(str(bundle) if bundle else 'FlickDock 开发环境'),self.body)
+        self.bundle=app_bundle()
+        self.application_path=QLabel('当前运行的应用\n'+(str(self.bundle) if self.bundle else 'FlickDock 开发环境'),self.body)
         self.application_path.setWordWrap(True);self.application_path.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self.body_layout.addWidget(self.application_path)
-        intro=QLabel('在这里集中完成所需授权。系统弹窗和开关需你确认，返回后会自动重新检测。',self.body);intro.setWordWrap(True);self.body_layout.addWidget(intro)
+        app_row=QHBoxLayout();app_row.addWidget(self.application_path,1)
+        if self.bundle is not None:
+            reveal=QPushButton('在 Finder 中显示',self.body)
+            reveal.setAutoDefault(False);reveal.clicked.connect(self._reveal_current_application)
+            app_row.addWidget(reveal)
+        self.body_layout.addLayout(app_row)
+        intro=QLabel('按需开启对应权限。每次只打开你选的项目，返回后自动重新检测。',self.body);intro.setWordWrap(True);self.body_layout.addWidget(intro)
         for kind,title,detail in self.ROWS:
             frame=QFrame(self.body);frame.setObjectName('permissionRow');row=QHBoxLayout(frame);row.setContentsMargins(12,10,12,10)
             left=QVBoxLayout();left.setSpacing(4);name=QLabel(title,frame);name.setStyleSheet('font-weight:600;');description=QLabel(detail,frame);description.setWordWrap(True);left.addWidget(name);left.addWidget(description);row.addLayout(left,1)
@@ -51,6 +56,17 @@ class MacPermissionsDialog(ReferenceModalDialog):
         self._return_timer.timeout.connect(self._returned_to_app)
         QApplication.instance().applicationStateChanged.connect(self._application_state)
         self.timer=QTimer(self);self.timer.setInterval(2000);self.timer.timeout.connect(self.refresh);self.refresh()
+
+    def _reveal_current_application(self):
+        if self.bundle is None:return
+        try:
+            self.backend.reveal_application(self.bundle)
+        except (ImportError,OSError,RuntimeError):
+            logging.getLogger(__name__).exception('Could not reveal the running app in Finder')
+            self.hint.setText('请在 Finder 中打开上方显示的应用路径。')
+
+    def _paste_permissions_ready(self):
+        return all(self.states[k] in ('allowed','legacy','not_required') for k in ('clipboard','accessibility'))
 
     def apply_theme(self):
         self._theme=self.manager.settings.theme;c=colors(self._theme);self.set_surface_theme(self._theme);self.close_button.dark=self._theme=='dark'
@@ -78,7 +94,7 @@ class MacPermissionsDialog(ReferenceModalDialog):
                 and self.states['input'] in ('allowed','legacy')):
             self.rows['input'][0].setText('权限已允许，监听待恢复')
             self.hint.setText('权限已允许，但跨应用粘贴监听尚未恢复。可重新检测；若系统要求，请关闭并重新打开 FlickDock。')
-        if all(self.states[k] in ('allowed','legacy','not_required') for k in ('clipboard','accessibility')):
+        if self._paste_permissions_ready():
             self.setup_button.setText('完成')
         else:self.setup_button.setText('继续设置' if self._guided else '检查并设置')
 
@@ -90,14 +106,12 @@ class MacPermissionsDialog(ReferenceModalDialog):
         self._awaiting_system=False
         self.show()
         self.refresh()
-        granted=self.states.get(self._requested_kind) in ('allowed','legacy','not_required')
-        if self._requested_kind=='files':granted=bool(getattr(self.backend,'screenshot_folders',None))
-        if self._guided_flow and granted:QTimer.singleShot(0,self,self.advance)
-        else:self._guided_flow=False
+        close_after_setup=self._guided_flow and self._paste_permissions_ready()
+        self._guided_flow=False
+        if close_after_setup:self.close()
 
     def request(self,kind):
         if self._awaiting_system:return
-        self._requested_kind=kind
         self._return_geometry=self.geometry()
         self._awaiting_system=True
         self.hide()
@@ -112,6 +126,7 @@ class MacPermissionsDialog(ReferenceModalDialog):
             opened=self.backend.request(kind)
             if not opened:self.hint.setText('未能打开系统设置，请手动前往“系统设置 → 隐私与安全性”。')
             elif kind=='clipboard':self.hint.setText('请在剪贴板/从其他 App 粘贴的设置中，将 FlickDock 设为“始终允许”。只允许一次不能用于持续后台同步。')
+            elif kind=='accessibility':self.hint.setText('如果旧条目已开启但仍显示未允许，请点辅助功能里的“＋”，选择上面显示的 FlickDock.app 并开启。')
             elif kind=='files':self.hint.setText('截图文件夹已选择，正常保存的截图会进入本机历史。')
             else:self.hint.setText('请在系统设置中允许 FlickDock，返回后会重新检测；尚未授予的项目会继续标明。')
             self._guided.add(kind)
@@ -139,11 +154,6 @@ class MacPermissionsDialog(ReferenceModalDialog):
             if self.states[kind] not in ('allowed','legacy','not_required'):
                 if not self._awaiting_system:self.request(kind)
                 return
-        history=getattr(self.manager,'clipboard_history',None)
-        if history is not None and history.enabled and 'files' not in self._guided:
-            from screenshot_history import load_folders
-            if not load_folders(self.manager.settings.base):
-                self.request('files');return
         self._guided_flow=False
         self.close()
 

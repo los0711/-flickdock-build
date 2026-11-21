@@ -35,10 +35,15 @@ class PermissionTests(unittest.TestCase):
             self.assertTrue(background_clipboard_allowed(force=True));self.assertEqual(query.call_count,2)
 
     def test_only_explicit_setup_requests_paste_access_and_does_not_claim_success(self):
-        board,kit=self.board(1);opened=[]
-        backend=MacPermissionBackend(appkit=kit,opener=lambda url:opened.append(url.toString()) or True)
-        self.assertTrue(backend.request('clipboard'));board.pasteboardItems.assert_called_once()
-        self.assertEqual(backend.clipboard(),'ask');self.assertEqual(opened,['x-apple.systempreferences:com.apple.preference.security?Privacy_Pasteboard'])
+        for status,reads in ((0,1),(1,0),(2,0),(3,0)):
+            with self.subTest(status=status):
+                board,kit=self.board(status);opened=[]
+                backend=MacPermissionBackend(appkit=kit,opener=lambda url:opened.append(url.toString()) or True)
+                previous=backend.clipboard()
+                self.assertTrue(backend.request('clipboard'))
+                self.assertEqual(board.pasteboardItems.call_count,reads)
+                self.assertEqual(backend.clipboard(),previous)
+                self.assertEqual(opened,['x-apple.systempreferences:com.apple.preference.security?Privacy_Pasteboard'])
 
     def test_working_pointer_tap_does_not_request_extra_input_monitoring(self):
         board,kit=self.board(2);quartz=SimpleNamespace(CGPreflightListenEventAccess=Mock(return_value=False))
@@ -49,6 +54,18 @@ class PermissionTests(unittest.TestCase):
 
 
 class PermissionIdentityTests(unittest.TestCase):
+    def test_direct_paste_reports_the_missing_permission(self):
+        from clipboard_history_native import mac_history_paste_blocker
+        with patch('clipboard_history_native.mac_paste_allowed',return_value=False):
+            self.assertEqual(mac_history_paste_blocker(),'accessibility')
+        with patch('clipboard_history_native.mac_paste_allowed',return_value=True):
+            for status in ('ask','default','denied','unknown'):
+                with patch.object(MacPermissionBackend,'clipboard',return_value=status):
+                    self.assertEqual(mac_history_paste_blocker(),'clipboard')
+            for status in ('allowed','legacy'):
+                with patch.object(MacPermissionBackend,'clipboard',return_value=status):
+                    self.assertIsNone(mac_history_paste_blocker())
+
     def test_accessibility_grant_is_not_overruled_by_event_preflight(self):
         query=Mock(return_value=False)
         backend=MacPermissionBackend(ax=SimpleNamespace(AXIsProcessTrusted=lambda:True),
@@ -114,6 +131,21 @@ class ClipboardPermissionTests(unittest.TestCase):
 
 
 class PermissionUITests(unittest.TestCase):
+    def test_finder_button_selects_the_running_bundle(self):
+        from PySide6.QtWidgets import QPushButton
+        bundle=Path('/Applications/FlickDock.app')
+        states=dict(clipboard='allowed',accessibility='denied',input='denied',network='unknown',files='on_demand')
+        backend=SimpleNamespace(inspect=lambda **_:dict(states),reveal_application=Mock())
+        owner=QWidget();manager=SimpleNamespace(shelf=owner,settings=SimpleNamespace(theme='light'))
+        with patch('platform_native.app_bundle',return_value=bundle):
+            dialog=MacPermissionsDialog(manager,backend=backend)
+        try:
+            self.assertIn(str(bundle),dialog.application_path.text())
+            button=next(b for b in dialog.findChildren(QPushButton) if b.text()=='在 Finder 中显示')
+            button.click()
+            backend.reveal_application.assert_called_once_with(bundle)
+        finally:dialog.deleteLater();owner.deleteLater();flush()
+
     def test_guided_steps_recheck_real_state_and_never_mark_unknown_network_allowed(self):
         states=dict(clipboard='ask',accessibility='denied',input='denied',network='unknown',files='on_demand')
         calls=[];backend=SimpleNamespace(inspect=lambda **_:dict(states),request=lambda kind:calls.append(kind) or True)
@@ -127,10 +159,13 @@ class PermissionUITests(unittest.TestCase):
                 self.assertEqual(calls,['clipboard'])
                 self.assertTrue(dialog.isVisible())
                 self.assertIn('需要',dialog.rows['clipboard'][0].text())
-                states['clipboard']='allowed';dialog.setup_button.click();flush();self.assertEqual(calls[-1],'accessibility')
+                dialog.setup_button.click();flush()
+                states['clipboard']='allowed';dialog._returned_to_app();flush()
+                self.assertEqual(calls,['clipboard','clipboard']);self.assertTrue(dialog.isVisible())
+                dialog.setup_button.click();flush();self.assertEqual(calls[-1],'accessibility')
                 states.update(accessibility='allowed',input='not_required')
                 dialog._returned_to_app();flush()
-                self.assertEqual(calls,['clipboard','accessibility'])
+                self.assertEqual(calls,['clipboard','clipboard','accessibility'])
                 self.assertEqual(dialog.states['network'],'unknown');self.assertIn('确认',dialog.rows['network'][0].text())
                 self.assertEqual(dialog.states['files'],'on_demand')
                 manager.settings.theme='light';dialog.refresh();self.assertFalse(dialog.close_button.dark)

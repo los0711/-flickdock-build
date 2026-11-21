@@ -9,7 +9,7 @@ from PySide6.QtGui import QDrag, QImage, QPixmap
 from PySide6.QtWidgets import QApplication, QLineEdit, QPlainTextEdit, QTextEdit
 from shiboken6 import isValid
 
-from clipboard_history_native import (front_target, insert_image, insert_text, mac_paste_allowed,
+from clipboard_history_native import (front_target, insert_image, insert_text, mac_history_paste_blocker,
                                       private_clipboard, restore_mac_target)
 from clipboard_history_panel import ClipboardHistoryPanel
 from clipboard_history_store import ClipboardHistoryStore, PAGE
@@ -226,10 +226,11 @@ class ClipboardHistory(QObject):
                 complete(self._insert_local(editor,kind,payload),kind)
             elif target is None or kind not in ('text','link','image'):complete(False,kind)
             else:
-                if self.panel._cocoa_hover and not mac_paste_allowed():
-                    self.panel.feedback('请完成 Mac 粘贴授权')
-                    show=getattr(self.manager,'show_mac_permissions',None)
-                    if show is not None:QTimer.singleShot(0,self,show)
+                blocker=mac_history_paste_blocker() if self.panel._cocoa_hover else None
+                if blocker:
+                    message=('请在 Mac 权限设置中允许辅助功能' if blocker=='accessibility'
+                             else '请在 Mac 权限设置中将剪贴板设为始终允许')
+                    self.panel.feedback(message)
                     return
                 insert,data=(insert_image,payload) if kind=='image' else (insert_text,payload['text'])
                 def dispatch(deadline):

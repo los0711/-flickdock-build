@@ -87,6 +87,13 @@ def mac_paste_allowed():
     return MacPermissionBackend().paste()=='allowed'
 
 
+def mac_history_paste_blocker():
+    from mac_permissions import MacPermissionBackend
+    if not mac_paste_allowed():return 'accessibility'
+    if MacPermissionBackend().clipboard() not in ('allowed','legacy'):return 'clipboard'
+    return None
+
+
 class _Keyboard(ctypes.Structure):
     _fields_=[('key',wintypes.WORD),('scan',wintypes.WORD),('flags',wintypes.DWORD),
               ('time',wintypes.DWORD),('extra',ctypes.c_size_t)]
@@ -386,7 +393,9 @@ def _paste_mac_payload(payload,target,cancel,*,image):
     from AppKit import NSImage, NSPasteboard, NSPasteboardItem
     from Foundation import NSData
 
-    if not mac_paste_allowed():return False
+    # Restoring the user's clipboard requires reading it first. Gate that
+    # read before touching any data so repeated card clicks cannot prompt TCC.
+    if mac_history_paste_blocker() is not None:return False
     with objc.autorelease_pool():
         board=NSPasteboard.generalPasteboard()
         baseline=board.changeCount()

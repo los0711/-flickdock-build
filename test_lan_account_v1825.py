@@ -5,7 +5,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from uuid import uuid4
-from unittest.mock import Mock
+from unittest.mock import Mock,patch
 from lan_transfer import LanTransferService,_Transfer
 from lan_account import LanAccountAuthorizer,manifest_digest
 from lan_panel import LanDialog
@@ -100,6 +100,52 @@ class LanAccountTests(unittest.TestCase):
         transfer.token='c'*64;self.assertIsNone(receiver.incoming(transfer));transfer.token=ticket['token']
         transfer.manifest_hash='d'*64;self.assertIsNone(receiver.incoming(transfer));transfer.manifest_hash=ticket['digest']
         self.wans[1].account_service.signed_in=False;self.assertIsNone(receiver.incoming(transfer))
+
+    def test_same_account_prepare_survives_binding_and_device_list_arriving_later(self):
+        from flickdock import ShelfManager
+        lan,wan=self.lans[1],self.wans[1]
+        source=self.root/'file.txt';source.write_text('exact payload',encoding='utf8')
+        destination=self.root/'received';destination.mkdir()
+        offers=[];completed=[];authorization=[]
+        manager=SimpleNamespace(lan=lan,account=wan.account_service,
+            settings=SimpleNamespace(lan_receive_dir=str(destination)),
+            lan_receive_notice=SimpleNamespace(begin=Mock()),
+            show_lan_dialog=Mock(),lan_dialog=SimpleNamespace(panel=SimpleNamespace(show_offer=Mock())))
+        lan.offer_received.connect(offers.append)
+        lan.offer_received.connect(lambda offer:ShelfManager._lan_offer(manager,offer))
+        lan.completed.connect(completed.append)
+        wan.lan_authorization.connect(authorization.append)
+        wan._bound_identity=None
+        with patch.object(wan,'peers',return_value=[]):
+            wan.peers_changed.emit([])
+            self.lans[0].send(lan.device_id,[source])
+            until(lambda:bool(authorization))
+            wan._bound_identity=wan._account_identity()
+            wan.peers_changed.emit([])
+            self.assertEqual(offers,[])
+        wan.peers_changed.emit(wan.peers())
+        until(lambda:bool(offers),seconds=7)
+        self.assertTrue(offers[0].get('account_device'))
+        self.assertEqual(offers[0]['account_id'],wan.account_service.account['id'])
+        until(lambda:bool(completed),seconds=5)
+        self.assertEqual(Path(completed[0]['paths'][0]).read_bytes(),source.read_bytes())
+        self.assertEqual(len(offers),1)
+        manager.show_lan_dialog.assert_not_called()
+        manager.lan_receive_notice.begin.assert_called_once()
+
+    def test_prepared_offer_is_discarded_when_the_local_session_changes(self):
+        sender,wan=self.wans;receiver=self.auth[1]
+        entries=[dict(path='file.txt',kind='file',size=5)]
+        ticket=dict(type='lan-transfer',action='prepare',id=uuid4().hex,token='a'*64,
+                    digest=manifest_digest(entries),fingerprint=self.lans[1].fingerprint)
+        transfer=_Transfer(ticket['id'],'receive','LAN device',token=ticket['token'],manifest_hash=ticket['digest'])
+        wan._bound_identity=None
+        sender._send_signal(dict(type='lan_authorization',peer=wan.device_id,value=ticket))
+        wan.account_service.api.token='new-session'
+        wan.account_service.account_changed.emit(None)
+        wan._bound_identity=wan._account_identity()
+        wan.peers_changed.emit(wan.peers())
+        self.assertIsNone(receiver.incoming(transfer))
 
 
 if __name__=='__main__':unittest.main()
