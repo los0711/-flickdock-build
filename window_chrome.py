@@ -1,0 +1,290 @@
+"""Resizable utility windows; no hooks, polling or changes to shelf geometry."""
+from __future__ import annotations
+import atexit,json,sys,weakref
+from pathlib import Path
+from PySide6.QtCore import QCoreApplication,QObject,QEvent,QPoint,QRect,QRectF,QSize,Qt,QTimer
+from PySide6.QtGui import QColor,QCursor,QGuiApplication,QPainter,QPen
+from PySide6.QtWidgets import QApplication,QPushButton,QWidget
+from native_ui_common import RADIUS_CONTROL_PX,paint_rounded_surface,screen_for_widget
+from platform_native import native_input_available
+from shiboken6 import isValid
+
+_dock_windows=weakref.WeakSet()
+_chromes=weakref.WeakSet()
+_last_minimized=None
+WINDOW_CONTROL_RADIUS_PX=RADIUS_CONTROL_PX
+
+
+def ensure_native_resize(window):
+    """Qt's frameless flag omits WS_THICKFRAME, required by system resizing.
+
+    Keep Qt responsible for the frameless client area and hit testing. Change
+    only this window's capabilities, without installing a window procedure.
+    """
+    if (sys.platform!='win32' or not native_input_available()
+            or not window.isVisible() or not window.testAttribute(Qt.WA_WState_Created)):return False
+    handle=int(window.effectiveWinId() or 0)
+    if not handle:return False
+    import ctypes
+    from ctypes import wintypes
+    try:
+        api=ctypes.WinDLL('user32',use_last_error=True)
+        get=api.GetWindowLongPtrW;get.argtypes=[wintypes.HWND,ctypes.c_int];get.restype=ctypes.c_ssize_t
+        put=api.SetWindowLongPtrW;put.argtypes=[wintypes.HWND,ctypes.c_int,ctypes.c_ssize_t];put.restype=ctypes.c_ssize_t
+        position=api.SetWindowPos
+        position.argtypes=[wintypes.HWND,wintypes.HWND,ctypes.c_int,ctypes.c_int,ctypes.c_int,ctypes.c_int,wintypes.UINT]
+        position.restype=wintypes.BOOL
+        required=0x40000|0x80000|0x20000|0x10000
+        style=get(handle,-16)
+        if style&required!=required:
+            ctypes.set_last_error(0);previous=put(handle,-16,style|required)
+            if not previous and ctypes.get_last_error():return False
+            if not position(handle,None,0,0,0,0,0x37):return False
+        return get(handle,-16)&required==required
+    except (AttributeError,OSError):return False
+
+def _shutdown_chrome():
+    app=QApplication.instance()
+    if app is not None and isValid(app):
+        for chrome in tuple(_chromes):
+            if isValid(chrome):app.removeEventFilter(chrome)
+
+atexit.register(_shutdown_chrome)
+
+def minimize_utility(window):
+    global _last_minimized
+    _last_minimized=weakref.ref(window)
+    dock_window_state(window,True)
+    window.showMinimized()
+
+def _restore_minimized_utility():
+    """When Cocoa reactivates the app, restore its last minimized utility."""
+    if sys.platform!='darwin' or _last_minimized is None:return
+    window=_last_minimized()
+    if window is None or not isValid(window) or not window.isMinimized():return
+    if any(isValid(other) and other is not window and other.isVisible() and not other.isMinimized()
+           for other in tuple(_dock_windows)):return
+    window.setWindowState((window.windowState() & ~Qt.WindowMinimized)|Qt.WindowActive)
+    window.show();window.raise_();window.activateWindow()
+
+def dock_window_state(window,needed,*,appkit=None):
+    if sys.platform!='darwin' and appkit is None:return
+    if needed:_dock_windows.add(window)
+    else:_dock_windows.discard(window)
+    if appkit is None:
+        if not native_input_available():return
+        import AppKit as appkit
+    policy=appkit.NSApplicationActivationPolicyRegular if _dock_windows else appkit.NSApplicationActivationPolicyAccessory
+    appkit.NSApplication.sharedApplication().setActivationPolicy_(policy)
+
+
+class _MacCaptionButton(QPushButton):
+    def __init__(self,parent,role,fill,label,action):
+        super().__init__(parent)
+        self._role=role
+        self._fill=QColor(fill)
+        self.setFixedSize(12,12)
+        self.setAccessibleName(label)
+        self.setAutoDefault(False)
+        self.clicked.connect(action)
+
+    def paintEvent(self,event):
+        painter=QPainter(self)
+        paint_rounded_surface(painter,self.rect(),6,self._fill.darker(120) if self.isDown() else self._fill)
+        if self.underMouse() or self.hasFocus():
+            painter.setPen(QPen(QColor(38,20,16,185),1))
+            if self._role=='close':
+                painter.drawLine(4,4,8,8);painter.drawLine(8,4,4,8)
+            elif self._role=='min':
+                painter.drawLine(3,6,9,6)
+            else:
+                painter.drawLine(4,8,8,4)
+        painter.end()
+
+
+def mac_caption_controls(window,parent):
+    """Shared leading caption controls on frameless macOS utility windows."""
+    from PySide6.QtWidgets import QHBoxLayout
+    from native_ui_common import toggle_window_zoom
+    group=QWidget(parent)
+    row=QHBoxLayout(group);row.setContentsMargins(0,0,0,0);row.setSpacing(8)
+    group.buttons={}
+    for role,fill,label,action in (
+            ('close','#FF5F56','关闭窗口',window.close),
+            ('min','#FFBD2E','最小化',lambda:minimize_utility(window)),
+            ('max','#27C93F','最大化或还原',lambda:toggle_window_zoom(window))):
+        control=_MacCaptionButton(group,role,fill,label,action)
+        group.buttons[role]=control
+        row.addWidget(control)
+    return group
+
+
+class _WindowButton(QPushButton):
+    def __init__(self,window,role):
+        super().__init__('',window);self.owner=window;self.role=role
+        self._keyboard_focus=False
+        self.setFixedSize(44,32);self.setAutoDefault(False);self.setDefault(False)
+        self.setAccessibleName({'min':'最小化','max':'最大化或还原','close':'关闭窗口'}[role])
+        self.setProperty('flickdockIconOnly',True)
+        self.setStyleSheet('QPushButton{border:0;background:transparent;padding:0;}')
+        self.clicked.connect(self._activate)
+    @property
+    def glyph_rect(self):
+        rect=QRectF(0,0,14,14);rect.moveCenter(QRectF(self.rect()).center());return rect
+    def focusInEvent(self,event):
+        self._keyboard_focus=event.reason() in (Qt.TabFocusReason,Qt.BacktabFocusReason,Qt.ShortcutFocusReason)
+        super().focusInEvent(event);self.update()
+    def focusOutEvent(self,event):
+        self._keyboard_focus=False;super().focusOutEvent(event);self.update()
+    def mousePressEvent(self,event):
+        self._keyboard_focus=False;super().mousePressEvent(event);self.update()
+    def _activate(self):
+        if self.role=='min':self.owner.showMinimized()
+        elif self.role=='max':self.owner.showNormal() if self.owner.isMaximized() else self.owner.showMaximized()
+        else:self.owner.close()
+    def paintEvent(self,event):
+        from reference_widgets import palette,ink
+        from native_ui_common import colors
+        p=QPainter(self);p.setRenderHint(QPainter.Antialiasing)
+        c=colors('dark' if self.dark else 'light') if hasattr(self,'dark') else colors(self.owner._theme) if hasattr(self.owner,'_theme') else palette()
+        active=self.underMouse() or self.isDown()
+        if active:
+            fill=('#B50D1B' if self.isDown() else '#E81123') if self.role=='close' else c['selected'] if self.isDown() else c['hover']
+            paint_rounded_surface(p,QRectF(self.rect()).adjusted(2,2,-2,-2),WINDOW_CONTROL_RADIUS_PX,ink(fill))
+        p.setPen(QPen(QColor('white' if self.role=='close' and active else c['secondary']),1.2))
+        x,y=self.width()//2,self.height()//2
+        if self.role=='min':p.drawLine(x-5,y+2,x+5,y+2)
+        elif self.role=='close':p.drawLine(x-5,y-5,x+5,y+5);p.drawLine(x+5,y-5,x-5,y+5)
+        elif self.owner.isMaximized():p.drawRect(x-3,y-5,8,8);p.fillRect(x-5,y-3,8,8,QColor(c['surface']));p.drawRect(x-5,y-3,8,8)
+        else:p.drawRect(x-5,y-5,10,10)
+        if self.hasFocus() and self._keyboard_focus:
+            paint_rounded_surface(p,QRectF(self.rect()).adjusted(2,2,-2,-2),WINDOW_CONTROL_RADIUS_PX,
+                                  QColor(Qt.transparent),QColor(c['blue']))
+        p.end()
+
+
+class WindowChrome(QObject):
+    def __init__(self,window,title_bar,settings,key,*,surface=None,system_resize=True):
+        super().__init__(window);self.window=window;self.title=title_bar;self.surface=surface or window
+        self.key=key;self.path=Path(settings.base)/'window-sizes.json';self._drag=None;self._cursor=False
+        self.default_size=QSize(892,632) if key=="settings" else QSize(980,704)
+        self._normal=window.size();self._restoring=False
+        self._native_resize=False;self._native_configuring=False;self._system_resize=system_resize
+        if sys.platform=='win32':
+            window.setWindowFlags(window.windowFlags()|Qt.WindowMinimizeButtonHint|Qt.WindowMaximizeButtonHint|Qt.WindowSystemMenuHint)
+            old=getattr(window,'close_button',None)
+            if old is not None:title_bar.layout().removeWidget(old);old.hide()
+            controls=QWidget(title_bar)
+            from PySide6.QtWidgets import QHBoxLayout
+            row=QHBoxLayout(controls);row.setContentsMargins(0,0,0,0);row.setSpacing(0)
+            self.buttons={role:_WindowButton(window,role) for role in ('min','max','close')}
+            for role,control in self.buttons.items():
+                control.setToolTip({'min':'最小化','max':'最大化','close':'关闭'}[role])
+                control.setAccessibleName(control.toolTip())
+            for button in self.buttons.values():row.addWidget(button)
+            window.close_button=self.buttons['close'];title_bar.layout().addWidget(controls)
+            if old is not None:window.close_button.setAccessibleName(old.accessibleName())
+        self._save_timer=QTimer(self);self._save_timer.setSingleShot(True);self._save_timer.setInterval(400)
+        self._save_timer.timeout.connect(self.save_size)
+        QApplication.instance().installEventFilter(self)
+        _chromes.add(self)
+        window.finished.connect(lambda *_:dock_window_state(window,False))
+        from ui_transitions import WindowFade
+        # ReferenceModalDialog already owns its show/close transition.
+        if not hasattr(window,'_window_fade'):window._window_fade=WindowFade(window)
+
+    def _available(self):
+        screen=QGuiApplication.screenAt(QCursor.pos()) or screen_for_widget(self.window) or QGuiApplication.primaryScreen()
+        return screen.availableGeometry() if screen else QRect(0,0,1024,768)
+
+    def prepare_open(self):
+        """Reset while hidden, before any native surface is exposed."""
+        if self.window.isVisible():return
+        self.window.setWindowState(self.window.windowState() & ~(Qt.WindowMaximized|Qt.WindowMinimized))
+        self.fit_screen(self.default_size)
+
+    def restore_size(self):
+        self.prepare_open()
+
+    def fit_screen(self,size=None):
+        size=size or self.window.size()
+        if self.window.isMaximized() or self.window.isMinimized():return
+        area=self._available();minimum=self.window.minimumSize()
+        # Scrollable windows keep every control available on short screens.
+        self.window.setMinimumSize(min(minimum.width(),max(320,area.width()-16)),min(minimum.height(),max(260,area.height()-16)))
+        self._restoring=True
+        self.window.resize(max(self.window.minimumWidth(),min(size.width(),area.width()-16)),max(self.window.minimumHeight(),min(size.height(),area.height()-16)))
+        self._normal=self.window.size();self._restoring=False
+
+    def save_size(self):
+        # Utility sizes are deliberately session-only; never write on resize.
+        self._save_timer.stop()
+
+    def _edges(self,point):
+        if self.window.isMaximized() or self.window.isMinimized():return Qt.Edges()
+        rect=self.surface.geometry() if self.surface is not self.window else self.window.rect()
+        if not rect.adjusted(-5,-5,5,5).contains(point):return Qt.Edges()
+        edges=Qt.Edges()
+        if abs(point.x()-rect.left())<=5:edges|=Qt.LeftEdge
+        if abs(point.x()-rect.right())<=5:edges|=Qt.RightEdge
+        if abs(point.y()-rect.top())<=5:edges|=Qt.TopEdge
+        if abs(point.y()-rect.bottom())<=5:edges|=Qt.BottomEdge
+        return edges
+
+    def eventFilter(self,watched,event):
+        kind=event.type()
+        if kind==QEvent.ApplicationActivate and watched is QApplication.instance() and sys.platform=='darwin':
+            QTimer.singleShot(0,watched,_restore_minimized_utility)
+            return False
+        if kind not in (QEvent.Show,QEvent.WinIdChange,QEvent.WindowStateChange,QEvent.Resize,QEvent.Hide,
+                        QEvent.MouseButtonPress,QEvent.MouseButtonDblClick,QEvent.MouseMove,QEvent.MouseButtonRelease):return False
+        if QCoreApplication.closingDown() or not isValid(self.window):return False
+        w=self.window
+        if watched is w:
+            if self._system_resize and kind in (QEvent.Show,QEvent.WinIdChange,QEvent.WindowStateChange) and not self._native_configuring:
+                self._native_configuring=True
+                try:self._native_resize=ensure_native_resize(w)
+                finally:self._native_configuring=False
+            if kind==QEvent.Resize and not w.isMaximized() and not w.isMinimized() and not self._restoring:
+                self._normal=w.size()
+            elif kind==QEvent.Hide:
+                self.save_size()
+                if not w.isMinimized():dock_window_state(w,False)
+            elif kind==QEvent.WindowStateChange:
+                dock_window_state(w,w.isVisible() or w.isMinimized())
+            elif kind==QEvent.Show:dock_window_state(w,True)
+        if kind not in (QEvent.MouseButtonPress,QEvent.MouseButtonDblClick,QEvent.MouseMove,QEvent.MouseButtonRelease):return False
+        if not isinstance(watched,QWidget) or watched.window() is not w:return False
+        global_point=event.globalPosition().toPoint();point=w.mapFromGlobal(global_point)
+        edges=self._edges(point)
+        if kind==QEvent.MouseMove:
+            if self._drag:
+                start,rect,drag_edges=self._drag;delta=global_point-start;target=QRect(rect)
+                if not drag_edges:target.moveTopLeft(rect.topLeft()+delta)
+                else:
+                    if drag_edges&Qt.LeftEdge:target.setLeft(min(rect.left()+delta.x(),rect.right()-w.minimumWidth()+1))
+                    if drag_edges&Qt.RightEdge:target.setRight(max(rect.right()+delta.x(),rect.left()+w.minimumWidth()-1))
+                    if drag_edges&Qt.TopEdge:target.setTop(min(rect.top()+delta.y(),rect.bottom()-w.minimumHeight()+1))
+                    if drag_edges&Qt.BottomEdge:target.setBottom(max(rect.bottom()+delta.y(),rect.top()+w.minimumHeight()-1))
+                if target!=w.geometry():w.setGeometry(target)
+                event.accept();return True
+            if edges:
+                diagonal=(bool(edges&Qt.LeftEdge) and bool(edges&Qt.TopEdge)) or (bool(edges&Qt.RightEdge) and bool(edges&Qt.BottomEdge))
+                cursor=Qt.SizeFDiagCursor if diagonal else Qt.SizeBDiagCursor if (edges&(Qt.LeftEdge|Qt.RightEdge) and edges&(Qt.TopEdge|Qt.BottomEdge)) else Qt.SizeHorCursor if edges&(Qt.LeftEdge|Qt.RightEdge) else Qt.SizeVerCursor
+                w.setCursor(cursor);self._cursor=True
+            elif self._cursor:w.unsetCursor();self._cursor=False
+        if kind==QEvent.MouseButtonRelease and self._drag:self._drag=None;event.accept();return True
+        if kind==QEvent.MouseButtonPress and event.button()==Qt.LeftButton and edges:
+            if not (self._system_resize and native_input_available() and (sys.platform!='win32' or self._native_resize) and w.windowHandle() and w.windowHandle().startSystemResize(edges)):
+                self._drag=(global_point,QRect(w.geometry()),edges)
+            event.accept();return True
+        header=watched is self.title or self.title.isAncestorOf(watched)
+        interactive=isinstance(watched,QPushButton) or watched.cursor().shape()==Qt.PointingHandCursor or watched.focusPolicy()!=Qt.NoFocus
+        if header and not interactive and event.button()==Qt.LeftButton:
+            if kind==QEvent.MouseButtonDblClick:
+                w.showNormal() if w.isMaximized() else w.showMaximized();event.accept();return True
+            if kind==QEvent.MouseButtonPress:
+                if not (native_input_available() and w.windowHandle() and w.windowHandle().startSystemMove()):
+                    if not w.isMaximized():self._drag=(global_point,QRect(w.geometry()),Qt.Edges())
+                event.accept();return True
+        return False

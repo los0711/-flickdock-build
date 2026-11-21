@@ -1,0 +1,68 @@
+# -*- mode: python ; coding: utf-8 -*-
+from pathlib import Path
+import json
+import sys
+import ssl
+
+root=Path(SPECPATH)
+sys.path.insert(0,str(root))
+from bundle_policy import filter_bundle
+from p2p_assets import bundle_assets
+p2p_binaries,p2p_datas=bundle_assets()
+from PyInstaller.utils.hooks import collect_all, collect_data_files
+yt_datas,yt_binaries,yt_hidden=collect_all('yt_dlp')
+ejs_datas,ejs_binaries,ejs_hidden=collect_all('yt_dlp_ejs')
+# yt-dlp's verified TLS must not depend on the build machine's OpenSSL CA path.
+yt_datas += collect_data_files('certifi')
+
+license_names=['Python-LICENSE.txt',
+               'FFmpeg-LICENSE.txt','LGPL-3.0.txt','GPL-3.0.txt','PyInstaller-COPYING.txt',
+               'OpenSSL-LICENSE.txt','Cloud-Client-LICENSES.txt','Lucide-LICENSE.txt','Release-Crypto-LICENSES.txt','Video-LICENSES.txt','WebRTC-LICENSES.txt','Flag-Icons-LICENSE.txt','FASTTEXT-LICENSE.txt','FASTTEXT-MODEL-ATTRIBUTION.txt','Paper-Notice-Motion-LICENSE.txt','JetBrainsMono-OFL.txt']
+asset_files=[(root/'licenses'/name,'licenses') for name in license_names]
+asset_files += [(root/'licenses/KokonutUI-MIT.txt','licenses')]
+asset_files += [(root/'THIRD_PARTY_NOTICES.md','.')]
+asset_files += [(root/'assets/ui/qtbase_zh_CN.qm','assets/ui')]
+asset_files += [(root/'assets/models/lid.176.ftz','assets/models')]
+asset_files += [(root/'assets/fonts'/name,'assets/fonts') for name in
+                ('JetBrainsMono-Regular.ttf','JetBrainsMono-Medium.ttf')]
+asset_files += [(path,'assets/flags') for path in (root/'assets/flags').glob('*.svg')]
+asset_files += [(root/'windows-network.ps1','.')]
+# This build runtime's SSLContext loads an auxiliary public CA policy file
+# beside ssl.py. Preserve that policy in the frozen layout as well.
+ssl_policy=Path(ssl.__file__).with_name('codex-rejected-cas.pem')
+if ssl_policy.is_file():
+    asset_files.append((ssl_policy,'.'))
+for source,_ in asset_files:
+    if not source.is_file():
+        raise FileNotFoundError(f'Required distribution asset is missing: {source}')
+
+unused_qt=['QtWebEngineCore','QtWebEngineWidgets','QtWebEngineQuick','QtPdf','QtPdfWidgets',
+           'QtQml','QtQuick','QtQuickWidgets','QtQuickControls2','QtQmlMeta','QtQmlModels',
+           'QtQmlWorkerScript','QtVirtualKeyboard','QtOpenGL','QtOpenGLWidgets',
+           'QtSvgWidgets','QtSql','QtPrintSupport','QtHelp','QtTest']
+a=Analysis(
+    [str(root/'flickdock.py')],pathex=[str(root)],binaries=p2p_binaries+yt_binaries+ejs_binaries,
+    datas=[(str(source),destination) for source,destination in asset_files]+p2p_datas+yt_datas+ejs_datas,
+    # scrypt for cloud accounts needs _hashlib/libcrypto. Keep the native
+    # dependency closure; the network transport still uses Qt/Schannel.
+    hiddenimports=['PySide6.QtSvg','PySide6.QtMultimedia','PySide6.QtMultimediaWidgets','PySide6.QtWebSockets',
+                   '_md5','_sha1','_sha2','_sha3','_blake2','_hashlib','fasttext_pybind',
+                   'keyring.backends.Windows']+yt_hidden+ejs_hidden,
+    hookspath=[],hooksconfig={},runtime_hooks=[str(root/'runtime_media.py')],
+    excludes=['PySide6.'+name for name in unused_qt]+['keyring.backends.SecretService','keyring.backends.kwallet','numpy','PIL'],
+    noarchive=False,optimize=0,
+)
+a.binaries,a.datas,report=filter_bundle(a.binaries,a.datas)
+(root/'package-audit-analysis.json').write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
+if report['required_dynamic_roots_missing']:
+    raise RuntimeError('Required Qt runtime components missing: '+', '.join(report['required_dynamic_roots_missing']))
+if report['required_plugin_paths_missing']:
+    raise RuntimeError('Required Qt plugin destinations missing: '+', '.join(report['required_plugin_paths_missing']))
+if report['unresolved_non_system_imports']:
+    raise RuntimeError('Retained binaries have unresolved non-system imports: '+', '.join(report['unresolved_non_system_imports']))
+print('FlickDock dependency audit: '+str(report['removed_bytes'])+' unused bytes removed; '+str(report['after_bytes'])+' retained bytes')
+pyz=PYZ(a.pure)
+exe=EXE(pyz,a.scripts,[],exclude_binaries=True,name='FlickDock',debug=False,
+        bootloader_ignore_signals=False,strip=False,upx=False,console=False,
+        icon=[str(root/'flickdock.ico')],version=str(root/'version_info.txt'))
+coll=COLLECT(exe,a.binaries,a.datas,strip=False,upx=False,name='FlickDock')
