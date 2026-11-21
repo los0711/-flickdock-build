@@ -1,6 +1,7 @@
 """One native update-request clock per QWidget window, idle without animations."""
 from functools import cache
 from weakref import WeakSet, ref
+import logging
 import math
 import sys
 import time
@@ -12,6 +13,7 @@ from shiboken6 import isValid
 from frame_diagnostics import for_window as frame_trace_for,normalize_refresh_rate
 
 
+LOG=logging.getLogger(__name__)
 LOCKED_FRAME_RATE_HZ=60.
 FRAME_GATE_EPSILON_SECONDS=.0005
 # One animation step per presented frame. Native requestUpdate on Windows is a
@@ -245,16 +247,19 @@ class WindowFrames(QObject):
         try:
             import ctypes
             import objc
-            import Quartz
+            from AppKit import NSScreen
             from Foundation import NSRunLoop, NSRunLoopCommonModes
+            from Quartz import CADisplayLink
             view=objc.objc_object(c_void_p=ctypes.c_void_p(int(handle.winId())))
             native=view.window()
-            if native is None or not hasattr(native,'displayLinkWithTarget_selector_'):
-                raise AttributeError('NSWindow display link is unavailable')
+            screen=native.screen() if native is not None else None
+            screen=screen or NSScreen.mainScreen()
+            if screen is None or not hasattr(screen,'displayLinkWithTarget_selector_'):
+                raise AttributeError('NSScreen display link is unavailable')
             callback=_cocoa_link_target().alloc().init()
             callback.clock=ref(self)
-            candidate=native.displayLinkWithTarget_selector_(callback,b'flickDockDisplayLinkTick:')
-            if candidate is None:
+            candidate=screen.displayLinkWithTarget_selector_(callback,b'flickDockDisplayLinkTick:')
+            if not isinstance(candidate,CADisplayLink):
                 raise RuntimeError('Could not create the Cocoa display link')
             candidate.setPreferredFramesPerSecond_(0)
             self._cocoa_link=candidate
@@ -265,6 +270,7 @@ class WindowFrames(QObject):
             if candidate is not None:candidate.invalidate()
             self._cocoa_link=None
             if not _recoverable_native_window_error(error):raise
+            LOG.warning('Cocoa display link unavailable (%s): %s',type(error).__name__,error)
             self._use_cocoa_link=False
             self.schedule()
 
@@ -366,6 +372,7 @@ class WindowFrames(QObject):
         if event.timerId()==self._stall_timer:
             self.killTimer(self._stall_timer);self._stall_timer=0
             if self._cocoa_link is not None:
+                LOG.warning('Cocoa display link did not deliver its first frame')
                 self._stop_cocoa_link()
                 self._use_cocoa_link=False
                 self.schedule()

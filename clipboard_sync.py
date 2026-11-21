@@ -426,9 +426,8 @@ class ClipboardSync(QObject):
                     return value
                 return None
             mime=self.clipboard.mimeData()
-            if mime is None:return None
             self._native_format_issue=''
-            if self._is_native:
+            if self._is_native and mime is not None:
                 # Remote-control apps may add virtual-file descriptors beside
                 # an ordinary local file copy. Use the ready local payload
                 # before asking that app to render a delayed remote stream.
