@@ -1,0 +1,58 @@
+name: Verify published Windows update
+
+on:
+  push:
+    branches: [ci-windows-update-check-1839]
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  verify:
+    if: github.repository == 'los0711/-flickdock-build'
+    runs-on: windows-2025
+    timeout-minutes: 12
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: FlickDock-Windows-x64-2191a5f1dde3f9fe4ee69776756543d2612dc6ee
+          path: verified-build
+          github-token: ${{ github.token }}
+          run-id: 44854311778
+      - name: Verify the installer and its shipped updater on the public channel
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $setup = (Resolve-Path 'verified-build/FlickDock-Setup-1.8.39.exe').Path
+          $build = Get-Content 'verified-build/windows-build-1.8.39.json' -Raw | ConvertFrom-Json
+          if ((Get-FileHash $setup -Algorithm SHA256).Hash -ne $build.setup.sha256) {
+            throw 'The installer does not match its tested build report'
+          }
+          $root = Join-Path $env:RUNNER_TEMP 'flickdock-windows-update'
+          $install = Join-Path $root 'installed'
+          $reportPath = Join-Path $root 'update.json'
+          New-Item -ItemType Directory -Path $root | Out-Null
+          $args = "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /NOICONS /TASKS= /DIR=`"$install`""
+          $process = Start-Process -FilePath $setup -ArgumentList $args -WindowStyle Hidden -PassThru -Wait
+          if ($process.ExitCode -ne 0) { throw "Installer exited with $($process.ExitCode)" }
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          $env:APPDATA = Join-Path $root 'roaming'
+          $env:LOCALAPPDATA = Join-Path $root 'local'
+          $args = "--verify-update --verify-current 1.8.38 --verify-output `"$reportPath`""
+          $process = Start-Process -FilePath (Join-Path $install 'FlickDock.exe') -ArgumentList $args -WindowStyle Hidden -PassThru -Wait
+          $report = Get-Content $reportPath -Raw | ConvertFrom-Json
+          Get-Content $reportPath
+          if ($process.ExitCode -ne 0 -or -not $report.ok -or -not $report.frozen -or
+              -not $report.verified_download -or $report.installer_executed -or
+              $report.version -ne '1.8.39' -or $report.available_version -ne '1.8.39' -or
+              $report.latest_version -ne '1.8.39' -or $report.download_sha256 -ne $build.setup.sha256 -or
+              $report.download_bytes -ne $build.setup.bytes) {
+            throw 'Shipped updater did not authenticate and download the released installer'
+          }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: FlickDock-Windows-public-update-1.8.39
+          path: ${{ runner.temp }}/flickdock-windows-update/update.json
+          retention-days: 3
