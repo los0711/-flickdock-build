@@ -6,11 +6,11 @@ import unittest
 from unittest.mock import patch
 
 from PySide6.QtCore import QEvent, QPoint, QPointF, QRect, Qt
-from PySide6.QtGui import QColor, QEnterEvent, QImage
+from PySide6.QtGui import QColor, QEnterEvent, QImage, QWheelEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
-from clipboard_history_panel import ClipboardHistoryPanel,FOLDED_HEIGHT,PANEL_HEIGHT_LIMIT,SCREEN_EDGE_GAP
+from clipboard_history_panel import ClipboardHistoryPanel,FOLDED_HEIGHT,HOVER_REBOUND_PX,PANEL_HEIGHT_LIMIT,SCREEN_EDGE_GAP
 from clipboard_history_store import ClipboardHistoryStore
 APP=QApplication.instance() or QApplication([])
 
@@ -158,7 +158,7 @@ class ClipboardHistoryPanelTests(unittest.TestCase):
                 self.panel.follow_shelf(0.,True)
                 self.assertFalse(self.panel.isVisible())
 
-    def test_hover_has_one_short_rebound_and_lands_at_exact_height(self):
+    def test_hover_has_one_slow_rebound_and_lands_at_exact_height(self):
         curve=self.panel._hover_curve
         samples=[curve.valueForProgress(index/100) for index in range(101)]
         peak=samples.index(max(samples))
@@ -169,7 +169,64 @@ class ClipboardHistoryPanelTests(unittest.TestCase):
         highest=self.panel._surface_height()
         self.panel._stack_frame(1.)
         self.assertGreater(highest,self.panel._surface_height())
-        self.assertLessEqual(highest-self.panel._surface_height(),3.)
+        self.assertLessEqual(highest-self.panel._surface_height(),HOVER_REBOUND_PX)
+        self.assertGreaterEqual(self.panel._stack.duration()*(1-peak/100),150.)
+
+    def test_reveal_has_one_gradual_return_and_fade_cannot_recoil(self):
+        self.panel.hide()
+        self.panel.place(QRect(550,35,332,280),QRect(0,0,1000,850),shelf_alpha=0.)
+        self.panel.follow_shelf(.62,False)
+        self.panel.follow_shelf(1.,False)
+        settled=self.panel._content_top()
+        self.panel.follow_shelf(.985,False)
+        self.assertEqual(self.panel._companion_opacity,1.)
+        self.assertEqual(self.panel._content_top(),settled)
+        self.panel._reveal.stop()
+        offsets=[]
+        for step in range(101):
+            self.panel._reveal_frame(step/100)
+            offsets.append(self.panel._content_top()-settled)
+        peak=offsets.index(max(offsets))
+        self.assertAlmostEqual(offsets[peak],5.)
+        self.assertTrue(all(after<=before for before,after in zip(offsets[peak:],offsets[peak+1:])))
+        self.assertAlmostEqual(offsets[-1],0.)
+        self.assertGreater(self.panel._reveal.duration()*(1-peak/100),160.)
+
+    def test_scroll_coalesces_wheel_input_and_visits_only_visible_rows(self):
+        self.panel.set_entries([dict(self.rows[0],id=str(index)) for index in range(1000)])
+        self.panel._finish_entries()
+        self.panel.show_all()
+        self.panel._stack.stop()
+        self.panel._stack_frame(1.)
+        self.panel.scroll=24600.
+        sample=QPointF(100,180)
+        with patch.object(self.panel._wheel_frames,'start'):
+            for _ in range(10):
+                event=QWheelEvent(sample,sample,QPoint(0,-8),QPoint(),Qt.NoButton,Qt.NoModifier,Qt.ScrollUpdate,False)
+                self.panel.wheelEvent(event)
+        self.assertEqual(self.panel.scroll,24600.)
+        self.assertEqual(len(self.panel._wheel_events),1)
+        self.panel._scroll_frame()
+        self.assertEqual(self.panel.scroll,24680.)
+        visible=list(self.panel._layout_rows(windowed=True))
+        self.assertLess(len(visible),12)
+        viewport=QRect(0,54,332,280)
+        expected=[row[1]['id'] for row in self.panel._layout_rows() if row[2].intersects(viewport)]
+        ids={row[1]['id'] for row in visible}
+        self.assertTrue(set(expected)<=ids)
+
+    def test_image_thumbnail_previews_and_card_body_pastes(self):
+        row=dict(self.rows[0],kind='image')
+        self.panel.set_entries([row])
+        self.panel._finish_entries()
+        opened=[];pasted=[]
+        self.panel.preview_requested.connect(opened.append)
+        self.panel.activated.connect(pasted.append)
+        self.click('thumb',row['id'])
+        self.assertEqual(opened,[row['id']])
+        self.assertEqual(pasted,[])
+        self.click('card',row['id'])
+        self.assertEqual(pasted,[row['id']])
 
     def test_hover_collapse_rebounds_the_panel_edge_and_scroll_stays_in_range(self):
         self.panel.show_all()

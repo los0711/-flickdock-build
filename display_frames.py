@@ -183,10 +183,14 @@ class WindowFrames(QObject):
         # when the window moves to a screen with a different refresh rate.
         if self._display_paced and self.window.isVisible() and not self.window.isMinimized():self.schedule()
 
+    def _rate_capped(self):
+        return (_on_battery or self._reduced_motion) and not any(
+            isValid(pulse) and pulse.isActive() and pulse.follow_refresh_rate for pulse in self.pulses)
+
     def display_period(self):
         """The presented-frame interval in seconds, or 0 when unpaced."""
         if not self._display_paced:return 0.0
-        if _on_battery or self._reduced_motion:return 1.0/LOCKED_FRAME_RATE_HZ
+        if self._rate_capped():return 1.0/LOCKED_FRAME_RATE_HZ
         hz=self.refresh_hz or 60.0
         return 1.0/max(30.0,float(hz))
 
@@ -257,7 +261,7 @@ class WindowFrames(QObject):
             # Wait for the Expose event, which resets the cadence.
             return
         if self.trace is not None:
-            self.trace.update_request(self._trace_phase(),capped=_on_battery or self._reduced_motion)
+            self.trace.update_request(self._trace_phase(),capped=self._rate_capped())
             self.trace.dispatched()
         deadline=self._next_frame_at
         self._last_dispatch=now
@@ -356,7 +360,7 @@ class WindowFrames(QObject):
             if not self.window.isVisible() or self.window.isMinimized() or not self.handle.isExposed():
                 return False
             now=time.perf_counter()
-            capped=_on_battery or self._reduced_motion
+            capped=self._rate_capped()
             if self.trace is not None:self.trace.update_request(self._trace_phase(),capped=capped)
             if capped and not self.gate.allows(now,True):
                 if self.trace is not None:self.trace.skipped()
@@ -372,8 +376,9 @@ class WindowFrames(QObject):
 class FramePulse(QObject):
     timeout = Signal()
 
-    def __init__(self, parent):
+    def __init__(self,parent,*,follow_refresh_rate=False):
         super().__init__(parent)
+        self.follow_refresh_rate=follow_refresh_rate
         widget = parent
         while widget is not None and not isinstance(widget, QWidget):
             widget = widget.parent()

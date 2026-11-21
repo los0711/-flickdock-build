@@ -1,7 +1,7 @@
 """Passive clipboard-history panel attached to the compact shelf reveal."""
 from __future__ import annotations
 
-from collections import OrderedDict
+from collections import OrderedDict, deque
 
 import math
 import sys
@@ -14,7 +14,7 @@ from PySide6.QtWidgets import QWidget
 
 from flickdock_icons import glyph_pixmap
 from flickdock_motion import SHELF_SHADOW_BLUR, SHELF_SHADOW_OFFSET, Spring, shelf_shadow_color
-from display_frames import DisplayAnimation
+from display_frames import DisplayAnimation, FramePulse
 from native_ui_common import (RADIUS_CARD_PX, RADIUS_CONTROL_PX, RADIUS_WINDOW_PX, colors, paint_rounded_surface,
                               qss_color, reduced_motion)
 from settings_navigation import (MAC_TRACKPAD_PULL_PX, SCROLL_BOUNCE_DURATION_MS, SCROLL_BOUNCE_IDLE_MS,
@@ -42,7 +42,14 @@ SHADOW_TAIL = 20
 SHELF_GAP = 7
 TUCK_INSET = 12
 TUCK_TRAVEL = 36
-HOVER_REBOUND_PX = 3.
+HOVER_REBOUND_PX = 6.
+REVEAL_REBOUND_PX = 5.
+THUMBNAIL_CACHE_LIMIT = 96
+WHEEL_GLIDE_SECONDS = .044
+
+
+def _smoothstep(value):
+    return value*value*(3-2*value)
 
 
 class ClipboardHistoryPanel(QWidget):
@@ -63,11 +70,18 @@ class ClipboardHistoryPanel(QWidget):
         self.setAccessibleName('剪贴板历史')
         keep_tool_visible_when_inactive(self)
         self.entries = []
+        self._row_indices = {}
         self.total = 0
         self.dark = False
         self.expanded = False
         self.selected = ''
         self.scroll = 0.
+        self._wheel_events = deque()
+        self._wheel_key = ''
+        self._wheel_remaining = 0.
+        self._wheel_at = 0.
+        self._wheel_frames = FramePulse(self,follow_refresh_rate=True)
+        self._wheel_frames.timeout.connect(self._scroll_frame)
         self._pull_offset = 0.
         self._pull_key = ''
         self._pull_lock = 0
@@ -75,7 +89,7 @@ class ClipboardHistoryPanel(QWidget):
         self._pull_idle.setSingleShot(True)
         self._pull_idle.timeout.connect(self._release_pull)
         self._pull_return = DisplayAnimation(self)
-        self._pull_return.setDuration(SCROLL_BOUNCE_DURATION_MS)
+        self._pull_return.setDuration(SCROLL_BOUNCE_DURATION_MS+65)
         self._pull_return.setEasingCurve(exit_curve())
         self._pull_return.setEndValue(0.)
         self._pull_return.valueChanged.connect(self._set_pull)
@@ -85,8 +99,10 @@ class ClipboardHistoryPanel(QWidget):
         self._hovered = None
         self._press = None
         self._hits = []
-        self._pixmaps = {}
+        self._pixmaps = OrderedDict()
         self._fonts = {}
+        self._captions = OrderedDict()
+        self._palette = None
         self._icons = {}
         self._above = False
         self._anchor = QRectF()
@@ -101,7 +117,14 @@ class ClipboardHistoryPanel(QWidget):
         self._shadow_tiles = OrderedDict()
         self._shadow_color = shelf_shadow_color()
         self._companion_amount = 1.
+        self._shelf_alpha = 1.
         self._companion_closing = False
+        self._reveal_rebound = 0.
+        self._reveal = DisplayAnimation(self)
+        self._reveal.setDuration(340)
+        self._reveal.setStartValue(0.)
+        self._reveal.setEndValue(1.)
+        self._reveal.valueChanged.connect(self._reveal_frame)
         self._details = {}
         self._detail_hits = {}
         self._feedback = ''
@@ -113,11 +136,12 @@ class ClipboardHistoryPanel(QWidget):
         self._confirm_clear.setSingleShot(True)
         self._confirm_clear.timeout.connect(self.update)
         self._stack = DisplayAnimation(self)
-        self._stack.setDuration(230)
-        # One soft rebound on expansion. The same display clock drives the
-        # card positions and the painted edge, so the stack settles together.
-        self._hover_curve = QEasingCurve(QEasingCurve.OutBack)
-        self._hover_curve.setOvershoot(.92)
+        self._stack.setDuration(350)
+        # Ease through one rounded peak and spend the latter half settling.
+        # Both segments have zero vertical velocity where they meet.
+        self._hover_curve=QEasingCurve(QEasingCurve.BezierSpline)
+        self._hover_curve.addCubicBezierSegment(QPointF(.12,.16),QPointF(.26,1.064),QPointF(.52,1.064))
+        self._hover_curve.addCubicBezierSegment(QPointF(.68,1.064),QPointF(.84,1.),QPointF(1.,1.))
         self._stack.valueChanged.connect(self._stack_frame)
         self._preview = Spring(self,self._detail_amounts,self._preview_frame)
         self._entry_motion = DisplayAnimation(self)
@@ -144,6 +168,7 @@ class ClipboardHistoryPanel(QWidget):
                   for index,row,rect,extra,opacity in self._rows_at_current_frame()} if animate else {}
         old_height = self._surface_height()
         self.entries = rows
+        self._row_indices={row['id']:index for index,row in enumerate(rows)}
         self.total = count
         self.can_load_more = count>len(rows)
         fresh = {row['id']:row for row in rows}
@@ -162,7 +187,7 @@ class ClipboardHistoryPanel(QWidget):
     def _trim_cache(self):
         retained={row['id'] for row in self.entries}
         visible=retained|{row['id'] for row,*_ in self._leaving}
-        self._pixmaps={key:image for key,image in self._pixmaps.items() if key in visible}
+        self._pixmaps=OrderedDict((key,image) for key,image in self._pixmaps.items() if key in visible)
         self._details={key:detail for key,detail in self._details.items() if key in visible}
 
     def _animate_entries(self,before,old_height):
@@ -200,6 +225,7 @@ class ClipboardHistoryPanel(QWidget):
     def set_dark(self,dark):
         if self.dark!=bool(dark):
             self.dark=bool(dark)
+            self._palette=None
             self.update()
 
     def place(self,anchor,area,*,shelf_alpha=1.,motion=None,front=None):
@@ -207,7 +233,8 @@ class ClipboardHistoryPanel(QWidget):
         below=area.bottom()-SCREEN_EDGE_GAP-anchor.bottom()
         above=anchor.top()-area.top()-SCREEN_EDGE_GAP
         use_below=below-SHELF_GAP>=FOLDED_HEIGHT or below>=above
-        limit=min(PANEL_HEIGHT_LIMIT+HOVER_REBOUND_PX,(below if use_below else above)-SHELF_GAP)
+        limit=min(PANEL_HEIGHT_LIMIT+HOVER_REBOUND_PX,
+                  (below if use_below else above)-SHELF_GAP-REVEAL_REBOUND_PX)
         if width<=0 or limit<HEADER+ROW+INSET:
             self.hide()
             return False
@@ -225,13 +252,19 @@ class ClipboardHistoryPanel(QWidget):
         self._tuck_anchor=QRectF(self._anchor)
         self._slot=QRectF(slot.translated(-geometry.topLeft()))
         if self.geometry()!=geometry:self.setGeometry(geometry)
-        self.follow_shelf(shelf_alpha,False,motion=motion,front=front)
+        self.follow_shelf(shelf_alpha,False,motion=motion,front=front,placing=True)
         return True
 
-    def follow_shelf(self,alpha,closing,*,motion=None,front=None):
+    def follow_shelf(self,alpha,closing,*,motion=None,front=None,placing=False):
         # Both directions share the shelf clock. There is no delay at the
         # start, and a reversal reuses the same path and opacity.
         alpha=max(0.,min(1.,alpha))
+        visible=self.isVisible()
+        if visible and not placing and alpha:
+            # The shelf spring can cross alpha=1 and briefly dip again. Keep
+            # the companion's fade/slide monotonic within each direction.
+            alpha=min(self._shelf_alpha,alpha) if closing else max(self._shelf_alpha,alpha)
+        self._shelf_alpha=alpha
         amount=alpha*(1.18-.18*alpha)
         opacity=alpha*(.72+.28*alpha)
         tuck=QRectF(self._anchor)
@@ -245,20 +278,32 @@ class ClipboardHistoryPanel(QWidget):
         self._companion_amount=amount
         self._companion_closing=closing
         self._tuck_anchor=tuck
-        if closing:self._press=None
+        if closing:
+            self._press=None
+            self._reveal.stop()
         if opacity!=self._companion_opacity:
             self._companion_opacity=opacity
             if self._native_opacity:self.setWindowOpacity(opacity)
         if not alpha:
             if self.isVisible():self.hide()
             return
-        self._update_mask(repaint=changed or not self.isVisible())
-        if not self.isVisible() and not closing:
+        if changed or placing or not visible:self._update_mask()
+        if not visible and not closing:
             self.show()
             remove_host_window_shadow(self)
             if front is not None:order_companion_behind(self,front)
+            if alpha<1. and not reduced_motion():self._reveal.start()
         if previous<.92<=amount and not closing and self.entries and self.contains_point(QCursor.pos()) and not self.expanded:
             self.show_all()
+
+    def _reveal_frame(self,value):
+        t=float(value)
+        if t<.46:
+            weight=_smoothstep(t/.46)
+        else:
+            weight=1-_smoothstep((t-.46)/.54)
+        self._reveal_rebound=REVEAL_REBOUND_PX*weight
+        self._update_mask()
 
     def contains_point(self,point):
         if not self.isVisible():return False
@@ -282,14 +327,15 @@ class ClipboardHistoryPanel(QWidget):
             return QRectF(0,0,width,height),1.
         amount=self._companion_amount
         y=self._slot.bottom()-height if self._above else self._slot.top()
+        rebound=self._reveal_rebound*amount**3*(-1 if self._above else 1)
         if amount==1. or not height:
-            return QRectF(self._slot.left(),y,width,height),1.
+            return QRectF(self._slot.left(),y+rebound,width,height),1.
         tuck=self._tuck_anchor
         inset=min(TUCK_INSET,tuck.height()/6)
         scale=min(1.,max(.1,(tuck.height()-2*inset)/height),tuck.width()/width*.96)
         tucked_y=tuck.top()+inset if self._above else tuck.bottom()-inset-height*scale
         x=tuck.center().x()-width*scale/2
-        origin=QPointF(x,tucked_y)*(1-amount)+QPointF(self._slot.left(),y)*amount
+        origin=QPointF(x,tucked_y)*(1-amount)+QPointF(self._slot.left(),y)*amount+QPointF(0.,rebound)
         scale=scale+(1-scale)*amount
         return QRectF(origin.x(),origin.y(),width*scale,height*scale),scale
 
@@ -341,9 +387,12 @@ class ClipboardHistoryPanel(QWidget):
         count=len(self.entries)
         if not count:
             return 38
-        active=set(self._detail_ids.values())
-        extra=sum(self._preview_extra(row) for row in self.entries if row['id'] in active)
+        extra=sum(self._detail_extras().values())
         return ROW*count+GAP*(count-1)+extra+(GAP+25 if self.can_load_more else 0)
+
+    def _detail_extras(self):
+        indices=(self._row_indices[key] for key in set(self._detail_ids.values()) if key in self._row_indices)
+        return {index:self._preview_extra(self.entries[index]) for index in indices}
 
     def _ideal_surface_height(self):
         count=len(self.entries)
@@ -386,6 +435,11 @@ class ClipboardHistoryPanel(QWidget):
 
     def hideEvent(self,event):
         self._stack.stop()
+        self._reveal.stop()
+        self._reveal_rebound=0.
+        self._wheel_frames.stop()
+        self._wheel_events.clear()
+        self._wheel_remaining=0.
         self._reset_pull()
         self._stack_progress=0.
         self._finish_entries()
@@ -405,6 +459,9 @@ class ClipboardHistoryPanel(QWidget):
         if expanded==self.expanded:return
         self.expanded=expanded
         if not expanded:
+            self._wheel_frames.stop()
+            self._wheel_events.clear()
+            self._wheel_remaining=0.
             self._reset_pull()
             self._open('')
         target=1. if expanded else 0.
@@ -430,11 +487,13 @@ class ClipboardHistoryPanel(QWidget):
         else:self._preview.animate_physical(target,300,26)
 
     def _colors(self):
-        theme=colors('dark' if self.dark else 'light')
-        return {name:qss_color(theme[name]) for name in
-                ('window_backdrop','glass_border','card','border','input_border','text','secondary',
-                 'control_hover','shelf_pin','subcard','file_card','file_card_hover','file_card_selected',
-                 'selected_border','hover_border')}
+        if self._palette is None:
+            theme=colors('dark' if self.dark else 'light')
+            self._palette={name:qss_color(theme[name]) for name in
+                    ('window_backdrop','glass_border','card','border','input_border','text','secondary',
+                     'control_hover','shelf_pin','subcard','file_card','file_card_hover','file_card_selected',
+                     'selected_border','hover_border')}
+        return self._palette
 
     @staticmethod
     def _rounded(painter,rect,fill,outline,radius):
@@ -450,7 +509,14 @@ class ClipboardHistoryPanel(QWidget):
 
     def _caption(self,painter,text,rect,color,*,size=12,bold=False,align=Qt.AlignLeft):
         font=self._font(size,bold);painter.setFont(font);painter.setPen(QColor(color))
-        value=QFontMetrics(font).elidedText(text,Qt.ElideRight,max(0,math.floor(rect.width())))
+        width=max(0,math.floor(rect.width()))
+        key=(text,width,size,bold)
+        value=self._captions.get(key)
+        if value is None:
+            value=QFontMetrics(font).elidedText(text,Qt.ElideRight,width)
+            self._captions[key]=value
+            if len(self._captions)>480:self._captions.popitem(last=False)
+        else:self._captions.move_to_end(key)
         painter.drawText(rect,Qt.AlignVCenter|align,value)
 
     def _glyph(self,painter,key,rect,color):
@@ -468,6 +534,8 @@ class ClipboardHistoryPanel(QWidget):
             if row.get('thumbnail'):
                 pixmap.loadFromData(row['thumbnail'])
             self._pixmaps[key]=pixmap
+            if len(self._pixmaps)>THUMBNAIL_CACHE_LIMIT:self._pixmaps.popitem(last=False)
+        else:self._pixmaps.move_to_end(key)
         return self._pixmaps[key]
 
     def set_detail(self,key,text):
@@ -597,28 +665,51 @@ class ClipboardHistoryPanel(QWidget):
         if interactive:
             self._hits.extend([('thumb',key,visible),('pin',key,pin),('remove',key,remove),('card',key,rect)])
 
-    def _layout_rows(self):
+    def _layout_rows(self,*,windowed=False):
         y=HEADER-self.scroll+(0. if self._pull_key else self._pull_offset)
         width=self._content_width()-INSET*2
         progress=self._spread()
         rebound=self._hover_rebound()
-        for index,row in enumerate(self.entries):
-            extra=self._preview_extra(row)
+        extras=self._detail_extras()
+        pitch=ROW+GAP
+        first,last=0,len(self.entries)
+        if windowed:
+            if not progress:last=min(last,3)
+            elif progress==1. and not self._entry_offsets:
+                # Account for the at most two expanded details before the
+                # viewport while bounding the rows visited during a scroll.
+                first=max(0,int((HEADER-y-sum(extras.values()))//pitch))
+                last=min(last,max(first,math.ceil((self._painted.bottom()-INSET-y)/pitch)+1))
+                y+=first*pitch+sum(extra for index,extra in extras.items() if index<first)
+        for index in range(first,last):
+            row=self.entries[index]
+            extra=extras.get(index,0.)
             inset=min(index,2)*5*(1-progress)
             top=(HEADER+min(index,2)*PEEK)*(1-progress)+y*progress+min(index,2)*rebound/2
             yield index,row,QRectF(INSET+inset,top,width-inset*2,ROW+extra),extra
-            y+=ROW+GAP+extra
+            y+=pitch+extra
 
-    def _rows_at_current_frame(self):
+    def _rows_at_current_frame(self,*,windowed=False):
         remaining=1-self._entry_progress
-        for index,row,rect,extra in self._layout_rows():
+        for index,row,rect,extra in self._layout_rows(windowed=windowed):
             offset,opacity=self._entry_offsets.get(row['id'],(0.,1.))
             yield index,row,rect.translated(0,offset*remaining),extra,1-(1-opacity)*remaining
+
+    def _scroll_rect(self):
+        width,height=self._painted.width(),self._painted.height()
+        return QRectF(3,HEADER,max(0.,width-6),max(0.,height-HEADER-INSET+1))
+
+    def _update_scroll_body(self):
+        rect=self._scroll_rect()
+        scale=self._panel_scale
+        origin=self._paint_origin()
+        dirty=QRectF(origin.x()+rect.x()*scale,origin.y()+rect.y()*scale,rect.width()*scale,rect.height()*scale)
+        self.update(dirty.toAlignedRect())
 
     def paintEvent(self,event):
         painter=QPainter(self);painter.setRenderHints(QPainter.Antialiasing|QPainter.SmoothPixmapTransform)
         painter.setCompositionMode(QPainter.CompositionMode_Source)
-        painter.fillRect(self.rect(),Qt.transparent)
+        painter.fillRect(event.rect(),Qt.transparent)
         painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
         painter.translate(self._paint_origin())
         painter.scale(self._panel_scale,self._panel_scale)
@@ -626,9 +717,13 @@ class ClipboardHistoryPanel(QWidget):
         self._detail_hits={}
         palette=self._colors()
         ink,muted=palette['text'],palette['secondary']
-        paint_surface_shadow(painter,self._painted,self._shadow_tiles,SHELF_SHADOW_BLUR,
-                             SHELF_SHADOW_OFFSET,self._shadow_color,radius=RADIUS_WINDOW_PX)
-        self._rounded(painter,self._painted,palette['window_backdrop'],palette['glass_border'],RADIUS_WINDOW_PX)
+        scroll_rect=self._scroll_rect()
+        if self._panel_scale==1. and scroll_rect.translated(self._paint_origin()).toAlignedRect().contains(event.rect()):
+            painter.fillRect(scroll_rect,palette['window_backdrop'])
+        else:
+            paint_surface_shadow(painter,self._painted,self._shadow_tiles,SHELF_SHADOW_BLUR,
+                                 SHELF_SHADOW_OFFSET,self._shadow_color,radius=RADIUS_WINDOW_PX)
+            self._rounded(painter,self._painted,palette['window_backdrop'],palette['glass_border'],RADIUS_WINDOW_PX)
         width=self._content_width()
         title=QRectF(INSET,(HEADER-28)/2,160,28)
         message='再次点击清空历史' if self._confirm_clear.isActive() else self._feedback or '剪贴板历史'
@@ -662,7 +757,7 @@ class ClipboardHistoryPanel(QWidget):
             painter.setOpacity(opacity*(1-progress))
             departure=rect.translated(0,-5*progress).adjusted(2*progress,0,-2*progress,0)
             self._card(painter,row,departure,extra,palette,content=1. if index==0 else spread,interactive=False)
-        for index,row,rect,extra,opacity in reversed(list(self._rows_at_current_frame())):
+        for index,row,rect,extra,opacity in reversed(list(self._rows_at_current_frame(windowed=True))):
             if rect.bottom()<HEADER or rect.top()>=self._painted.bottom()-INSET:continue
             if index>2:opacity*=min(1.,spread*2.5)
             if not opacity:continue
@@ -744,7 +839,7 @@ class ClipboardHistoryPanel(QWidget):
 
     def _set_pull(self,value):
         self._pull_offset=float(value)
-        self.update()
+        self._update_scroll_body()
 
     def _reset_pull(self):
         self._pull_idle.stop()
@@ -793,20 +888,55 @@ class ClipboardHistoryPanel(QWidget):
             self._pull_idle.start(SCROLL_BOUNCE_IDLE_MS)
         return landed
 
+    def _scroll_delta(self,key,delta,phase):
+        if key:
+            detail=self._details.get(key)
+            viewport=self._detail_hits.get(key)
+            if detail is not None and viewport is not None:
+                detail[1]=self._scroll_motion(key,detail[1],viewport[1],delta,phase)
+        else:
+            maximum=max(0.,self._body_height()-max(0.,self._painted.height()-HEADER-INSET))
+            if maximum:self.scroll=self._scroll_motion('',self.scroll,maximum,delta,phase)
+
+    def _scroll_frame(self):
+        now=time.perf_counter()
+        while self._wheel_events:
+            key,delta,phase,notch=self._wheel_events.popleft()
+            if notch and not reduced_motion():
+                if self._wheel_remaining and key!=self._wheel_key:
+                    self._scroll_delta(self._wheel_key,self._wheel_remaining,Qt.NoScrollPhase)
+                    self._wheel_remaining=0.
+                self._wheel_key=key
+                self._wheel_remaining+=delta
+            else:
+                self._scroll_delta(key,delta,phase)
+        if self._wheel_remaining:
+            step=self._wheel_remaining*(1-math.exp(-min(.05,now-self._wheel_at)/WHEEL_GLIDE_SECONDS))
+            if abs(self._wheel_remaining)<.85:step=self._wheel_remaining
+            self._wheel_remaining-=step
+            self._scroll_delta(self._wheel_key,step,Qt.NoScrollPhase)
+        self._wheel_at=now
+        self._update_scroll_body()
+        if not self._wheel_remaining:self._wheel_frames.stop()
+
     def wheelEvent(self,event):
         if self._companion_closing or self._companion_amount<.92:
             event.ignore();return
         if not self.expanded:self.show_all()
-        delta=event.pixelDelta().y() or event.angleDelta().y()*.37
+        pixels=event.pixelDelta().y()
+        delta=pixels or event.angleDelta().y()*.37
         phase=event.phase()
-        if phase in (Qt.ScrollEnd,Qt.ScrollMomentum):self._release_pull()
         position=self._body_position(event.position())
-        for key,(viewport,limit) in self._detail_hits.items():
-            if limit and viewport.contains(position) and key in self._details:
-                detail=self._details[key]
-                detail[1]=self._scroll_motion(key,detail[1],limit,delta,phase)
-                self.update();event.accept();return
-        maximum=max(0.,self._body_height()-max(0.,self._surface_height()-HEADER-INSET))
-        if maximum:
-            self.scroll=self._scroll_motion('',self.scroll,maximum,delta,phase)
-        self.update();event.accept()
+        key=next((key for key,(viewport,limit) in self._detail_hits.items()
+                  if limit and viewport.contains(position) and key in self._details),'')
+        notch=not pixels and phase==Qt.NoScrollPhase
+        if self._wheel_events and self._wheel_events[-1][0]==key and self._wheel_events[-1][2:]==(phase,notch):
+            _,prior,_,_=self._wheel_events.pop()
+            delta+=prior
+        self._wheel_events.append((key,delta,phase,notch))
+        if not self._wheel_frames.isActive():
+            clock=getattr(self.window(),'_display_frames',None)
+            period=clock.display_period() if clock is not None else None
+            self._wheel_at=time.perf_counter()-(period or 1/60)
+            self._wheel_frames.start()
+        event.accept()

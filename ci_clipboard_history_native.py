@@ -7,7 +7,7 @@ import sys
 import time
 
 from PySide6.QtCore import QTimer, Qt
-from PySide6.QtGui import QColor, QImage
+from PySide6.QtGui import QColor, QImage, QKeySequence
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QTextEdit
 
@@ -31,7 +31,14 @@ def wait_for(predicate):
 def target(root):
     app=QApplication([])
     class ImageTarget(QTextEdit):
+        def keyPressEvent(self,event):
+            if event.matches(QKeySequence.StandardKey.Paste):
+                print(json.dumps({'target_received_paste_key':True,
+                                  'clipboard_formats':app.clipboard().mimeData().formats()}),flush=True)
+            super().keyPressEvent(event)
+
         def insertFromMimeData(self,mime):
+            print(json.dumps({'target_paste_formats':mime.formats(),'has_image':mime.hasImage()}),flush=True)
             if mime.hasImage():
                 image=mime.imageData()
                 if hasattr(image,'toImage'):image=image.toImage()
@@ -84,6 +91,34 @@ def run(root):
     from PySide6.QtCore import QObject, Signal
     from clipboard_history_runtime import ClipboardHistory
     from platform_native import configure_menu_bar_application
+    import clipboard_history_native as native
+    import clipboard_history_runtime as history
+
+    paste_traces=[]
+    if sys.platform=='win32':
+        original_snapshot=native._snapshot_windows_clipboard
+        original_send=native._send_windows_paste
+        def snapshot(user,kernel,ole,output):
+            result=original_snapshot(user,kernel,ole,output)
+            paste_traces.append({'clipboard_backup_completed':result,'formats':list(output)})
+            return result
+        def send(user,target):
+            result=original_send(user,target)
+            paste_traces.append({'system_paste_key_dispatched':result})
+            return result
+        native._snapshot_windows_clipboard=snapshot
+        native._send_windows_paste=send
+
+    original_insert=history.insert_image
+    def insert(*args,**kwargs):
+        try:
+            result=original_insert(*args,**kwargs)
+        except Exception as error:
+            paste_traces.append({'paste_error':repr(error)})
+            raise
+        paste_traces.append({'paste_requested':result})
+        return result
+    history.insert_image=insert
 
     class ClipboardObservation(QObject):
         copy_observed=Signal(object)
@@ -140,6 +175,7 @@ def run(root):
         rect=next(rect for part,identity,rect in panel._hits if part=='card' and identity==key)
         assert current_process()==pid
         QTest.mouseClick(panel,Qt.LeftButton,Qt.NoModifier,rect.center().toPoint())
+        assert activated[-1]==key and len(activated)==2,activated
         wait_for(lambda:(root/'image-inserted').is_file())
         actual=json.loads((root/'image-incoming.json').read_bytes())
         assert actual=={'color':IMAGE_COLOR,'size':[47,29]},actual
@@ -153,6 +189,7 @@ def run(root):
         if runtime:runtime.close()
         procedure.terminate()
         procedure.wait(timeout=5)
+        report['paste_traces']=paste_traces
         print(json.dumps(report),flush=True)
     return 0
 
