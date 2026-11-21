@@ -136,7 +136,6 @@ SOURCE_FILES=RUNTIME_SOURCES+MAINTAINED_TESTS+(
     'TRANSLATOR.md','cloud/src/speech.ts','cloud/test/speech.mjs','cloud/test/speech-route.mjs','cloud/test/translator-workbench.mjs',
     'EDGE_MAGNETIC.md','bench_edge_magnetic.py','bench_edge_drop.py',
     'build_windows_release.py','release_archives.py','release_pipeline.py','release_source_sync.py','CENTRAL_RELEASE.md',
-    'archive_history.py','.github/workflows/archive-history.yml',
     '.github/workflows/release-windows.yml','.github/workflows/central-release.yml',
     'assets/fonts/JetBrainsMono-Regular.ttf','assets/fonts/JetBrainsMono-Medium.ttf',
     'licenses/JetBrainsMono-OFL.txt',
