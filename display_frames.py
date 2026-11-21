@@ -261,7 +261,6 @@ class WindowFrames(QObject):
             candidate=screen.displayLinkWithTarget_selector_(callback,b'flickDockDisplayLinkTick:')
             if not isinstance(candidate,CADisplayLink):
                 raise RuntimeError('Could not create the Cocoa display link')
-            candidate.setPreferredFramesPerSecond_(0)
             self._cocoa_link=candidate
             candidate.addToRunLoop_forMode_(NSRunLoop.mainRunLoop(),NSRunLoopCommonModes)
             self._arm_stall_timer()
