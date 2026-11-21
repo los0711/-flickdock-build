@@ -3,11 +3,11 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import secrets
 import socket
 import sys
 from threading import Event, Lock
 import time
+import traceback
 
 from PySide6.QtWidgets import QApplication
 
@@ -275,8 +275,10 @@ if __name__ == '__main__':
     exercise=Exercise(side, root)
     try:
         exercise.run(credentials)
-    except (AssertionError, RuntimeError, TimeoutError, OSError, KeyError) as error:
+    except Exception as error:
         exercise.report['error']=type(error).__name__
+        exercise.report['failure_frames']=[f'{Path(frame.filename).name}:{frame.lineno}:{frame.name}'
+                                           for frame in traceback.extract_tb(error.__traceback__)]
     finally:
         report=json.dumps(exercise.report,indent=2)+'\n'
         (root/'shelf-route-report.json').write_text(report,encoding='utf-8')
