@@ -14,11 +14,17 @@ import requests
 
 from app_version import APP_VERSION
 from release_manifest import collect_source_files, source_archive
-from release_pipeline import ROOT, REPO, context, main_head
+from release_pipeline import ROOT, REPO, WINDOWS_INDICES, context, main_head, release_indices
 
 
 GITEE_URL = 'https://gitee.com/rooogerluo/flick-dock.git'
 GITHUB_API = 'https://api.github.com/repos/' + REPO
+WINDOWS_PUBLICATION_FILES = {
+    '.github/workflows/central-release.yml', 'release_pipeline.py', 'release_source_sync.py',
+    'test_release_pipeline.py', 'test_release_source_sync.py', 'test_ui_feedback_v1815.py',
+    'test_feedback_v1818.py', 'website/scripts/release_downloads.py',
+    'website/test/test_release_downloads.py', 'website/download-catalog.json', 'website/public/index.html',
+}
 
 
 def _safe_relative(name):
@@ -89,7 +95,7 @@ def _git_environment(token):
 
 
 def _git(args, *, cwd, env, allow_absent=False):
-    result = subprocess.run(['git','-c','credential.helper=',*args],cwd=cwd,env=env,
+    result = subprocess.run(['git','-c','credential.helper=','-c','core.autocrlf=false',*args],cwd=cwd,env=env,
                             stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=180)
     if result.returncode and not (allow_absent and result.returncode == 2):
         raise RuntimeError('Private source synchronization failed at git ' + args[0] + '.')
@@ -135,11 +141,48 @@ def _checkout_baseline(parent, selected, env):
     return root
 
 
+def verify_tagged_windows_source(root, baseline, selected):
+    if baseline.get('version') != APP_VERSION:
+        raise ValueError('The reviewed source inventory does not match the tagged release version.')
+    paths = verify_baseline(root,baseline)
+    current = dict(selected)
+    if (paths ^ current.keys()) - WINDOWS_PUBLICATION_FILES:
+        raise ValueError('The Windows build inventory differs from the already released source tag.')
+    for name in sorted(paths - WINDOWS_PUBLICATION_FILES):
+        if _checked_path(root,name).read_bytes() != current[name]:
+            raise ValueError('The Windows build changes a file in the already released source tag: ' + name)
+
+
+def _verify_windows_source(parent, selected, env):
+    root = Path(parent)/'source'
+    tag = 'v' + APP_VERSION
+    _git(['clone','--quiet','--depth','1','--branch',tag,GITEE_URL,str(root)],cwd=parent,env=env)
+    _git(['show-ref','--verify','refs/tags/' + tag],cwd=root,env=env)
+    baseline = json.loads((ROOT/'SOURCE_MANIFEST.json').read_text(encoding='utf-8'))
+    verify_tagged_windows_source(root,baseline,selected)
+
+
+def _record_windows_release(expected, github_token):
+    env = _git_environment(os.environ.get('GITEE_RELEASE_TOKEN',''))
+    with tempfile.TemporaryDirectory(prefix='flickdock-source-',dir=os.environ['RUNNER_TEMP']) as parent:
+        _verify_windows_source(parent,collect_source_files(ROOT),env)
+    website = ROOT/'website'/'public'
+    head = _commit_github(github_token,expected,{
+        'website/download-catalog.json':(ROOT/'website'/'download-catalog.json').read_bytes(),
+        'website/public/index.html':(website/'index.html').read_bytes(),
+        'updates/latest.json':(website/'updates'/'latest.json').read_bytes(),
+    })
+    print('Recorded the Windows release against the existing private source tag:', head,flush=True)
+
+
 def synchronize():
     expected = context()
     github_token = os.environ.get('GITHUB_TOKEN','')
     if not github_token or main_head(github_token) != expected:
         raise RuntimeError('The GitHub main branch changed; start a fresh release.')
+    if release_indices() == WINDOWS_INDICES:
+        _record_windows_release(expected,github_token)
+        return
     selected = collect_source_files(ROOT)
     _,manifest = source_archive(ROOT,APP_VERSION)
     env = _git_environment(os.environ.get('GITEE_RELEASE_TOKEN',''))
@@ -183,10 +226,14 @@ if __name__ == '__main__':
         selected=collect_source_files(ROOT)
         env=_git_environment(os.environ.get('GITEE_RELEASE_TOKEN',''))
         with tempfile.TemporaryDirectory(prefix='flickdock-source-preflight-',dir=os.environ['RUNNER_TEMP']) as parent:
-            root=_checkout_baseline(parent,selected,env)
-            tag='refs/tags/v'+APP_VERSION
-            if _git(['ls-remote','--exit-code','--tags','origin',tag],cwd=root,env=env,allow_absent=True).returncode==0:
-                raise ValueError('The private release version tag already exists.')
-        print('Verified the private source baseline and unused release tag.',flush=True)
+            if release_indices() == WINDOWS_INDICES:
+                _verify_windows_source(parent,selected,env)
+                print('Verified the existing private source tag for the Windows build.',flush=True)
+            else:
+                root=_checkout_baseline(parent,selected,env)
+                tag='refs/tags/v'+APP_VERSION
+                if _git(['ls-remote','--exit-code','--tags','origin',tag],cwd=root,env=env,allow_absent=True).returncode==0:
+                    raise ValueError('The private release version tag already exists.')
+                print('Verified the private source baseline and unused release tag.',flush=True)
     else:
         synchronize()

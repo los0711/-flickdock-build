@@ -14,6 +14,18 @@ def fixture():
 
 
 class RetentionTests(unittest.TestCase):
+    def test_windows_only_can_fill_the_newest_macos_release_without_changing_its_assets(self):
+        value=fixture();row=value['releases'][-1]
+        exe=next(a for a in row['assets'] if a['name'].endswith('.exe'))
+        row['assets'].remove(exe)
+        candidate=dict(exe);candidate['url']=candidate.pop('archive')
+        result=retention.register(value,[dict(assets=[candidate])],extend_windows=True)
+        self.assertEqual(result['releases'][-1]['assets'],[*row['assets'],exe])
+        self.assertEqual(retention.register(result,[dict(assets=[candidate])],extend_windows=True),result)
+        candidate['sha256']='b'*64
+        with self.assertRaisesRegex(ValueError,'immutable'):
+            retention.register(result,[dict(assets=[candidate])],extend_windows=True)
+
     def test_keep_three_verify_all_archives_before_deleting_and_never_touch_other_keys(self):
         value=fixture();events=[];saved=[]
         result=retention.prune(value,check_redirect=lambda row,asset:events.append(('redirect',row['version'])),

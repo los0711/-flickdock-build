@@ -16,6 +16,17 @@ def inventory(data=b'original'):
 
 
 class SourceSyncTests(unittest.TestCase):
+    def test_completed_windows_build_must_match_the_private_tag(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            path=root/'folder/source.py';path.parent.mkdir();path.write_bytes(b'original')
+            baseline=dict(inventory(),version=sync.APP_VERSION)
+            sync.verify_tagged_windows_source(root,baseline,[('folder/source.py',b'original'),('release_pipeline.py',b'new release tooling')])
+            with self.assertRaisesRegex(ValueError,'changes a file'):
+                sync.verify_tagged_windows_source(root,baseline,[('folder/source.py',b'changed')])
+            with self.assertRaisesRegex(ValueError,'inventory differs'):
+                sync.verify_tagged_windows_source(root,baseline,[])
+
     def test_verified_private_baseline(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp)/'folder/source.py'

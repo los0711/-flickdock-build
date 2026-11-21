@@ -85,7 +85,7 @@ def plan(value):
     return hot,old
 
 
-def register(catalog,groups):
+def register(catalog,groups,*,extend_windows=False):
     assets=[dict(name=a['name'],bytes=a['bytes'],sha256=a['sha256'],archive=a['url'],
                  **({'originKey':a['originKey']} if 'originKey' in a else {})) for group in groups for a in group['assets']]
     versions=set()
@@ -96,7 +96,14 @@ def register(catalog,groups):
     if len(versions)!=1:raise ValueError('Register exactly one complete release')
     key=versions.pop();candidate=dict(version=key,assets=assets,r2Removed=False)
     result=json.loads(json.dumps(catalog));existing=next((row for row in result['releases'] if row['version']==key),None)
-    if existing is not None:
+    if extend_windows:
+        if (existing is None or existing['r2Removed'] or version(key)!=max(version(row['version']) for row in result['releases'])
+                or [asset['name'] for asset in assets]!=['FlickDock-Setup-'+key+'.exe']):
+            raise ValueError('Windows can only be added to the current Apple Silicon release')
+        installed=next((asset for asset in existing['assets'] if asset['name']==assets[0]['name']),None)
+        if installed is None:existing['assets'].append(assets[0])
+        elif installed!=assets[0]:raise ValueError('Published installers are immutable')
+    elif existing is not None:
         if sorted(existing['assets'],key=lambda a:a['name'])!=sorted(assets,key=lambda a:a['name']):raise ValueError('Published installers are immutable')
     else:
         if result['releases'] and version(key)<=max(version(row['version']) for row in result['releases']):raise ValueError('New release must be newer than the published catalog')

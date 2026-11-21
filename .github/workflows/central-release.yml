@@ -10,11 +10,11 @@ on:
         default: verify
         options: [signing-test, verify, publish]
       target:
-        description: Publish both current platforms or only Apple Silicon
+        description: Publish both platforms, only Apple Silicon, or complete an Apple Silicon release with Windows x64
         type: choice
         required: true
         default: both
-        options: [both, mac-arm64]
+        options: [both, mac-arm64, windows-x64]
       notes:
         description: Concise user-facing release notes (required for publish)
         type: string
@@ -33,7 +33,7 @@ concurrency:
 jobs:
   authorization:
     if: github.repository == 'los0711/-flickdock-build' && github.ref == 'refs/heads/main'
-    runs-on: ${{ inputs.target == 'mac-arm64' && 'ubuntu-24.04' || 'windows-2025' }}
+    runs-on: ${{ inputs.target != 'both' && 'ubuntu-24.04' || 'windows-2025' }}
     defaults:
       run:
         shell: pwsh
@@ -81,7 +81,7 @@ jobs:
       contents: read
 
   macos:
-    if: inputs.mode == 'publish' && github.repository == 'los0711/-flickdock-build' && github.ref == 'refs/heads/main'
+    if: inputs.mode == 'publish' && inputs.target != 'windows-x64' && github.repository == 'los0711/-flickdock-build' && github.ref == 'refs/heads/main'
     uses: ./.github/workflows/macos-build.yml
     with:
       test_build: true
@@ -92,7 +92,7 @@ jobs:
   publish:
     if: >-
       always() && inputs.mode == 'publish' && needs.authorization.result == 'success' &&
-      needs.macos.result == 'success' &&
+      (needs.macos.result == 'success' || (inputs.target == 'windows-x64' && needs.macos.result == 'skipped')) &&
       (needs.windows.result == 'success' || (inputs.target == 'mac-arm64' && needs.windows.result == 'skipped'))
     needs: [authorization, windows, macos]
     runs-on: ${{ inputs.target == 'mac-arm64' && 'ubuntu-24.04' || 'windows-2025' }}
@@ -127,6 +127,7 @@ jobs:
           name: FlickDock-Windows-x64-${{ github.sha }}
           path: ci-windows-release
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        if: inputs.target != 'windows-x64'
         with:
           name: FlickDock-macOS-arm64-${{ github.sha }}
           path: ci-macos-release

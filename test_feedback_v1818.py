@@ -8,7 +8,6 @@ from unittest.mock import Mock,patch
 from PySide6.QtCore import QEvent,QPoint,QPointF,QRect,Qt,QObject
 from PySide6.QtGui import QEnterEvent
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QToolTip
 from test_html_native_workspace import APP,flush,until
 import test_html_native_workspace as _workspace
 from test_account_settings_v181 import Service
@@ -188,8 +187,13 @@ class FeedbackTests(unittest.TestCase):
                 QTest.mouseClick(button,Qt.LeftButton);flush()
                 self.assertEqual(APP.clipboard().text(),code)
                 self.assertEqual(button.text(),code)
-                self.assertTrue(QToolTip.isVisible());self.assertIn('已复制',QToolTip.text())
-            finally:QToolTip.hideText();button.close();button.deleteLater();flush()
+                popup=APP._flickdock_tooltip_corners._popup
+                self.assertTrue(popup.isVisible())
+                self.assertEqual(popup._text,'已复制到剪贴板')
+                self.assertTrue(popup.testAttribute(Qt.WA_TranslucentBackground))
+            finally:
+                APP._flickdock_tooltip_corners._clear()
+                button.close();button.deleteLater();flush()
 
     def test_save_only_changed_fields_skips_disk_probe_and_shortcut_reregistration(self):
         with tempfile.TemporaryDirectory() as directory,patch.object(app_settings,'_startup_runtime_allowed',return_value=False):
@@ -219,32 +223,33 @@ class FeedbackTests(unittest.TestCase):
             manager.update_handles.assert_called_once()
         finally:fixture.tearDown()
 
-    def test_hover_colors_inner_dashes_and_keeps_outer_panel_transparent_for_dock_and_shake(self):
+    def test_hover_colors_dotted_drop_outline_and_keeps_outer_panel_transparent_for_dock_and_shake(self):
         fixture=_workspace.WorkspaceTests();fixture.setUp()
         try:
             shelf=fixture.shelf;shelf.files['permanent']=[];shelf.refresh();zone=shelf.zones['permanent']
-            def dash_pixels():
-                image=zone.icon.grab().toImage();pixels=[]
+            def capture():
+                zone.icon.border_motion.animation.setCurrentTime(zone.icon.border_motion.animation.duration())
+                flush()
+                return zone.icon.grab().toImage()
+            def pixel(image,x,y):
                 scale=image.devicePixelRatio()
-                for x in range(round(30*scale),round(35*scale)):
-                    for y in range(round(47*scale),round(140*scale)):
-                        c=image.pixelColor(x,y)
-                        pixels.append(c.rgba())
-                return tuple(pixels)
+                return image.pixelColor(round(x*scale),round(y*scale)).rgba()
+            rect=zone.icon.empty_drop_rect()
             for kind in ('dock','drag'):
                 shelf.presentation_kind=kind
                 APP.sendEvent(zone,QEvent(QEvent.Leave))
-                zone.icon.border_motion.animation.setCurrentTime(zone.icon.border_motion.animation.duration())
-                flush();normal=dash_pixels()
+                normal=capture()
                 point=zone.icon.geometry().center()
                 APP.sendEvent(zone,QEnterEvent(QPointF(point),QPointF(point),QPointF(zone.mapToGlobal(point))))
-                zone.icon.border_motion.animation.setCurrentTime(zone.icon.border_motion.animation.duration());flush()
-                self.assertNotIn('#0A84FF',zone.styleSheet())
-                self.assertGreater(sum(a!=b for a,b in zip(dash_pixels(),normal)),15)
+                hovered=capture()
+                self.assertIn('background:transparent',zone.styleSheet())
+                x=rect.center().x()
+                y=rect.top()
+                self.assertTrue(any(pixel(hovered,x,y+i)!=pixel(normal,x,y+i) for i in range(-2,3)))
+                self.assertEqual(pixel(hovered,2,2),pixel(normal,2,2))
                 self.assertIsNone(shelf.popup)
                 APP.sendEvent(zone,QEvent(QEvent.Leave))
-                zone.icon.border_motion.animation.setCurrentTime(zone.icon.border_motion.animation.duration())
-                flush();self.assertEqual(dash_pixels(),normal)
+                self.assertEqual(capture(),normal)
         finally:fixture.tearDown()
 
     def test_return_from_transfer_keeps_same_card_bounds_without_morph_or_edge_reveal(self):

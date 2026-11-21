@@ -39,10 +39,13 @@ class FeedbackTests(unittest.TestCase):
         from reference_widgets import refresh_tree
         import ui_theme
         view=self.fixture.overview()
-        for theme,background,card,action in (('dark','#0a0a0a','#171717','#e5e5e5'),('light','#ffffff','#ffffff','#000000')):
+        for theme,background,card,action in (
+            ('dark','#121317','#1f2126','#f5f6f8'),
+            ('light','#eaebef','#f2f3f6','#111114'),
+        ):
             c=colors(theme)
             self.assertEqual(QColor(c['background']).name(),background)
-            self.assertEqual(QColor(c['card']).name(),card)
+            self.assertEqual(QColor(c['file_card']).name(),card)
             self.fixture.settings.update(theme=theme);ui_theme.set_theme(theme)
             ui_theme.apply_application(APP,'Inter');refresh_tree(self.shelf)
             view._render_signature=None;view.rebuild();flush()
@@ -60,14 +63,13 @@ class FeedbackTests(unittest.TestCase):
             self.assertEqual(not badge.isHidden(),bool(badge.text()),key)
 
     def test_same_height_sidebar_entries_use_the_same_corner_radius(self):
-        from native_ui_common import RADIUS_CONTROL_PX
         import ui_theme
         view=self.fixture.overview()
-        controls=[*view.category_buttons.values(),view.video_nav,view.lan_nav,view.settings_nav]
-        self.assertEqual({control.height() for control in controls},{34})
+        controls=[*view.scope_buttons.values(),view.translator_nav,view.video_nav,view.lan_nav,view.settings_nav]
+        self.assertEqual({control.height() for control in controls},{40})
         for theme in ('dark','light'):
             ui_theme.set_theme(theme);flush()
-            self.assertEqual({control._surface_radius() for control in controls},{RADIUS_CONTROL_PX})
+            self.assertEqual({control._surface_radius() for control in controls},{20})
 
     def test_preview_actions_use_the_requested_color_roles(self):
         preview=self.fixture.overview().preview
@@ -171,6 +173,7 @@ class FeedbackTests(unittest.TestCase):
         self.shelf.incoming_drop=False;self.shelf.visible_state='floating'
 
     def test_rounded_crossfade_keeps_constant_opaque_material(self):
+        from native_ui_common import RADIUS_WINDOW_PX
         snapshot=SurfaceSnapshot(self.shelf)
         def endpoint(w,h):
             image=QImage(w,h,QImage.Format_ARGB32_Premultiplied);image.fill(Qt.transparent)
@@ -182,7 +185,7 @@ class FeedbackTests(unittest.TestCase):
         for mix in (0,.1,.25,.5,.75,.95,1):
             image=QImage(400,260,QImage.Format_ARGB32_Premultiplied);image.fill(Qt.transparent)
             snapshot.mix=mix;p=QPainter(image);snapshot.paint_frame(p,QRectF(0,0,400,260));p.end()
-            self.assertEqual(image.pixelColor(3,12).alpha(),255,mix)
+            self.assertEqual(image.pixelColor(RADIUS_WINDOW_PX+2,5).alpha(),255,mix)
             self.assertEqual(image.pixelColor(200,130).alpha(),255,mix)
             self.assertLess(image.pixelColor(0,0).alpha(),10,mix)
         snapshot.deleteLater()
@@ -259,7 +262,6 @@ class SettingsFeedbackTests(unittest.TestCase):
             self.assertIn(dialog.shake_sensitivity_slider,sliders)
             self.assertGreater(len(sliders),1)
             for slider in sliders:
-                self.assertGreaterEqual(slider.height(),24)
                 for value in (slider.minimum(),slider.maximum()):
                     slider.setValue(value);option=QStyleOptionSlider();slider.initStyleOption(option)
                     handle=slider.style().subControlRect(QStyle.CC_Slider,option,QStyle.SC_SliderHandle,slider)

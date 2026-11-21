@@ -33,11 +33,14 @@ ACCOUNT = '59153da0809ff3d18297d943e1ef5b56'
 INDEX_NAMES = ('latest.json','macos-arm64.json','macos-arm64-auto.json','macos-arm64-auto-v2.json',
                'macos-x86_64.json','macos-x86_64-auto.json','macos-x86_64-auto-v2.json')
 MAC_ARM_INDICES = INDEX_NAMES[1:4]
+WINDOWS_INDICES = INDEX_NAMES[:1]
 RELEASE_HOSTS = set(DEFAULT_ALLOWED_HOSTS)
 
 
 def release_indices():
     target = os.environ.get('FLICKDOCK_RELEASE_TARGET','both')
+    if target == 'windows-x64':
+        return WINDOWS_INDICES
     if target == 'mac-arm64':
         return MAC_ARM_INDICES
     if target == 'both':
@@ -109,6 +112,8 @@ def preflight(*, publish):
         raise RuntimeError('The main branch changed; start a fresh release.')
     version_tuple(APP_VERSION)
     old,raw = baselines()
+    if release_indices() == WINDOWS_INDICES and any(old[name]['version'] != APP_VERSION for name in MAC_ARM_INDICES):
+        raise ValueError('The Windows-only release must complete the existing Apple Silicon version.')
     for name in release_indices():
         current = old[name]['version']
         if version_tuple(APP_VERSION) < version_tuple(current) or (publish and version_tuple(APP_VERSION) <= version_tuple(current)):
@@ -173,6 +178,8 @@ def _verified_builds():
         validate_versions(ROOT,setup,APP_VERSION)
     else:
         setup=win_report=None
+    if release_indices() == WINDOWS_INDICES:
+        return setup,win_report,[],None,None
     build = mac/('mac-build-' + APP_VERSION + '-arm64.json')
     cloud = mac/'mac-cloud-arm64.json'
     report = json.loads(build.read_text(encoding='utf-8'))
@@ -246,7 +253,8 @@ def stage():
         (folder/name).write_bytes(raw[name])
         (target/name).write_bytes(raw[name])
     catalog = ROOT/'website'/'download-catalog.json'
-    write_catalog(catalog,register(read_catalog(catalog),[dict(assets=assets)]))
+    write_catalog(catalog,register(read_catalog(catalog),[dict(assets=assets)],
+                                   extend_windows=release_indices()==WINDOWS_INDICES))
     (folder/'next-index.html').write_text(_next_html(previous),encoding='utf-8')
     state = dict(version=APP_VERSION,source_sha=context(),notes=notes,assets=assets,indices=list(release_indices()))
     (folder/'state.json').write_text(json.dumps(state,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
@@ -276,18 +284,19 @@ def sign():
             download_url=BASE+'/downloads/'+setup.name,verification=win_report,output=indices/'latest.json',
             artifacts=folder.parent/'flickdock-private-release-artifacts',
             previous=previous('latest.json'),allowed_hosts=RELEASE_HOSTS,signer=signer)
-    archive,dmg,pkg = mac_files
-    pkg_info = file_metadata(pkg)
-    verify_public_file(BASE+'/downloads/'+pkg.name,pkg_info['sha256'],pkg_info['bytes'],
-                       RELEASE_HOSTS,pe=False)
-    common = dict(build_report=build,cloud_report=cloud,version=APP_VERSION,architecture='arm64',
-                  notes=state['notes'],allowed_hosts=RELEASE_HOSTS,signer=signer)
-    create_mac_release(archive=dmg,download_url=BASE+'/downloads/'+dmg.name,
-        output=indices/'legacy'/'macos-arm64.json',previous=previous('macos-arm64.json'),
-        channel='legacy',**common)
-    create_mac_release(archive=archive,download_url=BASE+'/downloads/'+archive.name,
-        output=indices/'auto'/'macos-arm64-auto.json',previous=previous('macos-arm64-auto-v2.json'),
-        channel='auto',**common)
+    if mac_files:
+        archive,dmg,pkg = mac_files
+        pkg_info = file_metadata(pkg)
+        verify_public_file(BASE+'/downloads/'+pkg.name,pkg_info['sha256'],pkg_info['bytes'],
+                           RELEASE_HOSTS,pe=False)
+        common = dict(build_report=build,cloud_report=cloud,version=APP_VERSION,architecture='arm64',
+                      notes=state['notes'],allowed_hosts=RELEASE_HOSTS,signer=signer)
+        create_mac_release(archive=dmg,download_url=BASE+'/downloads/'+dmg.name,
+            output=indices/'legacy'/'macos-arm64.json',previous=previous('macos-arm64.json'),
+            channel='legacy',**common)
+        create_mac_release(archive=archive,download_url=BASE+'/downloads/'+archive.name,
+            output=indices/'auto'/'macos-arm64-auto.json',previous=previous('macos-arm64-auto-v2.json'),
+            channel='auto',**common)
     targets = {'latest.json':indices/'latest.json','macos-arm64.json':indices/'legacy'/'macos-arm64.json',
                'macos-arm64-auto.json':indices/'legacy'/'macos-arm64.json',
                'macos-arm64-auto-v2.json':indices/'auto'/'macos-arm64-auto.json'}

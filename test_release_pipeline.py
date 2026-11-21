@@ -53,10 +53,27 @@ class ReleasePipelineTests(unittest.TestCase):
 
     def test_mac_only_updates_the_mac_website_link(self):
         previous={name:{'version':'1.8.38'} for name in pipeline.INDEX_NAMES}
-        with patch.dict(os.environ,{'FLICKDOCK_RELEASE_TARGET':'mac-arm64'}):
+        fixture='v1.8.38/FlickDock-Setup-1.8.38.exe Windows x64 · 1.8.38 v1.8.38/FlickDock-1.8.38-macOS-arm64.pkg Mac Apple 芯片 · 1.8.38'
+        with patch.dict(os.environ,{'FLICKDOCK_RELEASE_TARGET':'mac-arm64'}), patch.object(Path,'read_text',return_value=fixture):
             html=pipeline._next_html(previous)
-        self.assertIn('/v1.8.38/FlickDock-Setup-1.8.38.exe',html)
-        self.assertIn('/v1.8.39/FlickDock-1.8.39-macOS-arm64.pkg',html)
+        self.assertIn('v1.8.38/FlickDock-Setup-1.8.38.exe',html)
+        self.assertIn('v1.8.39/FlickDock-1.8.39-macOS-arm64.pkg',html)
+
+    def test_windows_only_uses_the_existing_mac_version_and_writes_only_the_windows_index(self):
+        previous={name:{'version':pipeline.APP_VERSION} for name in pipeline.INDEX_NAMES}
+        previous['latest.json']['version']='1.8.38'
+        env={'FLICKDOCK_RELEASE_TARGET':'windows-x64','FLICKDOCK_RELEASE_NOTES':'优化体验'}
+        fixture='v1.8.38/FlickDock-Setup-1.8.38.exe Windows x64 · 1.8.38 v1.8.39/FlickDock-1.8.39-macOS-arm64.pkg Mac Apple 芯片 · 1.8.39'
+        with patch.dict(os.environ,env,clear=True), patch.object(pipeline,'context',return_value='a'*40), \
+             patch.object(pipeline,'main_head',return_value='a'*40), \
+             patch.object(pipeline,'baselines',return_value=(previous,{})):
+            pipeline.preflight(publish=True)
+            self.assertEqual(pipeline.release_indices(),('latest.json',))
+            with patch.object(Path,'read_text',return_value=fixture):
+                self.assertEqual(pipeline._next_html(previous),fixture.replace('1.8.38','1.8.39'))
+            previous['macos-arm64-auto-v2.json']['version']='1.8.38'
+            with self.assertRaisesRegex(ValueError,'existing Apple Silicon'):
+                pipeline.preflight(publish=True)
 
     def test_baseline_is_bounded_and_does_not_follow_redirects(self):
         response = MagicMock(status_code=200)
