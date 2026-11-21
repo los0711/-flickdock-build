@@ -187,6 +187,10 @@ end run
         report['magnetic_pointer']=QCursor.pos().toTuple()
         until(lambda:manager.edge_file_drag.validated and manager.edge_absorb.intensity>.05,
               'Native Finder drag did not light the magnetic band')
+        def native_icon_available():
+            icon=manager.edge_absorb.icons.image(str(magnetic_file))
+            return icon is not None and not icon.isNull()
+        until(native_icon_available,'The native icon subprocess did not return artwork')
         for delta in (44,8,45,5):
             point=(edge_x-delta,magnetic_point[1])
             post(Quartz.kCGEventLeftMouseDragged,point);sample(.028)
