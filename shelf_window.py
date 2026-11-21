@@ -1135,13 +1135,18 @@ class ShelfWindow(QWidget):
                     if self.content.is_text(ref) and not jobs:self.content.materialize_pasted_text(ref,self.manager.settings.capture_dir)
             except OSError as error:
                 self.status_label.setText('文字文件未能保存：'+str(error));return False
+        self.manager.just_dropped = time.monotonic()
+        if not reveal:
+            # The magnetic surface owns landing feedback. Importing here must
+            # never start, retarget or finish the shelf's window animations.
+            self.import_paths(mode,paths)
+            for ref,url in jobs:self.resolver.resolve(ref,url)
+            return True
         self._cancel_intake()
         epoch=self._intake_epoch
         self._intake_preserve_view=source=='paste' or self.expanded
         self.incoming_drop = True
-        self.manager.just_dropped = time.monotonic()
-        self._silent_intake = not reveal
-        if reveal and (self.visible_state=='hiding' or not self.isVisible()):
+        if self.visible_state=='hiding' or not self.isVisible():
             # On some native drags the mouse-up poll precedes OLE DropEvent.
             # That poll starts the transient shelf's hide animation. Retarget
             # it as soon as this real content drop is accepted, before a copy
@@ -1169,7 +1174,7 @@ class ShelfWindow(QWidget):
     def _committed_intake(self,mode,epoch):
         """One accepted drop: commit, visible landing, then tuck once."""
         if epoch!=self._intake_epoch or not self.incoming_drop:return
-        if not self.isVisible() and not getattr(self,'_silent_intake',False):
+        if not self.isVisible():
             self._show_at(self._dock_target,self.presentation_kind,QPoint())
         self._intake_mode=mode
         if self.expanded and not self.pinned and not self._intake_preserve_view:

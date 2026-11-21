@@ -17,37 +17,24 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           persist-credentials: false
-      - name: Check the disposable Finder desktop
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          architecture: arm64
+      - name: Install Cocoa test dependencies
+        run: python -m pip install -r requirements.txt 'pyobjc-framework-Quartz>=11,<13'
+      - name: Drag real Finder fixtures to the source application
         run: |
           set -eu
-          test "$GITHUB_ACTIONS" = true
-          directory="$(mktemp -d)"
-          touch "$directory/FlickDock-Fixture.txt"
-          open -R "$directory/FlickDock-Fixture.txt"
-          osascript -e 'with timeout of 5 seconds' -e 'tell application "Finder" to get name of every Finder window' -e 'end timeout' || true
-          cat >"$directory/pointer.swift" <<'SWIFT'
-          import Cocoa
-          import CoreGraphics
-          func testPointer() -> Bool {
-            let point = CGPoint(x: 420, y: 420)
-            guard let event = CGEvent(mouseEventSource: nil, mouseType: .mouseMoved,
-                                      mouseCursorPosition: point, mouseButton: .left) else { return false }
-            event.post(tap: .cghidEventTap)
-            Thread.sleep(forTimeInterval: 0.3)
-            return CGEvent(source: nil)?.location == point
-          }
-          print("finderRunning:", !NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.finder").isEmpty)
-          print("eventAccess:", CGPreflightPostEventAccess())
-          print("pointerEventDelivered:", testPointer())
-          SWIFT
-          swift "$directory/pointer.swift"
-          osascript -l JavaScript <<'JXA'
-          ObjC.import('CoreGraphics')
-          const point = $.CGPointMake(440, 440)
-          const event = $.CGEventCreateMouseEvent(null, 5, point, 0)
-          $.CGEventPost(0, event)
-          delay(0.3)
-          const observed = $.CGEventGetLocation($.CGEventCreate(null))
-          console.log('osascriptEventAccess=' + $.CGPreflightPostEventAccess())
-          console.log('osascriptPointerEventDelivered=' + (observed.x === 440 && observed.y === 440))
-          JXA
+          mkdir -p "$RUNNER_TEMP/flickdock-finder-profile" "$RUNNER_TEMP/finder-source"
+          swiftc ci_finder_element.swift -o "$RUNNER_TEMP/finder-element"
+          HOME="$RUNNER_TEMP/flickdock-finder-profile" QT_QPA_PLATFORM=cocoa \
+            FLICKDOCK_FINDER_AX="$RUNNER_TEMP/finder-element" \
+            python flickdock.py --verify-finder-magnetic "$RUNNER_TEMP/finder-source/report.json"
+      - name: Retain Finder test report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: finder-source-${{ github.sha }}
+          path: ${{ runner.temp }}/finder-source/report.json
+          if-no-files-found: warn

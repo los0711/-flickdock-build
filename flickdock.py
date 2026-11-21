@@ -1293,6 +1293,8 @@ class ShelfManager:
                 self.shelf.isVisible() and self.shelf.visible_state != 'hiding'):
             return
         self._content_gesture_at=None
+        if self._magnetic_preempts_shake(position) or self._magnetic_preempts_shake(QCursor.pos()):
+            return
         shelf = self.active_shelf or self.shelves[0]
         # A surface that is still fading out (or stranded in that state) must
         # be gone before the drag reveal lands; otherwise the new popup is
@@ -1344,14 +1346,18 @@ class ShelfManager:
     def _magnetic_allowed(self):
         return not self._quitting and not self.outgoing_drag and not self.settings_open()
 
+    def _magnetic_preempts_shake(self,position):
+        # Finder's real drag may acquire the shake MIME probe during a quick
+        # reversal near the edge. Leave that band to the native file target.
+        return (sys.platform=='darwin' and self.drag_gate.file_content is not False
+                and self.edge_absorb.armed(position))
+
     def _magnetic_preview_regions(self):
         return tuple(shelf.visual_geometry() for shelf in self.shelves if shelf.isVisible() and not shelf.expanded)
 
     def _magnetic_hover(self,position):
-        from display_triggers import trigger_active
-        if self.edge_suppressed:return
         for edge in self.edges.values():
-            if trigger_active(edge.values()) and edge.file_preview_region().contains(position):
+            if edge.can_reveal_at(position):
                 self.edge=edge
                 if not self.shelf.isVisible() or self.shelf.visible_state=='hiding':self.show_docked()
                 break
@@ -1382,6 +1388,9 @@ class ShelfManager:
                 or bool(self.lan_dialog and self.lan_dialog.isVisible()) or bool(self.wan_dialog and self.wan_dialog.isVisible())
                 or bool(self.video_dialog and self.video_dialog.isVisible()))
         now=time.monotonic(); pos=QCursor.pos()
+        if sys.platform=='darwin':
+            from dock_geometry import cocoa_screen_pointer
+            pos=cocoa_screen_pointer(pos)
         self._refresh_fullscreen_edges(now)
         self.translation.reconcile_pointer(pos, mouse_buttons_mask())
         # Cocoa may move a preallocated tool surface beneath a stationary
@@ -1435,8 +1444,7 @@ class ShelfManager:
                                  and self.clipboard_preview_dialog.frameGeometry().contains(pos))):
                     shelf.hide_animated(explicit=True);retired=True;retired_shelves.add(shelf)
             if retired:self.update_handles()
-        if (self.edge.isVisible() and over_trigger
-                and not self.edge_suppressed and not self.shelf.isVisible()): self.show_docked()
+        if self.edge.can_reveal_at(pos) and not self.shelf.isVisible(): self.show_docked()
         for shelf in self.shelves:
             if not shelf.isVisible():
                 # A tool window can disappear independently while another
@@ -1486,7 +1494,11 @@ class ShelfManager:
         # QPC timestamps avoid quantised dt corrupting velocity/acceleration.
         sample_time=time.perf_counter()
         moving=native_window_move_active()
-        blocked=(self.outgoing_drag or self.drag_started_inside or
+        magnetic_drag=down and self._magnetic_preempts_shake(pos)
+        if magnetic_drag:
+            self._content_gesture_at=None
+            if self.drag_gate.active:self.drag_gate.reset_session()
+        blocked=(self.outgoing_drag or self.drag_started_inside or magnetic_drag or
                  self.shelf.isVisible() and self.shelf.visible_state != 'hiding')
         full_shake=self.shake_detector.update(pos.x(),pos.y(),sample_time,
                                                button_down=down,window_moving=moving,blocked=blocked)
@@ -1601,8 +1613,15 @@ def main():
     if '--verify-overview' in sys.argv:
         from offscreen_verify import run_overview
         return run_overview(sys.argv,load_font)
-    cocoa_smoke = '--verify-cocoa-startup' in sys.argv
-    if cocoa_smoke and (sys.platform != 'darwin' or not getattr(sys, 'frozen', False)
+    finder_report = None
+    if '--verify-finder-magnetic' in sys.argv:
+        from verify_finder_magnetic import enabled
+        arguments = sys.argv[sys.argv.index('--verify-finder-magnetic')+1:]
+        if len(arguments)!=1 or not enabled(Path(arguments[0])):
+            return 2
+        finder_report = Path(arguments[0]).resolve()
+    cocoa_smoke = '--verify-cocoa-startup' in sys.argv or finder_report is not None
+    if finder_report is None and cocoa_smoke and (sys.platform != 'darwin' or not getattr(sys, 'frozen', False)
                         or os.environ.get('FLICKDOCK_CI_COCOA_SMOKE') != '1'
                         or os.environ.get('QT_QPA_PLATFORM', '').lower() != 'cocoa'):
         return 2
@@ -1647,6 +1666,13 @@ def main():
                       and mac_icon.is_file() else app_icon())
     manager = ShelfManager(app, cocoa_smoke=cocoa_smoke)
     guard.activated.connect(manager.show_first)
+    if finder_report is not None:
+        from verify_finder_magnetic import run
+        try:
+            return run(manager,finder_report)
+        finally:
+            manager.quit()
+            guard.close()
     QTimer.singleShot(2200, manager.warm_heavy_ui)
     if cocoa_smoke:
         index = sys.argv.index('--verify-cocoa-startup')

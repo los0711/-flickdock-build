@@ -36,6 +36,7 @@ RUNTIME_SOURCES=(
     'magnetic_settings.py','magnetic_editor.py','edge_native_icons.py','monitor_diagram.py','accent_presets.py','verify_magnetic.py',
     'translation_languages.py', 'translation_api.py', 'translation_controller.py', 'translation_notice.py', 'settings_navigation.py',
     'translator_store.py','translator_session.py','translator_widgets.py','translator_speech.py','translator_panel.py','translator_history.py','translator_manager.py','breeze_speech_api.py','file_pins.py','border_reveal.py','verify_translator.py',
+    'verify_finder_magnetic.py',
     'shelf_ui_common.py','shelf_file_tools.py','shelf_drop_zone.py','file_preview.py',
     'overview_ui.py','shelf_window.py','dock_handle.py','sync_runtime.py','transfer_runtime.py','sync_contracts.py',
     
