@@ -1,0 +1,55 @@
+name: Windows release build
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    if: github.repository == 'los0711/-flickdock-build'
+    runs-on: windows-2025
+    timeout-minutes: 45
+    env:
+      PYTHONUTF8: '1'
+      PIP_DISABLE_PIP_VERSION_CHECK: '1'
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          architecture: x64
+      - name: Install reviewed build dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Verify and build the Windows installer
+        env:
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+        run: python build_windows_release.py
+      - name: Verify isolated installer shutdown and update behavior
+        env:
+          FD_QA_NATIVE: '1'
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+        run: python ci_installer_close.py --output ../outputs/windows-installer-qa.json
+      - name: Gather release files
+        shell: pwsh
+        run: |
+          $version = python -c "from app_version import APP_VERSION;print(APP_VERSION)"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Path ci-windows-release | Out-Null
+          Copy-Item "../outputs/FlickDock-Setup-$version.exe" ci-windows-release/
+          Copy-Item "../outputs/windows-build-$version.json" ci-windows-release/
+          Copy-Item "../outputs/windows-installer-qa.json" ci-windows-release/
+      - name: Retain verified installer and report
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: FlickDock-Windows-x64-${{ github.sha }}
+          path: ci-windows-release/*
+          if-no-files-found: error
+          retention-days: 3
