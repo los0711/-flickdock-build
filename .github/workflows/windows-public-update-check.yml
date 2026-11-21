@@ -20,7 +20,7 @@ jobs:
           path: verified-build
           github-token: ${{ github.token }}
           run-id: 44855631448
-      - name: Verify the installer and its shipped updater on the public channel
+      - name: Verify the published 1.8.38 updater and 1.8.39 upgrade
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -31,28 +31,57 @@ jobs:
           }
           $root = Join-Path $env:RUNNER_TEMP 'flickdock-windows-update'
           $install = Join-Path $root 'installed'
-          $reportPath = Join-Path $root 'update.json'
           New-Item -ItemType Directory -Path $root | Out-Null
-          $args = "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /NOICONS /TASKS= /DIR=`"$install`""
-          $process = Start-Process -FilePath $setup -ArgumentList $args -WindowStyle Hidden -PassThru -Wait
-          if ($process.ExitCode -ne 0) { throw "Installer exited with $($process.ExitCode)" }
+          $previous = Join-Path $root 'FlickDock-Setup-1.8.38.exe'
+          Invoke-WebRequest -Uri 'https://download.flickdock.cc.cd/v1.8.38/FlickDock-Setup-1.8.38.exe' `
+            -UserAgent 'FlickDock-Release/1' -TimeoutSec 120 -OutFile $previous
+          if ((Get-FileHash $previous -Algorithm SHA256).Hash -ne 'a780ad44fb52fc461bba21e0f28f830eed4a90ab11c0a8a2cfbba054b3d83390') {
+            throw 'The 1.8.38 installer does not match the previous signed channel'
+          }
+          function Install-FlickDock($installer) {
+            $options = "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /NOICONS /TASKS= /DIR=`"$install`""
+            $process = Start-Process -FilePath $installer -ArgumentList $options -WindowStyle Hidden -PassThru -Wait
+            if ($process.ExitCode -ne 0) { throw "Installer exited with $($process.ExitCode)" }
+          }
+          Install-FlickDock $previous
           $env:QT_QPA_PLATFORM = 'offscreen'
-          $env:APPDATA = Join-Path $root 'roaming'
-          $env:LOCALAPPDATA = Join-Path $root 'local'
-          $args = "--verify-update --verify-current 1.8.38 --verify-output `"$reportPath`""
-          $process = Start-Process -FilePath (Join-Path $install 'FlickDock.exe') -ArgumentList $args -WindowStyle Hidden -PassThru -Wait
-          $report = Get-Content $reportPath -Raw | ConvertFrom-Json
-          Get-Content $reportPath
-          if ($process.ExitCode -ne 0 -or -not $report.ok -or -not $report.frozen -or
+          $nativeRoaming = $env:APPDATA
+          $nativeLocal = $env:LOCALAPPDATA
+          function Invoke-UpdateCheck($reportName) {
+            $reportPath = Join-Path $root $reportName
+            $env:APPDATA = Join-Path $root 'roaming'
+            $env:LOCALAPPDATA = Join-Path $root 'local'
+            try {
+              $options = "--verify-update --verify-output `"$reportPath`""
+              $process = Start-Process -FilePath (Join-Path $install 'FlickDock.exe') -ArgumentList $options -WindowStyle Hidden -PassThru -Wait
+              $raw = Get-Content $reportPath -Raw
+              Write-Host $raw
+              $report = $raw | ConvertFrom-Json
+              if ($process.ExitCode -ne 0 -or -not $report.ok -or -not $report.frozen) {
+                throw 'Frozen updater check failed'
+              }
+              return $report
+            } finally {
+              $env:APPDATA = $nativeRoaming
+              $env:LOCALAPPDATA = $nativeLocal
+            }
+          }
+          $report = Invoke-UpdateCheck 'update-from-1.8.38.json'
+          if ($report.version -ne '1.8.38' -or $report.simulated_current -ne '1.8.38' -or
               -not $report.verified_download -or $report.installer_executed -or
-              $report.version -ne '1.8.39' -or $report.available_version -ne '1.8.39' -or
+              $report.available_version -ne '1.8.39' -or
               $report.latest_version -ne '1.8.39' -or $report.download_sha256 -ne $build.setup.sha256 -or
               $report.download_bytes -ne $build.setup.bytes) {
             throw 'Shipped updater did not authenticate and download the released installer'
+          }
+          Install-FlickDock $setup
+          $report = Invoke-UpdateCheck 'update-current-1.8.39.json'
+          if ($report.version -ne '1.8.39' -or -not $report.up_to_date) {
+            throw 'Installed upgrade did not report the published version as current'
           }
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
           name: FlickDock-Windows-public-update-1.8.39
-          path: ${{ runner.temp }}/flickdock-windows-update/update.json
+          path: ${{ runner.temp }}/flickdock-windows-update/update-*.json
           retention-days: 3
