@@ -12,5 +12,6 @@ jobs:
     uses: ./.github/workflows/macos-build.yml
     with:
       test_build: true
+      desktop_checks: true
   windows:
     uses: ./.github/workflows/release-windows.yml

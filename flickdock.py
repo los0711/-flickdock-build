@@ -1326,7 +1326,8 @@ class ShelfManager:
                 self.shelf.isVisible() and self.shelf.visible_state != 'hiding'):
             return
         self._content_gesture_at=None
-        if self._magnetic_preempts_shake(position) or self._magnetic_preempts_shake(QCursor.pos()):
+        if (sys.platform=='darwin' and getattr(self,'edge_absorb',None) is not None
+                and (self._magnetic_preempts_shake(position) or self._magnetic_preempts_shake(QCursor.pos()))):
             return
         shelf = self.active_shelf or self.shelves[0]
         # A surface that is still fading out (or stranded in that state) must
