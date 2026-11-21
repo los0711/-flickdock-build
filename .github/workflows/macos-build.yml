@@ -53,20 +53,42 @@ jobs:
           architecture: arm64
       - name: Install native checks
         run: python -m pip install -r requirements.txt 'pyobjc-framework-Quartz>=11,<13'
-
-      - name: Stabilize available display area on disposable macOS 27 runner
+      - name: Regress saved screenshots and permission identity
+        run: |
+          QT_QPA_PLATFORM=offscreen python - <<'PY'
+          import unittest
+          from PySide6.QtCore import QPoint
+          from PySide6.QtGui import QCursor
+          from PySide6.QtWidgets import QApplication
+          app=QApplication([])
+          app.setQuitOnLastWindowClosed(False)
+          QCursor.setPos(QPoint(1200,900))
+          suite=unittest.defaultTestLoader.loadTestsFromName('test_local_clipboard_history')
+          result=unittest.TextTestRunner(verbosity=2).run(suite)
+          assert result.wasSuccessful()
+          PY
+          QT_QPA_PLATFORM=offscreen python -m unittest test_saved_screenshots test_mac_permissions_v1821 test_clipboard_sync_v1819 test_stability_v1822.PermissionRecoveryTests test_window_zoom_v1824 -q
+      - name: Exercise native file events and movable permission window
+        run: |
+          profile="$(mktemp -d "$RUNNER_TEMP/saved-native.XXXXXX")"
+          APPDATA="$profile" HOME="$profile" XDG_CONFIG_HOME="$profile" QT_QPA_PLATFORM=cocoa python verify_saved_screenshots.py --verify-saved-screenshots "$profile/source.json"
+          cp "$profile/source.json" saved-screenshots-source.json
+      - name: Paste native text and screenshot images into an independent app
+        run: QT_QPA_PLATFORM=cocoa python ci_clipboard_history_native.py driver "$RUNNER_TEMP/history-native-test"
+      - name: Stabilize hosted Dock area for default-size comparison
         run: |
           defaults write com.apple.dock autohide -bool true
           killall Dock
           sleep 2
-      - name: Diagnose native utility geometry
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          import sys
-          value=Path('ci_utility_windows.py').read_text()
-          value=value.replace('initial=window.size();area=window.screen().availableGeometry()', "initial=window.size();area=window.screen().availableGeometry();print('INITIAL',window.windowTitle(),initial,area,flush=True)")
-          value=value.replace('assert window.size()==initial,(window.size(),initial)', "print('REOPEN',window.windowTitle(),window.size(),initial,area,window.screen().availableGeometry(),flush=True);assert window.size()==initial,(window.size(),initial)")
-          sys.argv=['ci_utility_windows.py','--output','native-geometry.json']
-          exec(compile(value,'ci_utility_windows.py','exec'),{'__name__':'__main__','__file__':str(Path('ci_utility_windows.py').resolve())})
-          PY
+      - name: Verify native utility controls before packaging
+        run: python ci_utility_windows.py --output "$RUNNER_TEMP/native-utility-source.json"
+      - name: Retain native proof
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: mac-saved-screenshot-native
+          path: |
+            saved-screenshots-source.json
+            ${{ runner.temp }}/saved-native.*/source.json
+          retention-days: 3
+
