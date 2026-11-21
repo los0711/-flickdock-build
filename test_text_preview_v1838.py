@@ -6,6 +6,25 @@ from text_preview import TEXT_PREVIEW_BYTES,read_text_preview
 import test_html_native_workspace as w
 
 class TextPreviewTests(unittest.TestCase):
+    def test_long_text_preview_scrolls_without_edge_overlays(self):
+        from settings_navigation import install_smooth_scrolling
+        install_smooth_scrolling(w.APP)
+        fixture=w.WorkspaceTests();fixture.setUp()
+        try:
+            path=fixture.base/'scrollable.txt'
+            path.write_text('预览内容。\n'*180,encoding='utf-8')
+            fixture.shelf.add_paths('permanent',[str(path)])
+            preview=fixture.overview().preview
+            preview.show_path(str(path))
+            scrollbar=preview.text.verticalScrollBar()
+            w.until(lambda:preview.text.isVisible() and scrollbar.maximum()>0)
+            scrollbar.setValue(scrollbar.maximum()//2)
+            w.flush()
+            self.assertGreater(scrollbar.value(),0)
+            self.assertIs(preview.text.property('scrollEdgeBlur'),False)
+            self.assertIsNone(getattr(preview.text,'_flickdock_edge_fade',None))
+        finally:fixture.tearDown()
+
     def test_bounded_preview_is_async_and_copy_keeps_original_file(self):
         fixture=w.WorkspaceTests();fixture.setUp()
         try:

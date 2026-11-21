@@ -80,6 +80,26 @@ class FeedbackTests(unittest.TestCase):
         self.assertEqual(preview.send_button.property('referenceVariant'),'primary')
         self.assertEqual(preview.remove_button.property('referenceVariant'),'danger')
 
+    def test_dark_preview_actions_are_visible_against_the_card(self):
+        from native_ui_common import colors
+        from reference_widgets import refresh_tree
+        import ui_theme
+        original=ui_theme.current_theme()
+        try:
+            ui_theme.set_theme('dark');self.fixture.settings.update(theme='dark')
+            view=self.fixture.overview()
+            view.select_item(self.fixture.paths[0]);refresh_tree(self.shelf,'dark');flush()
+            preview=view.preview
+            preview.open_button.setAttribute(Qt.WA_UnderMouse,False)
+            surface,stroke,_=preview.action_icon_group.surface_style()
+            c=colors('dark')
+            self.assertEqual((surface,stroke),(c['control'],c['input_border']))
+            self.assertNotEqual(surface,c['card'])
+            image=preview.open_button.grab().toImage()
+            dpr=image.devicePixelRatio()
+            self.assertEqual(image.pixelColor(round(7*dpr),image.height()//2).name(),QColor(surface).name())
+        finally:ui_theme.set_theme(original)
+
     def test_checkbox_full_target_paste_hidden_and_deselect_is_red(self):
         view=self.fixture.overview();row=view.rows_body.findChildren(FileRow)[0]
         QTest.mouseClick(row.selection_check,Qt.LeftButton,pos=QPoint(2,2));flush()

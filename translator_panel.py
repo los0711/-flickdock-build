@@ -38,7 +38,6 @@ class TranslatorDialog(ReferenceModalDialog):
         self.manager=manager;self._theme=None;self._theme_key=None;self._closing=False;self._pinning=False;self._transport=None
         self._preset_key=None;self._shown_result=None;self._shown_source=None;self._active_preset=''
         self._compact_footer=None;self._notice='';self._notice_role='secondary';self._shown_notice_role='red'
-        self._was_translating=False
         self._was_polishing=False
         self._last_polish_revision={}
         self._polish_arrival=PolishArrival(self)
@@ -785,10 +784,8 @@ class TranslatorDialog(ReferenceModalDialog):
             for dialog in self._managers.values():dialog.refresh()
             if hasattr(self,'history'):self.history.refresh()
         state=self.session
-        reveal_result=self._was_translating and state.phase=='ready' and not state.error
         finished_polish=self._was_polishing and state.phase in ('idle','ready') and not state.error
         self._was_polishing=state.phase=='polishing'
-        self._was_translating=state.phase=='translating'
         if state.busy:
             self.source_editor.finish_reveal()
             self.output_editor.finish_reveal()
@@ -842,7 +839,6 @@ class TranslatorDialog(ReferenceModalDialog):
             if polished:
                 editor.start_reveal(value)
                 polish_arrivals.extend(controls)
-            elif updated and side=='target' and reveal_result:editor.start_reveal(value)
         if polish_arrivals:self._polish_arrival.start(polish_arrivals)
         if pair_changed and self._alignment_side is not None:self._mirror_selection(self._alignment_side)
         self.source_editor.setEnabled(self.store.ready)

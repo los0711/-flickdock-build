@@ -262,11 +262,13 @@ class IconTextButton(QPushButton):
         if name=='previewIconActions':
             if not enabled:fill='transparent'
             elif variant=='danger':fill='rgba(255,69,58,58)' if down else 'rgba(255,69,58,30)' if hover else 'transparent'
-            else:fill=('#38383d' if theme=='dark' else '#cdcdcf') if down else ('#29292d' if theme=='dark' else '#dddddf') if hover else 'transparent'
+            else:fill=(c['control_pressed'] if theme=='dark' else '#cdcdcf') if down else (c['control_hover'] if theme=='dark' else '#dddddf') if hover else 'transparent'
         elif self.property('previewOpen'):
-            fill=(('#38383d' if theme=='dark' else '#d4d4d7') if down else
-                  ('#2c2c31' if theme=='dark' else '#e1e1e3') if hover else
-                  ('#1d1d21' if theme=='dark' else '#eeeeef')) if enabled else c['control']
+            if theme=='dark':
+                fill=c['control_pressed' if down else 'control_hover' if hover else 'control']
+                edge=c['input_border']
+            else:
+                fill=('#d4d4d7' if down else '#e1e1e3' if hover else '#eeeeef') if enabled else c['control']
         elif isinstance(parent,SelectionSurface):
             if parent._selection_vertical and parent._selection_color_role=='rail_active':
                 fill=(c['rail_item_hover'] if (hover or down) else 'transparent') if enabled and not self.isChecked() else 'transparent'
@@ -630,7 +632,9 @@ class _SplitSendSurface(RoundedSurfaceFrame):
 class _PreviewActionSurface(RoundedSurfaceFrame):
     def __init__(self,parent=None):super().__init__(parent,content_inset=0)
     def surface_style(self):
-        return ('#141417' if ui_theme.current_theme()=='dark' else '#ededee'),None,RADIUS_CONTROL_PX
+        if ui_theme.current_theme()=='dark':
+            c=palette();return c['control'],c['input_border'],RADIUS_CONTROL_PX
+        return '#ededee',None,RADIUS_CONTROL_PX
 
 
 def split_send_button(parent,height,*,preview=False):
@@ -1762,7 +1766,7 @@ def build_preview(view,elided_type,image_type,media_type,content_type):
     view.stack=PreviewSurfaceStack(content);view.stack.setMinimumHeight(176);view.stack.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Expanding)
     view.icon=content_type(view,motion=view.shelf.manager.motion)
     view.text=RoundedPreviewText(view);view.text.setReadOnly(True);view.text.setAcceptDrops(False);view.text.viewport().setAcceptDrops(False)
-    if sys.platform=='darwin':view.text.setProperty('scrollEdgeBlur',False)
+    view.text.setProperty('scrollEdgeBlur',False)
     css(view.text,"QPlainTextEdit{background:transparent;color:#F5F5F7;border:0;padding:14px;font:13px 'FlickDock UI';}",
         "QPlainTextEdit{background:transparent;color:#1D1D1F;border:0;padding:14px;font:13px 'FlickDock UI';}")
     view.image=image_type(view);view.image.set_loader(view.shelf.image_cache);view.image.source_ready.connect(view._image_source_ready)

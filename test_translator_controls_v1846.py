@@ -126,28 +126,19 @@ class PanelTests(unittest.TestCase):
             self.fixture.api.finish('こんにちは。')
         self.assertFalse(view.output_task.isVisible())
 
-    def test_streaming_reveal_moves_native_text_and_keeps_the_full_result(self):
+    def test_translation_completion_displays_the_whole_document_without_reveal(self):
         view=self.fixture.view
         view.session.set_language('target','en')
         view.session.set_language('source','zh')
         view.source_editor.setPlainText('原文测试。')
-        text='A different result with several words.\nAnd a second line.'
+        text='\n'.join(f'Translated line {number}.' for number in range(160))
         with patch('translator_widgets.reduced_motion',return_value=False):
             self.assertTrue(view.session.translate())
             self.fixture.api.finish(text)
             editor=view.output_editor
             self.assertEqual(editor.toPlainText(),text)
-            self.assertTrue(editor._reveal.isActive())
-            self.assertEqual(editor._delay,.07)
-            from PySide6.QtTest import QTest
-            first=editor.viewport().grab().toImage()
-            QTest.qWait(230)
-            stage=editor.viewport().grab().toImage()
-            self.assertNotEqual(first,stage)
-            QTest.mouseClick(editor.viewport(),Qt.LeftButton)
             self.assertFalse(editor._reveal.isActive())
-            self.assertEqual(editor.toPlainText(),text)
-            self.assertNotEqual(editor.viewport().grab().toImage(),stage)
+            self.assertFalse(view.output_task.isVisible())
 
     def test_translator_joined_speech_caps_and_pill_size(self):
         view=self.fixture.view

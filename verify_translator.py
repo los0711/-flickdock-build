@@ -4,6 +4,39 @@ from pathlib import Path
 from types import SimpleNamespace
 
 
+def _verify_cocoa_pin(view, settle):
+    import ctypes
+    import AppKit
+    import objc
+    from PySide6.QtCore import Qt
+
+    window = view.windowHandle()
+    native = objc.objc_object(c_void_p=ctypes.c_void_p(int(view.winId()))).window()
+    number, geometry = native.windowNumber(), view.geometry()
+    assert native.level() == AppKit.NSNormalWindowLevel
+    view.pin_button.click()
+    settle()
+    assert native.level() > AppKit.NSNormalWindowLevel
+    assert not native.hidesOnDeactivate()
+
+    # Cocoa recalculates its native level from the QWindow flags during
+    # native style changes and full-screen transitions.
+    shadowless = bool(window.flags() & Qt.NoDropShadowWindowHint)
+    window.setFlag(Qt.NoDropShadowWindowHint, not shadowless)
+    window.setFlag(Qt.NoDropShadowWindowHint, shadowless)
+    settle()
+    assert native.level() >= AppKit.NSModalPanelWindowLevel, 'Cocoa lost the pin when Qt reapplied its flags'
+    assert view.windowHandle() is window and native.windowNumber() == number
+    assert view.geometry() == geometry and view.isVisible()
+    view.hide()
+    view.show()
+    settle()
+    assert native.level() >= AppKit.NSModalPanelWindowLevel
+    view.pin_button.click()
+    settle()
+    assert native.level() == AppKit.NSNormalWindowLevel
+
+
 def run(argv,load_font):
     from offscreen_verify import verification_platform_allowed
     if not verification_platform_allowed():raise RuntimeError('Translator verification requires isolated Qt verification mode')
@@ -61,6 +94,9 @@ def run(argv,load_font):
                 assert all(button.isVisible() for button in group.buttons.values()),'A macOS caption control is hidden'
                 assert tuple(group.buttons)==('close','min','max')
                 report['mac_leading_controls']=True
+                if app.platformName()=='cocoa':
+                    _verify_cocoa_pin(view,settle)
+                    report['mac_translator_topmost']=True
             assert view.output_editor.toPlainText()=='Hello, please confirm the delivery schedule.'
             view.session.polish('更亲切');api.finish('Hello, could you please confirm the delivery schedule?');settle()
             assert view.session.original=='Hello, please confirm the delivery schedule.';view.session.undo();assert not view.session.revisions
