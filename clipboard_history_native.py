@@ -10,7 +10,7 @@ from enum import Enum
 from functools import lru_cache
 from itertools import groupby
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import struct
 import sys
 import time
@@ -190,7 +190,7 @@ _IMAGE_PASTE_SEQUENCES=deque(maxlen=12)
 _MAX_BACKUP_BYTES=96*1024*1024
 _PASTE_GRACE_SECONDS=.40
 _MAC_FILE_PASTE_GRACE_SECONDS=1.
-_MAC_HISTORY_ECHO_SECONDS=5.
+_MAC_HISTORY_ECHO_SECONDS=30.
 _MAC_HISTORY_ECHOES=deque(maxlen=32)
 _MAC_HISTORY_ECHO_LOCK=Lock()
 # Inserting a history card temporarily owns the system clipboard. That
@@ -205,6 +205,9 @@ _HISTORY_PASTE_STATE_LOCK=Lock()
 _HISTORY_PASTE_DEPTH=0
 _HISTORY_PASTE_SETTLE_UNTIL=0.
 _HISTORY_PASTE_STAMPS=deque(maxlen=64)
+_HISTORY_COPY_SHORTCUT=None
+_HISTORY_COPY_SEQUENCE=None
+_CLIPBOARD_IMAGE_SUFFIXES=frozenset(('.png','.jpg','.jpeg','.webp','.bmp','.tif','.tiff'))
 
 
 def _mac_file_identity(path):
@@ -282,8 +285,31 @@ def history_paste_echo(value):
 
 def mac_history_echo_memory():
     """Whether any history payload is still remembered for echo classification."""
+    now=time.monotonic()
     with _MAC_HISTORY_ECHO_LOCK:
-        return bool(_MAC_HISTORY_ECHOES)
+        return any(expires is None or expires>=now for _,_,expires in _MAC_HISTORY_ECHOES)
+
+
+def note_history_copy_shortcut(sequence):
+    """Mark a real Copy/Cut chord while a recent local paste can be replayed."""
+    global _HISTORY_COPY_SHORTCUT,_HISTORY_COPY_SEQUENCE
+    if sequence is None:return
+    with _HISTORY_PASTE_STATE_LOCK:
+        _HISTORY_COPY_SHORTCUT=(sequence,time.monotonic()+1.5)
+        _HISTORY_COPY_SEQUENCE=None
+
+
+def explicit_history_copy(sequence):
+    global _HISTORY_COPY_SHORTCUT,_HISTORY_COPY_SEQUENCE
+    if sequence is None:return False
+    with _HISTORY_PASTE_STATE_LOCK:
+        if _HISTORY_COPY_SHORTCUT is None:return False
+        before,expires=_HISTORY_COPY_SHORTCUT
+        if time.monotonic()>=expires:
+            _HISTORY_COPY_SHORTCUT=None
+            return False
+        if sequence!=before and _HISTORY_COPY_SEQUENCE is None:_HISTORY_COPY_SEQUENCE=sequence
+        return sequence==_HISTORY_COPY_SEQUENCE
 
 
 def _mac_file_from_text(value):
@@ -303,6 +329,21 @@ def mac_history_path_is_private(path,roots):
     return any(location.is_relative_to(root) for root in roots)
 
 
+def wetype_clipboard_reference(path):
+    """WeType's generated clipboard files belong to its relay, not a new Copy."""
+    if sys.platform!='win32':return False
+    root=Path.home()/'AppData'/'LocalLow'/'Tencent'/'WeType'/'ClipboardTmp'
+    return PureWindowsPath(os.path.normpath(path)).is_relative_to(PureWindowsPath(root))
+
+
+def wetype_clipboard_owner(executable):
+    if not executable:return False
+    path=PureWindowsPath(executable)
+    installers={'wetype.exe','wetype_server.exe','wetype_renderer.exe','wetype_service.exe'}
+    return (path.name.casefold() in installers
+            and any(part.casefold()=='wetype' for part in path.parent.parts))
+
+
 def mac_clipboard_file_needs_resolving(path):
     return path.startswith('/.file/id=')
 
@@ -320,7 +361,7 @@ def mac_history_echo_candidate(value):
     return kind=='files' or (kind=='text' and bool(_mac_file_from_text(data['text']))) or bool(_mac_history_recent(kind))
 
 
-def mac_history_echo(value,roots):
+def mac_history_echo(value,roots,*,explicit_copy=False,cancel=None):
     """Classify clipboard echoes before observation or publishing, on a worker."""
     kind,data=value
     text_path=_mac_file_from_text(data['text']) if kind=='text' else None
@@ -332,10 +373,17 @@ def mac_history_echo(value,roots):
         if path is None:return True
         if mac_history_path_is_private(os.path.realpath(path),roots):return True
         resolved.append(path)
+    if explicit_copy:return False
     recent_files=_mac_history_recent('files') if resolved else ()
     if recent_files:
         keys=_mac_history_keys(('files',resolved))
         if any(keys.intersection(row) for row in recent_files):return True
+    if len(resolved)==1 and Path(resolved[0]).suffix.lower() in _CLIPBOARD_IMAGE_SUFFIXES:
+        recent_images=_mac_history_recent('image')
+        if recent_images:
+            from clipboard_identity import content_keys
+            keys=content_keys(('files',resolved),read_files=True,cancel=cancel)
+            if any(keys.intersection(row) for row in recent_images):return True
     recent=_mac_history_recent(kind) if kind!='files' else ()
     if not recent:return False
     keys=_mac_history_keys(value)
@@ -637,7 +685,8 @@ def _paste_mac_payload(payload,target,cancel,*,image=False,files=False):
             provider.error=None
             provider.finished=False
             if not item.setDataProvider_forTypes_(provider,list(entry)):return MacPasteResult.UNAVAILABLE
-            if not item.setData_forType_(NSData.data(),'org.nspasteboard.TransientType'):return MacPasteResult.UNAVAILABLE
+            for privacy_type in ('org.nspasteboard.TransientType','org.nspasteboard.ConcealedType',_MAC_GENERATED):
+                if not item.setData_forType_(NSData.data(),privacy_type):return MacPasteResult.UNAVAILABLE
             if not item.setData_forType_(native_marker,_MAC_HISTORY_PASTE):return MacPasteResult.UNAVAILABLE
             items.append(item);providers.append(provider)
         down=Quartz.CGEventCreateKeyboardEvent(None,9,True)  # kVK_ANSI_V

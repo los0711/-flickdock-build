@@ -11,6 +11,7 @@ VIRTUAL_READ_TIMEOUT_MS=45000
 MAX_PAYLOAD_BYTES=20*1024*1024
 MAX_METADATA_BYTES=MAX_PAYLOAD_BYTES+65536
 DIRECTORY=re.compile(r'clip-read-[a-f0-9]{32}\Z')
+LOCAL_ONLY_CODES=frozenset(('PRIVATE_NATIVE_CLIPBOARD','WETYPE_CLIPBOARD_RELAY'))
 
 
 def foreign_clipboard_lock():
@@ -23,6 +24,31 @@ def foreign_clipboard_lock():
     pid=wintypes.DWORD()
     if not api.GetWindowThreadProcessId(window,ctypes.byref(pid)):raise ctypes.WinError()
     return pid.value!=os.getpid()
+
+
+def clipboard_owner_executable():
+    """Identify the publisher in the clipboard worker without querying its UI."""
+    from ctypes import wintypes
+    user=ctypes.WinDLL('user32',use_last_error=True)
+    kernel=ctypes.WinDLL('kernel32',use_last_error=True)
+    user.GetClipboardOwner.restype=wintypes.HWND
+    user.GetWindowThreadProcessId.argtypes=(wintypes.HWND,ctypes.POINTER(wintypes.DWORD))
+    kernel.OpenProcess.argtypes=(wintypes.DWORD,wintypes.BOOL,wintypes.DWORD)
+    kernel.OpenProcess.restype=wintypes.HANDLE
+    kernel.QueryFullProcessImageNameW.argtypes=(wintypes.HANDLE,wintypes.DWORD,wintypes.LPWSTR,
+                                               ctypes.POINTER(wintypes.DWORD))
+    kernel.CloseHandle.argtypes=(wintypes.HANDLE,)
+    owner=user.GetClipboardOwner()
+    pid=wintypes.DWORD()
+    if not owner or not user.GetWindowThreadProcessId(owner,ctypes.byref(pid)):return None
+    process=kernel.OpenProcess(0x1000,False,pid.value)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not process:return None
+    try:
+        buffer=ctypes.create_unicode_buffer(32768)
+        length=wintypes.DWORD(len(buffer))
+        if kernel.QueryFullProcessImageNameW(process,0,buffer,ctypes.byref(length)):return buffer.value
+        return None
+    finally:kernel.CloseHandle(process)
 
 
 def _read_result(directory,cancel):
@@ -84,11 +110,12 @@ class NativeClipboardReader(QObject):
         self.cached_sequence=None;self.value=None;self.wanted=None;self.issue=''
         self.directory=None;self.error='';self.virtual_wait=False
         self.failure_sequence=None;self.failures=0;self.retry_at=0.;self.rejected_sequence=None
+        self.rejected_issue=''
         self.timer=QTimer(self);self.timer.setSingleShot(True);self.timer.timeout.connect(self._timeout)
 
     def read(self,sequence):
         if sequence==self.rejected_sequence and sequence is not None:
-            self.issue='REMOTE_FILE_PLACEHOLDER';return False,None
+            self.issue=self.rejected_issue;return False,None
         if self.cached_sequence==sequence:return True,self.value
         self.wanted=sequence
         if self.closed or self.process is not None or self.loading:return False,None
@@ -130,7 +157,8 @@ class NativeClipboardReader(QObject):
 
     def _reject(self,code):
         sequence=self.sequence()
-        if code=='REMOTE_FILE_PLACEHOLDER':self.rejected_sequence=sequence
+        if code=='REMOTE_FILE_PLACEHOLDER' or code in LOCAL_ONLY_CODES:
+            self.rejected_sequence=sequence;self.rejected_issue=code
         self.failures=self.failures+1 if sequence==self.failure_sequence else 1
         self.failure_sequence=sequence
         self.retry_at=time.monotonic()+min(30.,.25*2**min(self.failures,7))
@@ -150,7 +178,12 @@ class NativeClipboardReader(QObject):
             self.jobs.discard(job);self.loading=False
             if self.closed:self._discard(directory);return
             if error or not value.get('ok'):
-                self._discard(directory);self._reject((value or {}).get('code','NATIVE_READ_INVALID_REPLY'));return
+                self._discard(directory)
+                rejected=value or {}
+                code=rejected.get('code','NATIVE_READ_INVALID_REPLY')
+                if code in LOCAL_ONLY_CODES and rejected.get('sequence')!=self.sequence():
+                    self.failed.emit('NATIVE_READ_REPLACED');return
+                self._reject(code);return
             if value['sequence']!=self.sequence():
                 self._discard(directory);self.failed.emit('NATIVE_READ_REPLACED');return
             self.cached_sequence=value['sequence'];self.value=value['value'];self.issue='';self.failures=0;self.rejected_sequence=None
@@ -181,14 +214,17 @@ def run_worker(path):
         stage='INITIALIZE'
         from PySide6.QtGui import QGuiApplication
         from clipboard_sync import native_sequence,_snapshot_mime,native_format_count
-        from clipboard_history_native import private_clipboard
+        from clipboard_history_native import private_clipboard,wetype_clipboard_owner,wetype_clipboard_reference
         from virtual_clipboard import DESCRIPTOR_MIME,describe,materialize,VirtualClipboardError,only_remote_placeholders
         app=QGuiApplication.instance() or QGuiApplication([]);clipboard=app.clipboard()
         if native_sequence()!=expected:raise VirtualClipboardError('NATIVE_READ_REPLACED')
         stage='CAPTURE'
         for attempt in range(2):
-            app.processEvents();before=native_sequence();mime=clipboard.mimeData()
-            history_private=private_clipboard()
+            app.processEvents();before=native_sequence()
+            if before!=expected:raise VirtualClipboardError('NATIVE_READ_REPLACED')
+            if private_clipboard():raise VirtualClipboardError('PRIVATE_NATIVE_CLIPBOARD')
+            if wetype_clipboard_owner(clipboard_owner_executable()):raise VirtualClipboardError('WETYPE_CLIPBOARD_RELAY')
+            mime=clipboard.mimeData()
             if mime is None:raise ValueError('Clipboard unavailable')
             if mime.hasUrls() and any(url.isLocalFile() for url in mime.urls()) and not only_remote_placeholders(mime):value=_snapshot_mime(mime)
             elif mime.hasFormat(DESCRIPTOR_MIME):
@@ -197,6 +233,8 @@ def run_worker(path):
                 result=materialize(mime,files,{'sequence':before,'descriptor':descriptor.sha256},native_sequence)
                 value=('files',[str(files/result['name'])])
             else:value=_snapshot_mime(mime)
+            if value and value[0]=='files' and any(wetype_clipboard_reference(ref) for ref in value[1]):
+                raise VirtualClipboardError('WETYPE_CLIPBOARD_RELAY')
             sequence=native_sequence()
             if before==sequence:break
         else:raise VirtualClipboardError('NATIVE_READ_REPLACED')
@@ -205,14 +243,14 @@ def run_worker(path):
         if kind=='image':
             output=dict(ok=True,sequence=sequence,kind=kind,mime=_store_image(directory,data));data=None
         else:output=dict(ok=True,sequence=sequence,kind=kind,data=data)
-        if history_private:output['history_private']=True
         encoded=json.dumps(output,ensure_ascii=False).encode('utf8')
         if len(encoded)>MAX_METADATA_BYTES:raise ValueError('Clipboard payload too large')
         (directory/'result.json').write_bytes(encoded);return 0
     except Exception as error:
         if validated:
             code=getattr(error,'code','NATIVE_READ_'+stage+'_'+type(error).__name__.upper())
-            (directory/'result.json').write_text(json.dumps(dict(ok=False,code=code)),encoding='utf8')
+            (directory/'result.json').write_text(json.dumps(dict(ok=False,code=code,sequence=expected
+                if code in ('PRIVATE_NATIVE_CLIPBOARD','WETYPE_CLIPBOARD_RELAY') else None)),encoding='utf8')
             return 0
         return 1
 

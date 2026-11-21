@@ -1,7 +1,7 @@
 """Route a paste only while the pointer is over a visible shelf.
 
-The native boundary never stores keystrokes or reads the clipboard. It only
-recognizes the paste chord and queues the already selected target to Qt.
+The native boundary queues accepted Paste chords to Qt. Copy/Cut chords
+record a clipboard sequence during local history replay detection.
 Offscreen verification installs no native hooks or system hotkeys.
 """
 from __future__ import annotations
@@ -11,6 +11,13 @@ import sys
 from PySide6.QtCore import QObject, QEvent, Qt, Signal, QTimer
 from PySide6.QtGui import QKeySequence
 from platform_native import native_input_available
+
+
+def _note_copy_shortcut():
+    from clipboard_history_native import mac_history_echo_memory,note_history_copy_shortcut
+    if not mac_history_echo_memory():return
+    from clipboard_sync import native_sequence
+    note_history_copy_shortcut(native_sequence())
 
 
 def pointer_over_shelf(widget,point,*,platform=None,user32=None,quartz=None,window_number=None):
@@ -75,14 +82,16 @@ class WinPointerPaste:
     def _event(self,code,message,address):
         if code>=0 and not self._closed and address:
             try:
-                key=_KeyboardInput.from_address(address).key
+                data=_KeyboardInput.from_address(address);key=data.key
                 pressed=message in (0x100,0x104);released=message in (0x101,0x105)
                 if key in self._held:
                     if released:self._held.discard(key)
                     if pressed or released:return 1
-                if pressed and key in (0x56,0x2D):
+                if pressed and key in (0x43,0x58,0x56,0x2D):
                     down=lambda vk:bool(self.api.GetAsyncKeyState(vk)&0x8000)
                     ctrl,shift,alt,meta=down(0x11),down(0x10),down(0x12),down(0x5B) or down(0x5C)
+                    if key in (0x43,0x58) and ctrl and not (shift or alt or meta or data.flags&0x10):
+                        _note_copy_shortcut()
                     paste=(key==0x56 and ctrl and not shift or key==0x2D and shift and not ctrl) and not alt and not meta
                     if paste and self.accept():self._held.add(key);return 1
             except (OSError,RuntimeError,ValueError,TypeError):pass
@@ -130,7 +139,12 @@ class MacPointerPaste:
             self.check_health()
             return event
         try:
-            if q.CGEventGetIntegerValueField(event,q.kCGKeyboardEventKeycode)!=9:return event
+            key=q.CGEventGetIntegerValueField(event,q.kCGKeyboardEventKeycode)
+            if key in (7,8) and kind==q.kCGEventKeyDown:  # X, C
+                flags=q.CGEventGetFlags(event)
+                modifiers=q.kCGEventFlagMaskCommand|q.kCGEventFlagMaskControl|q.kCGEventFlagMaskAlternate|q.kCGEventFlagMaskShift
+                if flags&modifiers==q.kCGEventFlagMaskCommand:_note_copy_shortcut()
+            if key!=9:return event
             if self._held:
                 if kind==q.kCGEventKeyUp:self._held=False
                 return None

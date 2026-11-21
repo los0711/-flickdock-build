@@ -4,7 +4,7 @@ Only control requests are added when a shelf attaches. The raw payload remains
 owned by ClipboardSync; the shelf uses the server's existing instant receipt.
 """
 from __future__ import annotations
-import hashlib,json,mimetypes,os,time
+import hashlib,json,mimetypes,os,sys,time
 from pathlib import Path
 from uuid import UUID,uuid4
 from PySide6.QtCore import QObject,QTimer,Signal
@@ -143,8 +143,9 @@ class ClipboardFileJobs(QObject):
     def _restore(self,task):
         if not self.valid(task):return
         roots=self.client._history_file_roots
-        from clipboard_history_native import history_paste_echo,mac_history_echo,mac_history_echo_memory
-        if (roots or mac_history_echo_memory()) and not task.get('_file_origin_checked'):
+        from clipboard_history_native import history_paste_echo,mac_history_echo,mac_history_echo_memory,wetype_clipboard_reference
+        verify=roots or self.client._is_native and (sys.platform=='win32' or mac_history_echo_memory())
+        if verify and not task.get('_file_origin_checked'):
             def checked(allowed):
                 if not self.valid(task):return
                 if not allowed:
@@ -152,7 +153,8 @@ class ClipboardFileJobs(QObject):
                 task['_file_origin_checked']=True
                 self._restore_verified(task)
             def forwarded(cancel,value=('files',[task['file_source']])):
-                return not (mac_history_echo(value,roots) or history_paste_echo(value))
+                return not (wetype_clipboard_reference(task['file_source'])
+                            or mac_history_echo(value,roots,cancel=cancel) or history_paste_echo(value))
             task['_job']=self.client._work(forwarded,checked)
             return
         self._restore_verified(task)

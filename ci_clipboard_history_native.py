@@ -2,11 +2,12 @@
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import time
 
-from PySide6.QtCore import QPoint, QRect, QRectF, QTimer, Qt
+from PySide6.QtCore import QMimeData, QPoint, QRect, QRectF, QTimer, Qt, QUrl
 from PySide6.QtGui import QColor, QCursor, QImage, QKeySequence, QPainter
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QTextEdit
@@ -26,6 +27,46 @@ def wait_for(predicate):
     while not predicate():
         if time.monotonic()>deadline:raise AssertionError('Native text target timed out')
         QTest.qWait(20)
+
+
+def check_windows_bridge(root,app):
+    from clipboard_sync import native_sequence
+    from native_clipboard_reader import NativeClipboardReader,clipboard_owner_executable
+
+    owner=root/'Tencent'/'WeType'/'wetype_server.exe'
+    owner.parent.mkdir(parents=True)
+    shutil.copy2(sys.executable,owner)
+    ready=root/'bridge-ready'
+    code='''import sys
+from pathlib import Path
+from PySide6.QtWidgets import QApplication
+app=QApplication([])
+app.clipboard().setText('Synthetic bridge text')
+Path(sys.argv[1]).touch()
+app.exec()
+'''
+    env=dict(os.environ,PYTHONHOME=sys.base_prefix,
+             PATH=str(Path(sys.executable).parent)+os.pathsep+os.environ['PATH'])
+    producer=subprocess.Popen([str(owner),'-c',code,str(ready)],env=env,creationflags=subprocess.CREATE_NO_WINDOW)
+    cache=root/'bridge-qa'/'clipboard-cache';cache.mkdir(parents=True)
+    reader=NativeClipboardReader(cache,native_sequence)
+    rejected=[];observed=[]
+    reader.failed.connect(rejected.append)
+    reader.ready.connect(lambda sequence,value,directory:observed.append(value))
+    try:
+        wait_for(ready.is_file)
+        assert Path(clipboard_owner_executable()).resolve()==owner.resolve()
+        sequence=native_sequence()
+        reader.read(sequence);wait_for(lambda:bool(rejected))
+        assert rejected==['WETYPE_CLIPBOARD_RELAY'] and not observed,(rejected,observed)
+        assert reader.read(sequence)==(False,None)
+        assert reader.issue=='WETYPE_CLIPBOARD_RELAY'
+        app.clipboard().setText('Native ordinary copy fixture')
+        reader.read(native_sequence());wait_for(lambda:bool(observed))
+        assert observed[0][0]=='text' and observed[0][1]['text']=='Native ordinary copy fixture',observed
+    finally:
+        reader.close();producer.terminate();producer.wait(timeout=5)
+        wait_for(lambda:reader.process is None and not reader.jobs)
 
 
 def target(root):
@@ -376,6 +417,19 @@ def run(root):
         assert actual=={'color':IMAGE_COLOR,'size':[47,29]},actual
         wait_for(lambda:runtime._insert_job is None and app.clipboard().text()==SENTINEL)
         end_cloud_check()
+        if on_mac:
+            QTest.qWait(100)
+            begin_cloud_check()
+            generated=root/'fresh-clipboard-image.png'
+            image.setText('clipboard-export','new container and file identity')
+            assert image.save(str(generated),'PNG')
+            mime=QMimeData();mime.setUrls([QUrl.fromLocalFile(str(generated))]);app.clipboard().setMimeData(mime)
+            announce=client._sequence()
+            client._schedule_change()
+            wait_for(lambda:client._last_sequence==announce and client._native_format_issue=='PRIVATE_MAC_PASTEBOARD')
+            end_cloud_check()
+            app.clipboard().setText(SENTINEL)
+            report['native_reencoded_image_blocked']=True
         cache=root/'saved'/'clipboard-cache'/'clip-fixture'
         contents=cache/'files'
         contents.mkdir(parents=True)
@@ -412,7 +466,6 @@ def run(root):
             wait_for(lambda:not runtime.jobs)
             assert [row['id'] for row in runtime.entries if row['kind']=='file']==[key]
             from Foundation import NSURL
-            from PySide6.QtCore import QMimeData, QUrl
             # The native URL variant deliberately has no transient marker,
             # and its literal path does not contain the history directory.
             reference=NSURL.fileURLWithPath_(attachment[0]).fileReferenceURL()
@@ -453,6 +506,9 @@ def run(root):
                 print('macOS screencapture returned',screenshot.returncode,screenshot.stderr.decode(errors='replace'),flush=True)
             panel.hide();front.hide()
             report['frames']=check_cocoa_clock()
+        if not on_mac:
+            check_windows_bridge(root,app)
+            report['native_wetype_owner_blocked_and_ordinary_copy_read']=True
         report.update(ok=True,input_matches=True,image_inserted=True,original_clipboard_restored=True)
     finally:
         if not report['ok']:

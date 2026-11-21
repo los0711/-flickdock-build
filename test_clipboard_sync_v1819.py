@@ -539,6 +539,62 @@ class ClipboardTests(unittest.TestCase):
         self.assertEqual(Path(self.clients[1].view['value'][1][0]).read_bytes(),b'ordinary copy')
         native._MAC_HISTORY_ECHOES.clear();native._HISTORY_PASTE_STAMPS.clear()
 
+    def test_reencoded_history_image_cannot_sync_as_a_new_png_file(self):
+        from collections import deque
+        import clipboard_history_native as native
+        from clipboard_history_store import encode_png
+
+        sender,receiver=self.clients[:2]
+        sender._is_native=True
+        sequence=[741]
+        sender._sequence=lambda:sequence[0]
+        observed=[];sender.copy_observed.connect(observed.append)
+        image=QImage(24,16,QImage.Format_ARGB32);image.fill(QColor('#3a84c1'))
+        payload=encode_png(image)
+        with patch.object(native,'_MAC_HISTORY_ECHOES',deque(maxlen=32)),patch.object(native,'_HISTORY_PASTE_STAMPS',deque(maxlen=64)):
+            native._remember_mac_history_payload(('image',dict(raw=payload)))
+            for index in range(3):
+                alias=self.base/f'bridge-saved-{index}_d.png'
+                image.setText('bridge-export',str(index))
+                self.assertTrue(image.save(str(alias),'PNG'))
+                self.assertNotEqual(alias.read_bytes(),payload)
+                sequence[0]+=1
+                mime=QMimeData();mime.setUrls([QUrl.fromLocalFile(str(alias))]);self.clips[0].setMimeData(mime)
+                until(lambda:sender._last_sequence==sequence[0])
+            self.assertEqual(observed,[])
+            self.assertIsNone(receiver.view['value'])
+            self.assertFalse(any(path=='/v1/clipboard' and method=='POST' for method,path in self.hub.calls))
+
+    def test_copying_the_same_history_text_with_a_new_shortcut_still_syncs(self):
+        from collections import deque
+        import clipboard_history_native as native
+
+        sender,receiver=self.clients[:2]
+        sender._is_native=True
+        sequence=[831];sender._sequence=lambda:sequence[0]
+        value='same history text independently copied by the user'
+        with (patch.object(native,'_MAC_HISTORY_ECHOES',deque(maxlen=32)),
+              patch.object(native,'_HISTORY_PASTE_STAMPS',deque(maxlen=64)),
+              patch.object(native,'_HISTORY_COPY_SHORTCUT',None),patch.object(native,'_HISTORY_COPY_SEQUENCE',None)):
+            native._remember_mac_history_payload(('text',{'text':value}))
+            self.clips[0].text(value)
+            until(lambda:sender._last_sequence==831)
+            self.assertIsNone(receiver.view['value'])
+            native.note_history_copy_shortcut(sequence[0])
+            sequence[0]+=1;self.clips[0].text(value)
+            until(lambda:receiver.view['phase']=='synced' and receiver.view['value'][1]['text']==value)
+
+    def test_wetype_native_rejection_does_not_cancel_a_valid_following_copy(self):
+        sender,receiver=self.clients[:2]
+        sender._is_native=True
+        sequence=[901];sender._sequence=lambda:sequence[0]
+        sender._native_read_failed('WETYPE_CLIPBOARD_RELAY')
+        self.assertEqual(sender._last_sequence,sequence[0])
+        self.assertIsNone(receiver.view['value'])
+        sequence[0]+=1;self.clips[0].text('ordinary independent Windows copy')
+        until(lambda:receiver.view['phase']=='synced')
+        self.assertEqual(receiver.view['value'][1]['text'],'ordinary independent Windows copy')
+
     def test_delayed_received_image_notifications_do_not_echo(self):
         image=QImage(33,22,QImage.Format_ARGB32);image.fill(QColor('red'))
         mime=QMimeData();mime.setImageData(image);self.clips[0].setMimeData(mime)

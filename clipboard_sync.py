@@ -8,9 +8,10 @@ from PySide6.QtGui import QImage,QPixmap,QImageReader
 from PySide6.QtWidgets import QApplication
 from platform_native import native_input_available,copy_activity
 from clipboard_identity import signature,content_keys
-from clipboard_history_native import (history_paste_active,history_paste_echo,image_paste_active,image_paste_change,
-    mac_clipboard_image,mac_history_echo_memory,private_clipboard,
-    mac_clipboard_file_needs_resolving,mac_clipboard_file_path,mac_history_echo,mac_history_echo_candidate)
+from clipboard_history_native import (explicit_history_copy,history_paste_active,history_paste_echo,image_paste_active,
+    image_paste_change,mac_clipboard_image,mac_history_echo_memory,private_clipboard,
+    mac_clipboard_file_needs_resolving,mac_clipboard_file_path,mac_history_echo,mac_history_echo_candidate,
+    wetype_clipboard_reference)
 from sync_scheduler import SyncScheduler
 from clipboard_inbox import ClipboardInbox
 from virtual_clipboard import describe as describe_virtual,capture as capture_virtual,VirtualClipboardError
@@ -26,6 +27,7 @@ TEXT_COPY_COALESCE_MS=8
 BINARY_COPY_COALESCE_MS=60
 MAC_CLIPBOARD_OBSERVE_MS=50
 HISTORY_PASTE_RECHECK_MS=60
+LOCAL_ONLY_CLIPBOARD_ISSUES=frozenset(('PRIVATE_NATIVE_CLIPBOARD','WETYPE_CLIPBOARD_RELAY'))
 COPY_FORMAT_SETTLE_SECONDS=1.
 REPEAT_COPY_INPUT_MAX_AGE_MS=3000
 COPY_REPLAY_HISTORY_ENTRIES=64
@@ -509,7 +511,7 @@ class ClipboardSync(QObject):
         from network_diagnostics import record_event
         record_event(self._clock_path.parent,'cloud','clipboard-read',code)
         self._native_format_issue=code
-        if code=='REMOTE_FILE_PLACEHOLDER':
+        if code=='REMOTE_FILE_PLACEHOLDER' or code in LOCAL_ONLY_CLIPBOARD_ISSUES:
             self._observe_control_file(self._sequence());return
         self._set_view(self.view['value'],self.view['phase'],self.view.get('id',''))
         self.change_debounce.start(0 if code=='NATIVE_READ_REPLACED' else NATIVE_READ_RETRY_MAX_MS)
@@ -787,7 +789,7 @@ class ClipboardSync(QObject):
         ignored=self._history_result is not None and self._history_result[:2]==((self._sequence(),self._generation),True)
         if self._snapshot_available and not ignored and actual not in (self._last_local_signature,signature(value)):
             self._prepared_receive=None;self._schedule_change();return
-        readable=self._snapshot_available or self._native_format_issue=='REMOTE_FILE_PLACEHOLDER'
+        readable=self._snapshot_available or self._native_format_issue in ('REMOTE_FILE_PLACEHOLDER','WETYPE_CLIPBOARD_RELAY')
         reader=self._native_reader
         if not readable and reader is not None and (reader.process is not None or reader.loading):
             # A bounded native read already running is not a failed clipboard
@@ -1171,7 +1173,7 @@ class ClipboardSync(QObject):
     def _observed_copy(self, value, sequence):
         if (sequence!=self._sequence()
                 or self._is_native and (image_paste_active() or history_paste_active() or image_paste_change(sequence)
-                                        or history_paste_echo(value))):
+                                        or not explicit_history_copy(sequence) and history_paste_echo(value))):
             return
         if value and value[0]=='text':
             value=(value[0],dict(value[1],_translation_sequence=sequence))
@@ -1184,15 +1186,17 @@ class ClipboardSync(QObject):
 
     def _check_history_origin(self,value,sequence):
         """Return whether observation must stop for a pending or private read."""
-        # The echo memory is authoritative even when a relocated profile or a
-        # replaced data directory left the private history roots unconfigured.
         if value is None:return False
-        if not (self._history_file_roots or mac_history_echo_memory()):return False
+        kind,data=value
+        if self._is_native and kind=='files' and any(wetype_clipboard_reference(ref) for ref in data):
+            self._native_format_issue='WETYPE_CLIPBOARD_RELAY'
+            self._observe_control_file(sequence)
+            return True
+        if not (self._history_file_roots or self._is_native and mac_history_echo_memory()):return False
+        explicit_copy=self._is_native and explicit_history_copy(sequence)
         key=(sequence,self._generation)
         if self._history_result is not None and self._history_result[0]==key:
-            if self._history_result[1]:
-                self._native_format_issue='PRIVATE_MAC_PASTEBOARD'
-                self._observe_control_file(sequence)
+            if self._history_result[1]:self._suppress_history_paste(sequence)
             return self._history_result[1]
         if not mac_history_echo_candidate(value):return False
         if self._history_check is not None:
@@ -1200,8 +1204,8 @@ class ClipboardSync(QObject):
             self._history_check[1].cancelled.set()
 
         def classify(cancel):
-            if mac_history_echo(value,self._history_file_roots):return True,None
-            if history_paste_echo(value):return True,None
+            if mac_history_echo(value,self._history_file_roots,explicit_copy=explicit_copy,cancel=cancel):return True,None
+            if not explicit_copy and history_paste_echo(value):return True,None
             if value[0]=='files' and any(mac_clipboard_file_needs_resolving(path) for path in value[1]):
                 paths=[mac_clipboard_file_path(path) for path in value[1]]
                 return (False,('files',paths)) if all(paths) else (True,None)
@@ -1253,7 +1257,7 @@ class ClipboardSync(QObject):
                     self._native_receive_interrupted=False
                     self.request_refresh()
                 return
-            if self._native_format_issue=='REMOTE_FILE_PLACEHOLDER':
+            if self._native_format_issue=='REMOTE_FILE_PLACEHOLDER' or self._native_format_issue in LOCAL_ONLY_CLIPBOARD_ISSUES:
                 self._observe_control_file(sequence);return
             previous,attempts=getattr(self,'_native_read_retry',(None,0))
             attempts=min(attempts+1,5) if previous==sequence else 1
@@ -1264,11 +1268,6 @@ class ClipboardSync(QObject):
         if self._history_result is not None and self._history_result[0]==(sequence,self._generation):
             value=self._history_result[2] or value
         sig=signature(value)
-        if self._is_native and history_paste_echo(value):
-            # The payload a history card just pasted is never a new copy, even
-            # when the platform announced a sequence this process never set.
-            self._suppress_history_paste(sequence)
-            return
         if value is None and sequence is not None and sequence!=self._last_sequence:
             # Some native owners announce a new sequence before delayed data
             # is readable. Retry briefly without consuming its copy event.
@@ -1324,7 +1323,7 @@ class ClipboardSync(QObject):
         if value is None:self._set_view(None,'local');self._pending=None;return
         self._local_retry=dict(id=str(uuid4()),sequence=None,generation=generation,staged=False,package=None,
                                prepared=False,created_at=time.time(),intent=self._local_fence,value=value,
-                               feedback=self._copy_context(value))
+                               feedback=self._copy_context(value),_explicit_history_copy=explicit_history_copy(sequence))
         self.file_jobs.register(self._local_retry,value)
         self._set_view(value,'uploading',self._local_retry['id'])
         self._prepare_local()
@@ -1441,8 +1440,12 @@ class ClipboardSync(QObject):
             pending['value']=value;self._local_retry=pending;self._pending=None;self.retry.start();return
         def prepare(cancel):
             try:
+                explicit_copy=pending.get('_explicit_history_copy',False)
+                if value[0]=='files' and any(wetype_clipboard_reference(ref) for ref in value[1]):
+                    return VirtualClipboardError('LOCAL_HISTORY_PASTE')
                 if (self._is_native and (self._history_file_roots or mac_history_echo_memory())
-                        and (mac_history_echo(value,self._history_file_roots) or history_paste_echo(value))):
+                        and (mac_history_echo(value,self._history_file_roots,explicit_copy=explicit_copy,cancel=cancel)
+                             or not explicit_copy and history_paste_echo(value))):
                     return VirtualClipboardError('LOCAL_HISTORY_PASTE')
                 result=package(value,directory,cancel)
                 if result is not None:
@@ -1539,7 +1542,8 @@ class ClipboardSync(QObject):
                       progress=progress,_task=pending,**options)
 
     def _verified_file_origin(self,pending):
-        if ((self._history_file_roots or sys.platform=='darwin' and mac_history_echo_memory())
+        if ((self._history_file_roots or self._is_native and
+             (sys.platform=='win32' or mac_history_echo_memory()))
                 and (pending.get('package') or {}).get('kind')=='files'
                 and not pending.get('_file_origin_checked')):
             self._unavailable_task(pending)
