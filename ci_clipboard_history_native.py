@@ -325,7 +325,7 @@ def run(root):
         expected=['First attachment bytes','Second attachment bytes']
         for path,data in zip(paths,expected):path.write_text(data,encoding='utf-8')
         manager.clipboard_sync.cloud_files_received.emit('cloud-file-fixture',tuple(map(str,paths)),cache)
-        wait_for(lambda:runtime.total==3)
+        wait_for(lambda:any(entry['kind']=='file' for entry in runtime.entries))
         for path in paths:path.unlink()
         panel.show_all()
         wait_for(lambda:panel._stack_progress==1.)
@@ -342,10 +342,12 @@ def run(root):
         wait_for(lambda:runtime._insert_job is None and app.clipboard().text()==SENTINEL)
         report['cloud_files_inserted']=True
         if on_mac:
+            previous_images={entry['id'] for entry in runtime.entries if entry['kind']=='image'}
             screenshot=subprocess.run(['/usr/sbin/screencapture','-x','-c','-R85,80,160,100'],
                                       capture_output=True,timeout=12)
             if screenshot.returncode==0:
-                wait_for(lambda:runtime.total==4)
+                wait_for(lambda:any(entry['kind']=='image' and entry['id'] not in previous_images
+                                    for entry in runtime.entries))
                 report['system_capture']=True
             else:
                 report['system_capture']='unavailable_in_ci'
