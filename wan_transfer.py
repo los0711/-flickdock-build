@@ -393,6 +393,7 @@ class WanTransferService(LanTransferService):
                 if 'shelf_intake' in value:
                     state['shelf_intake']=value['shelf_intake']
                     state['offer']['shelf_intake']=value['shelf_intake']
+                    state['offer']['peer_id']=peer['id']
                 self._present_offer(identifier)
                 return
             if not state:return
@@ -643,7 +644,7 @@ class WanTransferService(LanTransferService):
         if not self._connected or self._proxy_routes and proxy_routes(self.origin)!=self._proxy_routes:self.reconnect()
         identifier=uuid4().hex;peer=dict(peer or dict(code=peer_id,name='接收码 '+peer_id))
         with self._lock:
-            if sum(t.active and t.direction=='send' for t in self._transfers.values())>=2:raise ValueError('请等待当前传输完成。')
+            if not self.has_send_capacity():raise ValueError('请等待当前传输完成。')
             transfer=_Transfer(identifier,'send',peer['name'],active=True);transfer.token=secrets.token_hex(32)
             self._start_diagnostics(transfer)
             transfer.remote_peer=peer;self._transfers[identifier]=transfer

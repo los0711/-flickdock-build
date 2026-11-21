@@ -1,7 +1,6 @@
 """Reuse verified same-account file transfers for a newly dropped shelf file."""
 from __future__ import annotations
 
-from collections import deque
 from dataclasses import dataclass
 import hashlib
 import logging
@@ -20,6 +19,7 @@ from sync_files import MAX_FILE_BYTES,_source_reader
 _LOG=logging.getLogger(__name__)
 _CAPABILITY='shelf-drop-v1'
 _IDLE_SECONDS=35.
+_LAN_HANDOFF_SECONDS=10.
 _CACHED_SECONDS=600.
 _MAX_PENDING=32
 
@@ -32,9 +32,19 @@ class Incoming:
     record: dict
     directory: Path
     deadline: float
+    service: object
+    sender: str
     path: str | None = None
     ready: object = None
     count: int = 0
+
+
+@dataclass
+class Outbox:
+    path: Path
+    info: dict
+    pending: dict[str, bool]
+    in_flight: set[str]
 
 
 def _make_directory(path,cancel):
@@ -89,19 +99,25 @@ def _prune_direct_folders(root,cancel):
 
 
 class ShelfDirectDelivery(QObject):
-    def __init__(self,shelf,wan):
+    def __init__(self,shelf,wan,lan=None):
         super().__init__(shelf)
         self.shelf=shelf
         self.wan=wan
+        self.lan=lan
         self._target=None
         self._pending_drops=set()
-        self._queue=deque()
-        self._outgoing=None
+        self._queue=[]
+        self._retaining=0
+        self._epoch=0
+        self._closed=False
+        self._outgoing={}
         self._incoming={}
-        self._timer=QTimer(self);self._timer.setInterval(1000)
+        self._timer=QTimer(self);self._timer.setInterval(250)
         self._timer.timeout.connect(self._tick)
-        wan.progress.connect(self._progress)
-        wan.completed.connect(self._completed)
+        for service in (wan,lan):
+            if service is not None:
+                service.progress.connect(self._progress)
+                service.completed.connect(self._completed)
 
     def mark_drop(self,refs):
         if self.shelf.upload_enabled and self.shelf.account_id:
@@ -124,39 +140,56 @@ class ShelfDirectDelivery(QObject):
                     and self.wan._bound_identity==(account.device_id,account.api.token))
 
     def change_account(self):
+        self._epoch+=1
         self._pending_drops.clear()
-        for _,path,_,_ in self._queue:self._discard(path.parent)
-        self._queue.clear()
+        for batch in tuple(self._queue):
+            batch.pending.clear()
+            self._retire(batch)
         for identifier in tuple(self._incoming):self._release(identifier,fallback=False,cancel=True)
-        if self._outgoing is not None:self.wan.cancel(self._outgoing[0])
+        for identifier,(service,_,_,_) in tuple(self._outgoing.items()):
+            service.cancel(identifier)
         self._target=None
 
     def close(self):
+        if self._closed:return
+        self._closed=True
         self.change_account()
         self._timer.stop()
-        self.wan.progress.disconnect(self._progress)
-        self.wan.completed.disconnect(self._completed)
+        for service in (self.wan,self.lan):
+            if service is not None:
+                service.progress.disconnect(self._progress)
+                service.completed.disconnect(self._completed)
 
     def _discard(self,path):
         def done(_value,error):
             if error:_LOG.warning('Shelf direct cleanup failed (%s)',type(error).__name__)
         self.shelf._work(_remove_directory,(path,),done)
 
+    def _prepare_account_root(self):
+        root=self._account_root()
+        if self._target!=root:
+            self._target=root
+            self.shelf._work(_prune_direct_folders,(root,),lambda *_:None)
+        return root
+
     def staged(self,entry,snapshot,continue_upload):
         if entry.pop('direct_drop_seq',None)!=snapshot.get('seq') or snapshot.get('version',0):
             continue_upload();return
-        account=self.shelf.service
-        peers=[peer['id'] for peer in self.wan.peers() if peer.get('online') and peer.get('account_device') is True
-               and peer.get('account_device_id')!=account.device_id and _CAPABILITY in peer.get('features',())] if self._authenticated() else []
-        if not peers or len(self._queue)>=_MAX_PENDING:
+        peers=self._online_peers() if not self._closed and self._authenticated() else {}
+        if not peers or len(self._queue)+self._retaining>=_MAX_PENDING:
             continue_upload();return
-        directory=self._account_root()/'direct-outbox'/uuid4().hex
-        identity=str(self.shelf.account_id)
+        directory=self._prepare_account_root()/'direct-outbox'/uuid4().hex
+        epoch=self._epoch
         info=dict(id=entry['id'],version=1,sha256=snapshot['sha256'],name=snapshot['name'],
                   mime_type=snapshot['mime_type'])
+        self._retaining+=1
         def retained(path,error):
-            if not error:
-                self._queue.append((peers,path,info,identity))
+            self._retaining-=1
+            if epoch!=self._epoch:
+                if path:self._discard(path.parent)
+                return
+            if path and not error:
+                self._queue.append(Outbox(path,info,dict.fromkeys(peers,False),set()))
                 self._timer.start()
                 self._tick()
             elif not isinstance(error,InterruptedError):
@@ -164,34 +197,50 @@ class ShelfDirectDelivery(QObject):
             continue_upload()
         self.shelf._work(_retain_file,(Path(snapshot['path']),directory),retained)
 
-    def offer(self,offer):
+    def _online_peers(self):
+        local=self.shelf.service.device_id
+        return {peer['id']:peer for peer in self.wan.peers() if peer.get('online') and peer.get('account_device') is True
+                and peer.get('account_device_id')!=local and _CAPABILITY in peer.get('features',())}
+
+    def offer_lan(self,offer):
+        return self.offer(offer,service=self.lan)
+
+    def offer(self,offer,*,service=None):
         """Returns True for internal offers, including rejected ones."""
         if 'shelf_intake' not in offer:return False
+        service=service if service is not None else self.wan
+        decline=service.decline_shelf_offer if service is self.lan else service.reject
         identifier=offer['id'];info=offer['shelf_intake']
         size=offer.get('total')
-        if not (isinstance(info,dict) and isinstance(size,int) and 0<=size<=MAX_FILE_BYTES
+        if not (not self._closed and isinstance(info,dict) and isinstance(size,int) and 0<=size<=MAX_FILE_BYTES
                 and offer.get('count')==1 and self.shelf.receive_enabled and self._authenticated()
                 and offer.get('account_id')==self.shelf.account_id and offer.get('account_device') is True
                 and re.fullmatch(r'[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}',str(info.get('id','')))
                 and re.fullmatch('[a-f0-9]{64}',str(info.get('sha256',''))) and info.get('version')==1
                 and isinstance(info.get('name'),str) and 0<len(info['name'])<=255
                 and re.fullmatch(r'[A-Za-z0-9.+_-]+/[A-Za-z0-9.+_-]+',str(info.get('mime_type','')))):
-            self.wan.reject(identifier);return True
+            decline(identifier);return True
         identity=info['id']
         entry=self.shelf.state['entries'].get(identity)
         ignored=self.shelf.state.get('ignored_versions',{}).get(identity,0)
-        if (entry or ignored or identity in self.shelf._receive_fences
-                or any(task.item_id==identity for task in self._incoming.values())
-                or len(self._incoming)>=_MAX_PENDING):
-            self.wan.reject(identifier);return True
-        root=self._account_root()
-        if self._target!=root:
-            self._target=root
-            self.shelf._work(_prune_direct_folders,(root,),lambda *_:None)
+        previous_id,previous=next(((key,task) for key,task in self._incoming.items() if task.item_id==identity),(None,None))
+        # The same authenticated sender may switch to P2P after losing LAN.
+        # Transfer any waiting cloud callback to the new receiver, preserving
+        # its receive fence while the old socket and staging are closed.
+        handoff=bool(previous is not None and previous.service is self.lan and service is self.wan
+                     and previous.sender and previous.sender==offer.get('peer_id') and not previous.path
+                     and (previous.digest,previous.size)==(info['sha256'],size))
+        if (entry or ignored or ((identity in self.shelf._receive_fences or previous is not None) and not handoff)
+                or (len(self._incoming)>=_MAX_PENDING and not handoff)):
+            decline(identifier);return True
+        root=self._prepare_account_root()
         path=root/'direct-inbox'/identifier
         record=dict(id=identity,version=1,sha256=info['sha256'],kind='file',size=size,
                     name=info['name'],mime_type=info['mime_type'])
-        task=Incoming(identity,info['sha256'],size,record,path,monotonic()+_IDLE_SECONDS)
+        task=Incoming(identity,info['sha256'],size,record,path,monotonic()+_IDLE_SECONDS,service,offer.get('peer_id',''))
+        if handoff:
+            task.ready=previous.ready
+            self._release(previous_id,fallback=False,cancel=True)
         self._incoming[identifier]=task
         self._timer.start()
         def directory_ready(result,error):
@@ -199,7 +248,7 @@ class ShelfDirectDelivery(QObject):
                 if result:self._discard(result)
                 return
             try:
-                accepted=not error and self._authenticated() and self.wan.accept(identifier,result)
+                accepted=not error and self._authenticated() and service.accept(identifier,result)
             except (OSError,ValueError) as reason:
                 _LOG.info('Shelf direct could not accept offer (%s)',type(reason).__name__)
                 accepted=False
@@ -211,11 +260,11 @@ class ShelfDirectDelivery(QObject):
         for identifier,task in self._incoming.items():
             if (task.item_id,task.digest,task.size,1)!=(record['id'],record['sha256'],record['size'],record['version']):
                 continue
-            def adopt(path):
+            def adopt(path,directory):
                 if not path:
                     cloud_download();return
                 def promoted(value,error):
-                    self._discard(task.directory)
+                    self._discard(directory)
                     if error:cloud_download()
                     else:downloaded(value,None)
                 self.shelf._work(_promote_file,(path,target,record),promoted)
@@ -227,12 +276,12 @@ class ShelfDirectDelivery(QObject):
     def _release(self,identifier,*,success=False,fallback=True,cancel=False):
         task=self._incoming.pop(identifier,None)
         if task is None:return
-        if cancel:self.wan.cancel(identifier)
+        if cancel:task.service.cancel(identifier)
         if success and task.ready:
-            task.ready(task.path)
+            task.ready(task.path,task.directory)
         else:
             self._discard(task.directory)
-            if fallback and task.ready:task.ready(None)
+            if fallback and task.ready:task.ready(None,task.directory)
 
     def _completed(self,result):
         identifier=result['id']
@@ -256,27 +305,55 @@ class ShelfDirectDelivery(QObject):
         task=self._incoming.get(identifier)
         if task is not None:
             if state in ('error','cancelled'):
-                self._release(identifier);return
+                if task.service is self.lan and state=='error':
+                    task.deadline=monotonic()+_LAN_HANDOFF_SECONDS
+                else:
+                    self._release(identifier)
+                return
             received=result.get('received',0)
             if received>task.count:
                 task.count=received
                 task.deadline=monotonic()+_IDLE_SECONDS
-        if self._outgoing and self._outgoing[0]==identifier and state in ('complete','error','cancelled'):
-            self._outgoing=None
+        if identifier in self._outgoing and state in ('complete','error','cancelled'):
+            service,batch,peer,epoch=self._outgoing.pop(identifier)
+            batch.in_flight.discard(identifier)
+            if (service is self.lan and state=='error' and result.get('phase')!='declined'
+                    and epoch==self._epoch and not self._closed):
+                batch.pending[peer]=True
+            self._retire(batch)
+            self._tick()
+
+    def _retire(self,batch):
+        if not batch.pending and not batch.in_flight and batch in self._queue:
+            self._queue.remove(batch)
+            self._discard(batch.path.parent)
+
+    def _send_pending(self,batch,online):
+        for peer,fallback in tuple(batch.pending.items()):
+            if peer not in online:
+                del batch.pending[peer]
+                continue
+            nearby=self.wan.nearby_peer(peer) if self.lan is not None and not fallback else None
+            service,target=(self.lan,nearby['id']) if nearby and nearby.get('shelf_drop') else (self.wan,peer)
+            if not service.has_send_capacity():continue
+            try:
+                identifier=service.send(target,[str(batch.path)],shelf_intake=batch.info)
+            except ValueError:
+                if service is self.lan:
+                    batch.pending[peer]=True
+                else:
+                    del batch.pending[peer]
+                continue
+            del batch.pending[peer]
+            batch.in_flight.add(identifier)
+            self._outgoing[identifier]=(service,batch,peer,self._epoch)
+        self._retire(batch)
 
     def _tick(self):
         now=monotonic()
         for identifier,task in tuple(self._incoming.items()):
             if now>=task.deadline:self._release(identifier,cancel=task.path is None)
-        while self._queue and self._outgoing is None:
-            peers,path,info,account=self._queue[0]
-            if not peers or account!=self.shelf.account_id or not self._authenticated():
-                self._queue.popleft();self._discard(path.parent);continue
-            try:
-                identifier=self.wan.send(peers[0],[str(path)],shelf_intake=info)
-            except ValueError:
-                if sum(row.active and row.direction=='send' for row in self.wan._transfers.values())>=2:break
-                peers.pop(0);continue
-            peers.pop(0)
-            self._outgoing=(identifier,path)
+        online=self._online_peers() if not self._closed and self._authenticated() else {}
+        for batch in tuple(self._queue):
+            self._send_pending(batch,online)
         if not self._queue and self._outgoing is None and not self._incoming:self._timer.stop()

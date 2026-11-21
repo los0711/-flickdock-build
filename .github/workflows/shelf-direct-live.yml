@@ -2,7 +2,7 @@ name: Native shelf direct delivery
 
 on:
   push:
-    branches: [ci-shelf-direct-live]
+    branches: [ci-shelf-lan-priority]
 
 permissions:
   contents: read
@@ -22,7 +22,7 @@ jobs:
           - runner: macos-15
             architecture: arm64
             platform: cocoa
-            side: B
+            side: C
     runs-on: ${{ matrix.runner }}
     env:
       PYTHONUTF8: '1'
@@ -38,15 +38,30 @@ jobs:
           architecture: ${{ matrix.architecture }}
       - run: python -m pip install PySide6==6.12.0 keyring==25.7.0 cryptography==50.0.2
       - run: python p2p_assets.py
-      - name: Send and receive a synthetic file through the public endpoint
+      - name: Exercise real local, cross-runner and offline delivery
         shell: pwsh
         env:
           FLICKDOCK_SHELF_QA: ${{ secrets.FLICKDOCK_SHELF_QA }}
-        run: python ci_shelf_direct_live.py ${{ matrix.side }} (Join-Path $env:RUNNER_TEMP ShelfDirectQA)
+        run: |
+          $directory = Join-Path $env:RUNNER_TEMP ShelfDirectQA
+          if ('${{ matrix.side }}' -eq 'A') {
+            New-Item -ItemType Directory -Path $directory -Force | Out-Null
+            $local = Start-Process -FilePath (Get-Command python).Source -WindowStyle Hidden -PassThru -ArgumentList @(
+              'ci_shelf_routes_live.py', 'B', ('"' + (Join-Path $directory B) + '"')
+            ) -RedirectStandardOutput (Join-Path $directory 'local.stdout') -RedirectStandardError (Join-Path $directory 'local.stderr')
+          }
+          python ci_shelf_routes_live.py ${{ matrix.side }} (Join-Path $directory ${{ matrix.side }})
+          $result = $LASTEXITCODE
+          if ($local) {
+            if (-not $local.WaitForExit(120000)) { $local.Kill(); exit 1 }
+            Get-Content -LiteralPath (Join-Path $directory 'local.stdout')
+            if ($local.ExitCode -ne 0) { $result = $local.ExitCode }
+          }
+          exit $result
       - name: Retain proof without credentials or file content
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: shelf-direct-${{ matrix.side }}
-          path: ${{ runner.temp }}/ShelfDirectQA/shelf-direct-report.json
+          path: ${{ runner.temp }}/ShelfDirectQA/*/shelf-route-report.json
           retention-days: 3

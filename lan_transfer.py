@@ -33,6 +33,7 @@ import traceback
 from uuid import uuid4
 
 from PySide6.QtCore import QObject, Signal
+from lan_account import manifest_digest
 from selection_archive import _is_link, _source_reader
 from sync_files import safe_name
 from transfer_priority import yield_bulk_payload
@@ -409,9 +410,12 @@ class _Transfer:
     confirmation_code: str = ''
     confirmation_error: str = ''
     account_verified: bool = False
+    shelf_intake: dict | None = None
+    shelf_declined: bool = False
 
 
 class LanTransferService(QObject):
+    mode = 'lan'
     requires_code_confirmation=True
     peers_changed = Signal(list)
     offer_received = Signal(dict)
@@ -546,7 +550,7 @@ class LanTransferService(QObject):
     def own_peer(self, host='127.0.0.1'):
         """Useful for explicit address pairing and disposable loopback verification."""
         return {'id': self.device_id, 'name': self.device_name, 'host': host,
-                'port': self.port, 'fingerprint': self.fingerprint, 'protocol': PROTOCOL,
+                'port': self.port, 'fingerprint': self.fingerprint, 'protocol': PROTOCOL, 'shelf_drop':True,
                 'platform':'macos' if sys.platform=='darwin' else 'windows' if sys.platform=='win32' else 'linux'}
 
     def remember_peer(self, peer):
@@ -642,14 +646,21 @@ class LanTransferService(QObject):
                     else: transfer.updated = now - 1770  # Retry an occupied stage after 30 s.
         if changed: self.peers_changed.emit(self.peers())
 
-    def send(self, peer_id, paths):
+    def has_send_capacity(self):
+        with self._lock:
+            return sum(t.active and t.direction == 'send' for t in self._transfers.values()) < 2
+
+    def send(self, peer_id, paths, *, shelf_intake=None):
         with self._lock:
             peer = dict(self._peers.get(peer_id) or {})
             if not peer: raise ValueError('这台设备已离线，请重新选择。')
-            if sum(t.active and t.direction == 'send' for t in self._transfers.values()) >= 2:
+            if not self.has_send_capacity():
                 raise ValueError('已有两项局域网传输正在进行。')
+            if shelf_intake is not None and (not peer.get('shelf_drop') or not self.account_authorizer):
+                raise ValueError('对方暂不支持局域网搁架直传。')
             identifier = uuid4().hex
             transfer = _Transfer(identifier, 'send', peer['name'], active=True)
+            transfer.shelf_intake = dict(shelf_intake) if shelf_intake is not None else None
             self._start_diagnostics(transfer)
             transfer.remote_peer = peer
             self._transfers[identifier] = transfer
@@ -666,6 +677,7 @@ class LanTransferService(QObject):
         account=self.account_authorizer.incoming(transfer) if self.account_authorizer and transfer.account_verified else None
         with transfer.lock:
             if not (account and account.get('account_device')):
+                if transfer.shelf_intake is not None:return False
                 if not isinstance(confirmation,str) or len(confirmation)!=6 or not confirmation.isascii() or not confirmation.isdigit():
                     raise ValueError('请输入发送方显示的六位确认码。')
                 if not secrets.compare_digest(confirmation,transfer.confirmation_code):
@@ -676,6 +688,14 @@ class LanTransferService(QObject):
         return True
 
     def reject(self, transfer_id): self.cancel(transfer_id)
+
+    def decline_shelf_offer(self, transfer_id):
+        with self._lock:
+            transfer = self._transfers.get(transfer_id)
+            if transfer is not None and transfer.direction == 'receive' and transfer.shelf_intake is not None:
+                transfer.shelf_declined = True
+                transfer.cancel.set()
+                transfer.accepted.set()
 
     def cancel(self, transfer_id):
         with self._lock: transfer = self._transfers.get(transfer_id)
@@ -730,7 +750,7 @@ class LanTransferService(QObject):
                                 state=state, received=received, total=transfer.total, **extra))
 
     def _connect_peer(self,peer,transfer,entries):
-        raw=socket.create_connection((peer['host'],peer['port']),timeout=8)
+        raw=socket.create_connection((peer['host'],peer['port']),timeout=2.5 if transfer.shelf_intake is not None else 8)
         _tune_stream_socket(raw)
         context=ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
         context.check_hostname=False;context.verify_mode=ssl.CERT_NONE
@@ -749,12 +769,16 @@ class LanTransferService(QObject):
 
     def _incoming_offer(self,transfer,host,code):
         account=self.account_authorizer.incoming(transfer) if self.account_authorizer else None
+        intake=transfer.shelf_intake
+        if intake is not None and not account:
+            raise ValueError('局域网搁架直传缺少有效的同账号授权。')
         with transfer.lock:
             transfer.confirmation_code=code
             transfer.account_verified=bool(account and account.get('account_device'))
         self.offer_received.emit({'id':transfer.transfer_id,'peer':transfer.peer,'host':host,'code':code,
             'total':transfer.total,'count':sum(e['kind']=='file' for e in transfer.entries),
-            'names':[e['path'] for e in transfer.entries if '/' not in e['path']],**(account or {})})
+            'names':[e['path'] for e in transfer.entries if '/' not in e['path']],**(account or {}),
+            **({'shelf_intake':intake} if intake is not None else {})})
 
     def _outgoing(self, transfer, peer, paths):
         stream = None
@@ -769,7 +793,12 @@ class LanTransferService(QObject):
                          sender=self.device_name, entries=entries)
             files = [row for row in entries if row['kind'] == 'file']
             if transfer.diagnostics:transfer.diagnostics.manifest(len(files),total)
-            if self.account_authorizer:self.account_authorizer.prepare(transfer,peer,entries)
+            intake=transfer.shelf_intake
+            if intake is not None:
+                offer['shelf_intake']=intake
+            authorized=self.account_authorizer and self.account_authorizer.prepare(transfer,peer,entries)
+            if intake is not None and not authorized:
+                raise ConnectionError('局域网搁架直传授权不可用。')
             for attempt in range(3):
                 receipts=None
                 if transfer.cancel.is_set(): raise InterruptedError('已取消传输。')
@@ -783,7 +812,10 @@ class LanTransferService(QObject):
                     phase = 'transfer'
                     code = self._stream_code(stream,transfer.transfer_id)
                     _send_transfer_json(stream,offer,transfer.diagnostics); self._notify(transfer, 'waiting', code=code)
-                    reply = _read_json(stream, transfer.cancel, timeout=180,diagnostics=transfer.diagnostics)
+                    reply = _read_json(stream, transfer.cancel, timeout=8 if intake is not None else 180,
+                                       diagnostics=transfer.diagnostics)
+                    if intake is not None and reply.get('state') == 'declined':
+                        phase = 'declined'
                     if reply.get('state') != 'ready': raise ValueError(reply.get('message') or '接收方拒绝了传输。')
                     index, offset = reply.get('next_file'), reply.get('offset')
                     if type(index) is not int or not 0 <= index <= len(files) or type(offset) is not int or offset < 0:
@@ -847,7 +879,7 @@ class LanTransferService(QObject):
                                          'paths': [str(path) for path in paths], 'total': total})
                     return
                 except (ConnectionError, TimeoutError, socket.timeout, OSError):
-                    if transfer.cancel.is_set() or attempt == 2: raise
+                    if transfer.cancel.is_set() or attempt == 2 or intake is not None: raise
                     if transfer.diagnostics:transfer.diagnostics.add('reconnect_count',1)
                     self._notify(transfer, 'reconnecting', code=code)
                     transfer.cancel.wait(.5 * (attempt + 1))
@@ -858,7 +890,7 @@ class LanTransferService(QObject):
         except Exception as error:
             self._notify(transfer, 'cancelled' if transfer.cancel.is_set() else 'error', message=_transfer_error(error),
                          phase=phase)
-            if transfer.token and not transfer.cancel.is_set():
+            if transfer.token and not transfer.cancel.is_set() and phase!='declined':
                 self._thread(self._cancel_remote, transfer)
         finally:
             transfer.active = False; transfer.updated = time.monotonic()
@@ -878,7 +910,10 @@ class LanTransferService(QObject):
                     raise ValueError('无法取消这项传输。')
                 self.cancel(identifier); _send_json(stream, {'state': 'cancelled'}); return
             entries = request.get('entries'); total = _validate_manifest(entries)
-            manifest_hash = hashlib.sha256(json.dumps(entries, sort_keys=True).encode('utf8')).hexdigest()
+            intake=request.get('shelf_intake')
+            if 'shelf_intake' in request and (self.mode!='lan' or not isinstance(intake,dict)):
+                raise ValueError('无效的搁架直传请求。')
+            manifest_hash = manifest_digest(entries,intake)
             handoff_deadline=time.monotonic()+8
             already_finished=False
             while True:
@@ -899,13 +934,14 @@ class LanTransferService(QObject):
                             raise ValueError('待处理的传输请求过多。')
                         sender=str(request.get('sender') or '局域网设备')[:64]
                         transfer=_Transfer(identifier,'receive',sender,entries=entries,token=token,
-                            manifest_hash=manifest_hash,total=total)
+                            manifest_hash=manifest_hash,total=total,shelf_intake=intake)
                         self._start_diagnostics(transfer)
                         if transfer.diagnostics:transfer.diagnostics.manifest(sum(e['kind']=='file' for e in entries),total)
                         self._transfers[identifier]=transfer
                         code=self._stream_code(stream,identifier)
                         try:self._incoming_offer(transfer,host,code)
                         except Exception:
+                            self._transfers.pop(identifier,None)
                             self._finish_diagnostics(transfer,'error')
                             raise
                         busy=False
@@ -930,6 +966,10 @@ class LanTransferService(QObject):
                 if transfer.cancel.is_set() or self._stopped.is_set(): raise InterruptedError('已取消传输。')
                 if time.monotonic() > deadline: transfer.cancel.set(); raise TimeoutError('接收请求已超时。')
             if transfer.confirmation_error:raise ValueError(transfer.confirmation_error)
+            if transfer.shelf_declined:
+                terminal=('cancelled','')
+                _send_json(stream,{'state':'declined'})
+                return
             if transfer.cancel.is_set() or not transfer.destination: raise InterruptedError('已拒绝传输。')
             if transfer.stage is None:
                 stage = transfer.destination / ('.flickdock-receiving-' + identifier)
@@ -1016,7 +1056,7 @@ class LanTransferService(QObject):
                 state = 'cancelled' if transfer.cancel.is_set() else 'interrupted'
                 network_error = isinstance(error, (ConnectionError, TimeoutError, socket.timeout, ssl.SSLError)) or (
                     isinstance(error, OSError) and error.errno in (errno.ECONNRESET, errno.ECONNABORTED, errno.EPIPE, errno.ETIMEDOUT))
-                if not transfer.cancel.is_set() and not network_error:
+                if not transfer.cancel.is_set() and (not network_error or transfer.shelf_intake is not None):
                     transfer.cancel.set(); state = 'error'
                 if state in ('cancelled', 'error'): terminal = (state, str(error))
                 else:
@@ -1101,6 +1141,7 @@ def _validate_peer(row):
         raise ValueError('设备地址无效。')
     return {'id': row['id'], 'name': str(row.get('name') or '局域网设备')[:64], 'host': row['host'],
             'port': row['port'], 'fingerprint': row['fingerprint'], 'protocol': PROTOCOL,
+            'shelf_drop':row.get('shelf_drop') is True,
             'platform':row.get('platform') if row.get('platform') in ('windows','macos','linux') else 'unknown'}
 
 

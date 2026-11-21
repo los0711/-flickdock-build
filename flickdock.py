@@ -241,7 +241,7 @@ class ShelfManager:
         self.lan = self.manual.lan
         self.wan = self.manual.wan
         from shelf_direct import ShelfDirectDelivery
-        self.shelf_direct=ShelfDirectDelivery(self.sync,self.wan)
+        self.shelf_direct=ShelfDirectDelivery(self.sync,self.wan,self.lan)
         self.sync.direct_delivery=self.shelf_direct
         self.lan_account = self.manual.authorizer
         self.lan.offer_received.connect(self._lan_offer)
@@ -554,6 +554,9 @@ class ShelfManager:
             self.account.device_name=current['name'];self._lan_identity(self.account.account)
 
     def _lan_offer(self,offer):
+        if 'shelf_intake' in offer:
+            self.shelf_direct.offer_lan(offer)
+            return
         if offer.get('account_device') is True and self.account.signed_in and offer.get('account_id')==self.account.account['id']:
             try:
                 if self.lan.accept(offer['id'],self.settings.lan_receive_dir):self.lan_receive_notice.begin(offer)

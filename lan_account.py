@@ -13,8 +13,9 @@ HEX32=re.compile('[a-f0-9]{32}')
 HEX64=re.compile('[a-f0-9]{64}')
 
 
-def manifest_digest(entries):
-    return hashlib.sha256(json.dumps(entries,sort_keys=True).encode('utf8')).hexdigest()
+def manifest_digest(entries, shelf_intake=None):
+    payload=entries if shelf_intake is None else {'entries':entries,'shelf_intake':shelf_intake}
+    return hashlib.sha256(json.dumps(payload,sort_keys=True).encode('utf8')).hexdigest()
 
 
 class LanAccountAuthorizer(QObject):
@@ -69,19 +70,21 @@ class LanAccountAuthorizer(QObject):
     def prepare(self,transfer,peer,entries):
         with self._lock:
             target=self._peers.get(peer['id']);identity=self._identity
-            if target is None or not self._active():return
+            if target is None or not self._active():return False
             waiting=dict(peer=target['id'],identity=identity,done=threading.Event(),error='',accepted=False,
                          payload=dict(type='lan-transfer',action='prepare',id=transfer.transfer_id,
-                                      token=transfer.token,digest=manifest_digest(entries),fingerprint=peer['fingerprint']))
+                                      token=transfer.token,digest=manifest_digest(entries,transfer.shelf_intake),
+                                      fingerprint=peer['fingerprint']))
             self._waiting[transfer.transfer_id]=waiting
         try:
             self._prepare.emit(waiting);deadline=time.monotonic()+AUTHORIZATION_SECONDS
             while not waiting['done'].wait(.05):
                 if transfer.cancel.is_set() or self.lan._stopped.is_set():raise InterruptedError('已取消局域网传输。')
-                if time.monotonic()>=deadline:return
+                if time.monotonic()>=deadline:return False
             if waiting['identity']!=self._session():raise ConnectionError('账号已改变，局域网发送已取消。')
             # No ticket grants no automatic consent. The original TLS offer
             # still works and requires the receiving user's confirmation.
+            return waiting['accepted']
         finally:
             with self._lock:self._waiting.pop(transfer.transfer_id,None)
 
@@ -132,4 +135,4 @@ class LanAccountAuthorizer(QObject):
                     or not secrets.compare_digest(ticket['token'],transfer.token)
                     or not secrets.compare_digest(ticket['digest'],transfer.manifest_hash)):return None
             transfer.peer=ticket['name']
-            return dict(account_device=True,account_id=ticket['identity'][0],peer=ticket['name'])
+            return dict(account_device=True,account_id=ticket['identity'][0],peer=ticket['name'],peer_id=ticket['peer'])
