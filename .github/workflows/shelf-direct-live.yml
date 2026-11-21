@@ -1,7 +1,8 @@
 name: Native shelf direct delivery
 
 on:
-  workflow_dispatch:
+  push:
+    branches: [ci-shelf-direct-live]
 
 permissions:
   contents: read
