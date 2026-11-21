@@ -1,0 +1,66 @@
+# -*- mode: python ; coding: utf-8 -*-
+from pathlib import Path
+import os
+import sys
+
+if sys.platform != 'darwin':
+    raise RuntimeError('FlickDock.app must be built and verified on a macOS host.')
+root = Path(SPECPATH)
+sys.path.insert(0, str(root))
+from app_version import APP_VERSION
+from p2p_assets import bundle_assets
+p2p_binaries,p2p_datas=bundle_assets()
+from PyInstaller.utils.hooks import collect_all, collect_data_files
+yt_datas,yt_binaries,yt_hidden=collect_all('yt_dlp')
+ejs_datas,ejs_binaries,ejs_hidden=collect_all('yt_dlp_ejs')
+# yt-dlp's verified TLS must not depend on the build machine's OpenSSL CA path.
+yt_datas += collect_data_files('certifi')
+
+assets = [(root / 'assets/ui/qtbase_zh_CN.qm', 'assets/ui')]
+assets += [(root / 'assets/models/lid.176.ftz', 'assets/models')]
+assets += [(root/'assets/fonts'/name,'assets/fonts') for name in
+           ('JetBrainsMono-Regular.ttf','JetBrainsMono-Medium.ttf')]
+assets += [(root / 'licenses' / name, 'licenses') for name in (
+    'Python-LICENSE.txt', 'FFmpeg-LICENSE.txt','LGPL-3.0.txt',
+    'GPL-3.0.txt', 'PyInstaller-COPYING.txt','OpenSSL-LICENSE.txt','Cloud-Client-LICENSES.txt',
+    'Lucide-LICENSE.txt','Release-Crypto-LICENSES.txt','Video-LICENSES.txt','WebRTC-LICENSES.txt','Flag-Icons-LICENSE.txt','FASTTEXT-LICENSE.txt','FASTTEXT-MODEL-ATTRIBUTION.txt','Paper-Notice-Motion-LICENSE.txt','JetBrainsMono-OFL.txt')]
+assets += [(root / 'THIRD_PARTY_NOTICES.md', '.')]
+assets += [(root / 'licenses/KokonutUI-MIT.txt', 'licenses')]
+assets += [(path,'assets/flags') for path in (root/'assets/flags').glob('*.svg')]
+for path, destination in assets:
+    if not path.is_file():
+        raise FileNotFoundError(path)
+identity = os.environ.get('FLICKDOCK_CODESIGN_IDENTITY') or None
+entitlements = os.environ.get('FLICKDOCK_ENTITLEMENTS') or None
+architecture = os.environ.get('FLICKDOCK_TARGET_ARCH') or None
+icon = root / 'build' / 'macos' / 'FlickDock.icns'
+if not icon.is_file():
+    raise FileNotFoundError('Run build_macos.py first to generate the original SVG icon.')
+analysis = Analysis([str(root / 'mac_entry.py')], pathex=[str(root)], binaries=p2p_binaries+yt_binaries+ejs_binaries,
+    datas=[(str(path), destination) for path, destination in assets]+p2p_datas+yt_datas+ejs_datas,
+    hiddenimports=['Quartz', 'Quartz.CoreGraphics', 'Foundation', 'objc', '_hashlib',
+                   'ssl', '_ssl', 'ctypes', 'ctypes.util', 'verify_transfers','fasttext_pybind',
+                   'keyring.backends.macOS', 'keyring.backends.macOS.api',
+                   'PySide6.QtSvg', 'PySide6.QtMultimedia','PySide6.QtMultimediaWidgets', 'PySide6.QtWebSockets']+yt_hidden+ejs_hidden,
+    runtime_hooks=[str(root / 'runtime_macos.py')],
+    excludes=['winreg', 'pefile', 'numpy', 'PIL', 'PySide6.QtWebEngineCore', 'PySide6.QtWebEngineWidgets',
+              'PySide6.QtWebEngineQuick', 'PySide6.QtQml', 'PySide6.QtQuick',
+              'PySide6.QtQuickWidgets', 'PySide6.QtPdf', 'PySide6.QtPdfWidgets'],
+    noarchive=False, optimize=0)
+pyz = PYZ(analysis.pure)
+executable = EXE(pyz, analysis.scripts, [], exclude_binaries=True, name='FlickDock',
+    debug=False, bootloader_ignore_signals=False, strip=False, upx=False, console=False,
+    target_arch=architecture, codesign_identity=identity, entitlements_file=entitlements)
+collection = COLLECT(executable, analysis.binaries, analysis.datas, strip=False, upx=False, name='FlickDock')
+app = BUNDLE(collection, name='FlickDock.app', icon=str(icon), bundle_identifier='com.flickdock.app',
+    version=APP_VERSION, target_arch=architecture, codesign_identity=identity,
+    entitlements_file=entitlements,
+    info_plist=dict(CFBundleDisplayName='FlickDock', CFBundleName='FlickDock',
+                   CFBundleShortVersionString=APP_VERSION, CFBundleVersion=APP_VERSION,
+                   CFBundlePackageType='APPL', CFBundleExecutable='FlickDock',
+                   LSUIElement=True, NSHighResolutionCapable=True,
+                   NSLocalNetworkUsageDescription='FlickDock 用于发现同一局域网的设备，并在你确认后加密传输文件。',
+                   NSDesktopFolderUsageDescription='FlickDock 读取你选择的桌面文件，用于搁架和文件传输。',
+                   NSDocumentsFolderUsageDescription='FlickDock 读取你选择的文稿文件，用于搁架和文件传输。',
+                   NSDownloadsFolderUsageDescription='FlickDock 在你选择的下载文件夹保存接收的文件。',
+                   LSMinimumSystemVersion='14.4', NSPrincipalClass='NSApplication'))
