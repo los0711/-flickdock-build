@@ -157,6 +157,7 @@ _IMAGE_PASTE_LOCK=Lock()
 _IMAGE_PASTE_SEQUENCES=deque(maxlen=12)
 _MAX_BACKUP_BYTES=96*1024*1024
 _PASTE_GRACE_SECONDS=.40
+_MAC_FILE_PASTE_GRACE_SECONDS=1.
 
 
 def image_paste_active():
@@ -464,9 +465,10 @@ def _paste_mac_payload(payload,target,cancel,*,image=False,files=False):
                 Quartz.CGEventSetFlags(event,Quartz.kCGEventFlagMaskCommand)
                 Quartz.CGEventPostToPid(target,event)
             if not _wait_mac_paste_read(providers[0],board,sequence):return False
-            # Start the restoration grace after the consumer requested data,
-            # rather than after dispatching an asynchronous keyboard event.
-            time.sleep(_PASTE_GRACE_SECONDS)
+            # Cocoa/Qt may read file URL data while checking supported types,
+            # before the receiving app handles an asynchronous Paste action.
+            # Give file consumers time after that first read as well.
+            time.sleep(_MAC_FILE_PASTE_GRACE_SECONDS if files else _PASTE_GRACE_SECONDS)
             for provider in providers:
                 if provider.error is not None:raise provider.error
             return True
