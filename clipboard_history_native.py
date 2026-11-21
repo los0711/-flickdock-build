@@ -633,7 +633,7 @@ def _wait_mac_paste_read(provider,board,sequence):
 def _paste_mac_payload(payload,target,cancel,*,image=False,files=False):
     import Quartz
     import objc
-    from AppKit import NSImage, NSPasteboard, NSPasteboardItem
+    from AppKit import NSImage, NSPasteboard, NSPasteboardContentsCurrentHostOnly, NSPasteboardItem
     from Foundation import NSData, NSURL
 
     # Restoring the user's clipboard requires reading it first. Gate that
@@ -695,7 +695,7 @@ def _paste_mac_payload(payload,target,cancel,*,image=False,files=False):
         if cancel.is_set():return MacPasteResult.CANCELLED
         if front_target()!=target:return MacPasteResult.FOCUS
         if board.changeCount()!=baseline:return MacPasteResult.CLIPBOARD_CHANGED
-        sequence=board.clearContents()
+        sequence=board.prepareForNewContentsWithOptions_(NSPasteboardContentsCurrentHostOnly)
         _mark_paste_change(sequence)
         try:
             installed=board.writeObjects_(items)
@@ -731,7 +731,8 @@ def _paste_mac_payload(payload,target,cancel,*,image=False,files=False):
                     if marked:_mark_paste_change(current)
                     if marked or files and _mac_pasteboard_has_files(latest,payload):sequence=current
             if board.changeCount()==sequence:
-                _mark_paste_change(board.clearContents())
+                # Restoring the old contents must not generate a new Universal Clipboard copy.
+                _mark_paste_change(board.prepareForNewContentsWithOptions_(NSPasteboardContentsCurrentHostOnly))
                 if original and not board.writeObjects_(original):raise OSError('Could not restore clipboard formats')
                 _mark_paste_change(board.changeCount())
 
