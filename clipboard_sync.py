@@ -448,6 +448,10 @@ class ClipboardSync(QObject):
             if self._is_native and sys.platform=='darwin' and native_input_available():
                 from AppKit import NSPasteboard
                 value=mac_clipboard_image(NSPasteboard.generalPasteboard())
+            if value is None and mime is None:
+                # No native image and no readable Qt MIME means unavailable,
+                # rather than an intentional empty clipboard.
+                return None
             if value is None:value=_snapshot_mime(mime)
             if value is None and self._is_native and native_format_count():
                 self._native_format_issue='NATIVE_FORMAT_NOT_READY';return None

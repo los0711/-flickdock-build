@@ -54,7 +54,9 @@ jobs:
       - name: Install native checks
         run: python -m pip install -r requirements.txt 'pyobjc-framework-Quartz>=11,<13'
       - name: Regress saved screenshots and permission identity
-        run: QT_QPA_PLATFORM=offscreen python -m unittest test_saved_screenshots test_mac_permissions_v1821 test_local_clipboard_history -q
+        run: |
+          QT_QPA_PLATFORM=offscreen python -m unittest test_local_clipboard_history -q
+          QT_QPA_PLATFORM=offscreen python -m unittest test_saved_screenshots test_mac_permissions_v1821 test_clipboard_sync_v1819 -q
       - name: Exercise native file events and movable permission window
         run: |
           profile="$(mktemp -d "$RUNNER_TEMP/saved-native.XXXXXX")"
