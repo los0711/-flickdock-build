@@ -4,11 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: Check the signing key, verify all credentials, or publish a new version
+        description: Verify credentials, publish a version, or publish website copy
         type: choice
         required: true
         default: verify
-        options: [signing-test, verify, publish]
+        options: [signing-test, verify, publish, publish-site]
       target:
         description: Publish both platforms, only Apple Silicon, or complete an Apple Silicon release with Windows x64
         type: choice
@@ -37,7 +37,7 @@ concurrency:
 
 jobs:
   authorization:
-    if: github.repository == 'los0711/-flickdock-build' && github.ref == 'refs/heads/main'
+    if: inputs.mode != 'publish-site' && github.repository == 'los0711/-flickdock-build' && github.ref == 'refs/heads/main'
     runs-on: ${{ inputs.target != 'both' && 'ubuntu-24.04' || 'windows-2025' }}
     defaults:
       run:
@@ -210,3 +210,38 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Verify the public website and signed update indices
         run: python release_pipeline.py verify
+
+  site:
+    if: inputs.mode == 'publish-site' && github.repository == 'los0711/-flickdock-build' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: flickdock-release
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24'
+      - name: Stage the current signed indices alongside the site
+        run: |
+          python -m pip install PySide6==6.12.0 cryptography==50.0.2 requests==2.34.2
+          npm ci --prefix website --no-audit --no-fund
+          python release_pipeline.py stage-site
+          node website/test/check-site.mjs
+      - name: Publish website copy and keep the current download gateway
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: '59153da0809ff3d18297d943e1ef5b56'
+          WRANGLER_SEND_METRICS: 'false'
+        run: node website/node_modules/wrangler/bin/wrangler.js deploy --config website/wrangler.jsonc --keep-vars
+      - name: Verify the public instructions and original indices
+        run: |
+          for i in {1..6}; do
+            if python release_pipeline.py verify-site; then exit 0; fi
+            sleep 5
+          done
+          exit 1

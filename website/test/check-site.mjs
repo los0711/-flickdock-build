@@ -34,6 +34,7 @@ assert.equal(installers.windows.url, latest(version=>'FlickDock-Setup-'+version+
 assert.equal(installers['mac-arm'].url, latest(version=>'FlickDock-'+version+'-macOS-arm64.pkg'));
 assert.equal(installers['mac-intel'].url, 'https://gitee.com/rooogerluo/flick-dock-macos-releases-7/releases/download/v1.8.22/FlickDock-1.8.22-macOS-x86_64.pkg');
 assert(installers['mac-intel'].label.includes('已停止更新'));
+assert(section.includes('data-update-guide') && section.includes('设置 → 更新') && section.includes('检查更新'));
 assert(!section.includes('data-ui-action="download-windows"') && !section.includes('data-ui-action="download-macos"'), 'remove only the duplicated bottom pair');
 assert.equal((html.match(/data-ui-action="download-windows"/g) || []).length, 1, 'keep the original hero download control');
 assert.equal((html.match(/data-ui-action="download-macos"/g) || []).length, 1);

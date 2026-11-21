@@ -367,10 +367,40 @@ def verify():
     print('Verified signed public indices and website release links.',flush=True)
 
 
+def site_guidance(*, prepare):
+    """Deploy download instructions with the exact seven live update indices."""
+    context()
+    public=ROOT/'website'/'public'
+    versions,raw=baselines()
+    if prepare:
+        html=(public/'index.html').read_text(encoding='utf-8')
+        if 'data-update-guide' not in html:
+            raise ValueError('The local download instructions are missing.')
+        for index,pattern in (('latest.json','FlickDock-Setup-{}.exe'),
+                              ('macos-arm64.json','FlickDock-{}-macOS-arm64.pkg')):
+            version=versions[index]['version']
+            if '/v'+version+'/'+pattern.format(version) not in html:
+                raise ValueError('The site would change an installer download link.')
+        target=public/'updates'
+        target.mkdir(exist_ok=True,parents=True)
+        for name,value in raw.items():
+            (target/name).write_bytes(value)
+        return
+    for name,value in raw.items():
+        if (public/'updates'/name).read_bytes()!=value:
+            raise ValueError('The published site changed the update index: ' + name)
+    for base in (BASE,'https://flickdock.cc.cd'):
+        response=requests.get(base+'/',headers={'User-Agent':'FlickDock-Release/1','Cache-Control':'no-cache'},timeout=25)
+        response.raise_for_status()
+        if 'data-update-guide' not in response.text:
+            raise ValueError('The published download instructions are missing at ' + base)
+    print('Verified the live download instructions and unchanged signed indices.',flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('phase',choices=('preflight','verify-signing','verify-gitee','verify-credentials',
-                                        'windows-build-sha','stage','sign','verify'))
+                                        'windows-build-sha','stage','sign','verify','stage-site','verify-site'))
     args = parser.parse_args()
     if args.phase == 'preflight':preflight(publish=True)
     elif args.phase == 'verify-signing':credentials(signing_only=True)
@@ -379,6 +409,8 @@ def main():
     elif args.phase == 'windows-build-sha':print(verified_windows_build_sha(os.environ.get('FLICKDOCK_WINDOWS_BUILD_RUN','')))
     elif args.phase == 'stage':stage()
     elif args.phase == 'sign':sign()
+    elif args.phase == 'stage-site':site_guidance(prepare=True)
+    elif args.phase == 'verify-site':site_guidance(prepare=False)
     else:verify()
 
 
