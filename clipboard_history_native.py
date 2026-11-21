@@ -171,10 +171,11 @@ def _send_windows(text,target,cancel):
 
 
 def insert_text(text,target,*,cancel=None):
+    if not text or any(ord(char)<32 and char not in ('\r','\n','\t') for char in text):
+        return MacPasteResult.UNAVAILABLE if sys.platform=='darwin' else False
     if sys.platform=='darwin':
         return _insert_mac_history(text,target,cancel=cancel)
-    if not text or target is None or front_target()!=target:return False
-    if any(ord(char)<32 and char not in ('\r','\n','\t') for char in text):return False
+    if target is None or front_target()!=target:return False
     cancel=cancel or Event()
     if sys.platform=='win32':return len(text)<=4096 and _send_windows(text,target,cancel)
     return False

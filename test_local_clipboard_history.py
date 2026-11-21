@@ -303,15 +303,13 @@ class ClipboardHistoryRuntimeTests(unittest.TestCase):
         from clipboard_history_runtime import ClipboardHistory
         from types import SimpleNamespace
         from unittest.mock import ANY,Mock
-        from PySide6.QtCore import QObject,Signal
-        from PySide6.QtWidgets import QWidget
+        from PySide6.QtCore import QObject,QSize,Signal
 
         class Observation(QObject):
             copy_observed=Signal(object)
             set_local_observation=Mock()
 
-        card=QWidget()
-        card.setGeometry(310,24,332,232)
+        card=SimpleNamespace(mapToGlobal=lambda point:QPoint(310,24)+point,size=lambda:QSize(332,232))
         shelf=SimpleNamespace(card=card,isVisible=lambda:True,presentation_kind='dock',expanded=False,
             _dock_drag_reveal=False,incoming_drop=False,geometry_morph=SimpleNamespace(active=False),
             visible_state='floating',presentation=SimpleNamespace(values={
@@ -323,11 +321,14 @@ class ClipboardHistoryRuntimeTests(unittest.TestCase):
             edge=SimpleNamespace(display=APP.primaryScreen()))
         with TemporaryDirectory() as directory,patch('clipboard_history_runtime.private_clipboard',return_value=False):
             runtime=ClipboardHistory(manager,directory)
+            live_panel=None
             try:
                 runtime.set_enabled(True)
                 runtime.observe(('text',{'text':'Recovered external input'}))
                 sample_until(lambda:len(runtime.entries)==1)
-                runtime.panel._cocoa_hover=True
+                live_panel=runtime.panel
+                runtime.panel=SimpleNamespace(_cocoa_hover=True,isVisible=lambda:True,
+                    place=Mock(return_value=True),set_dark=Mock(),feedback=Mock())
                 current=[913]
                 def restore(pid):
                     current[0]=pid
@@ -343,13 +344,13 @@ class ClipboardHistoryRuntimeTests(unittest.TestCase):
                     runtime.sync(shelf)
                     self.assertEqual(runtime._foreground_target,913)
                     self.assertTrue(runtime.panel.isVisible())
-                    runtime.panel.activated.emit(runtime.entries[0]['id'])
+                    runtime._activate(runtime.entries[0]['id'])
                     sample_until(lambda:shelf.hide_animated.called)
                     handoff.assert_called_once_with(913)
                     paste.assert_called_once_with('Recovered external input',913,cancel=ANY)
             finally:
+                if live_panel is not None:runtime.panel=live_panel
                 runtime.close()
-                card.close()
 
     def test_history_is_enabled_for_new_profiles_and_preserves_explicit_opt_out(self):
         from app_settings import SettingsStore
