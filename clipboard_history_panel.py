@@ -19,9 +19,11 @@ ROW = 70
 GAP = 7
 HEADER = 48
 INSET = 13
-PEEK = 12
+PEEK = 17
 CARD_PADDING = 11
 DETAIL_HEIGHT = 151
+FOLDED_HEIGHT = 233
+FOLDED_ROW = FOLDED_HEIGHT-HEADER-PEEK*2-INSET
 
 
 class ClipboardHistoryPanel(QWidget):
@@ -42,6 +44,7 @@ class ClipboardHistoryPanel(QWidget):
         self.setAccessibleName('剪贴板历史')
         keep_tool_visible_when_inactive(self)
         self.entries = []
+        self.total = 0
         self.dark = False
         self.expanded = False
         self.selected = ''
@@ -75,9 +78,10 @@ class ClipboardHistoryPanel(QWidget):
         self._preview = Spring(self,self._detail_amounts,self._preview_frame)
         self._painted = QRectF()
 
-    def set_entries(self,entries, *, has_more=False):
+    def set_entries(self,entries, *, total=None):
         self.entries = list(entries)
-        self.can_load_more=has_more
+        self.total=len(self.entries) if total is None else total
+        self.can_load_more=self.total>len(self.entries)
         retained={row['id'] for row in self.entries}
         self._pixmaps={key:image for key,image in self._pixmaps.items() if key in retained}
         self._details={key:detail for key,detail in self._details.items() if key in retained}
@@ -93,7 +97,7 @@ class ClipboardHistoryPanel(QWidget):
         width=min(anchor.width(),area.width()-12)
         below=area.bottom()-anchor.bottom()-8
         above=anchor.top()-area.top()-8
-        use_below=below>=155 or below>=above
+        use_below=below>=FOLDED_HEIGHT or below>=above
         height=max(0,below if use_below else above)
         if height<HEADER+ROW+INSET:
             self.hide()
@@ -138,7 +142,7 @@ class ClipboardHistoryPanel(QWidget):
         return sum(ROW+GAP+self._preview_extra(row) for row in self.entries)+(ROW//2 if self.can_load_more else 0)
 
     def _surface_height(self):
-        folded=HEADER+(ROW+PEEK*2 if self.entries else 53)+INSET
+        folded=FOLDED_HEIGHT
         full=self.height() if self.entries else HEADER+53+INSET
         return min(self.height(),folded+(full-folded)*self._stack_progress)
 
@@ -310,6 +314,10 @@ class ClipboardHistoryPanel(QWidget):
         label={'text':'文字','link':'链接','image':'图片','file':'文件引用'}[row['kind']]
         stamp=time.strftime('%m-%d %H:%M',time.localtime(row['updated']))
         self._caption(painter, label+' · '+stamp,meta,muted,size=10)
+        if self._stack_progress<.3 and key!=self.selected and row['kind']!='image':
+            excerpt=QRectF(rect.x()+CARD_PADDING,rect.y()+62,rect.width()-CARD_PADDING*2,43)
+            painter.setPen(QColor(muted));painter.setFont(self._font(11))
+            painter.drawText(excerpt,Qt.AlignTop|Qt.TextWrapAnywhere,row.get('excerpt','')[:100])
         for part,box,glyph in (('pin',pin,'pin-filled' if row['pinned'] else 'pin'),('remove',remove,'close')):
             if self._hovered==(part,key):self._rounded(painter,box,hover,hover,7)
             self._glyph(painter,glyph,box.adjusted(5,5,-5,-5),gold if part=='pin' and row['pinned'] else muted)
@@ -326,11 +334,17 @@ class ClipboardHistoryPanel(QWidget):
         self._detail_hits={}
         surface,card,line,ink,muted,hover,gold,tile=self._colors()
         self._rounded(painter,self._painted,surface,line,RADIUS_WINDOW_PX)
-        title=QRectF(30,8,152,29)
-        self._glyph(painter,'copy',QRectF(13,16,13,13),muted)
+        title=QRectF(14,8,150,29)
         message='再次点击清空历史' if self._confirm_clear.isActive() else self._feedback or '剪贴板历史'
         self._caption(painter,message,title,ink,size=13,bold=True)
         clear=QRectF(self.width()-44,9,30,28)
+        if message=='剪贴板历史':
+            count=f'{self.total} 项'
+            start=title.left()+QFontMetrics(self._font(13,True)).horizontalAdvance(message)+8
+            width=QFontMetrics(self._font(10,True)).horizontalAdvance(count)+15
+            badge=QRectF(start,13,width,18)
+            self._rounded(painter,badge,hover,hover,9)
+            self._caption(painter,count,badge,muted,size=10,bold=True,align=Qt.AlignHCenter)
         if self.entries:
             if self._hovered==('clear','') or self._confirm_clear.isActive():
                 self._rounded(painter,clear,hover,line,9)
@@ -347,7 +361,8 @@ class ClipboardHistoryPanel(QWidget):
             width=self.width()-INSET*2
             inset=min(i,2)*5*(1-self._stack_progress)
             top=(HEADER+min(i,2)*PEEK)*(1-self._stack_progress)+y*self._stack_progress
-            positions.append((row,QRectF(INSET+inset,top,width-inset*2,ROW+extra),extra,i))
+            height=FOLDED_ROW+(ROW-FOLDED_ROW)*self._stack_progress+extra
+            positions.append((row,QRectF(INSET+inset,top,width-inset*2,height),extra,i))
             y+=ROW+GAP+extra
         for row,rect,extra,i in (reversed(positions) if self._stack_progress<.32 else positions):
             if i>2 and self._stack_progress<.12:continue

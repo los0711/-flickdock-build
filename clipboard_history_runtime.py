@@ -34,6 +34,7 @@ class ClipboardHistory(QObject):
         self.closed=False
         self.dragging=False
         self.entries=[]
+        self.total=0
         self.limit=PAGE
         self._refresh_epoch=0
         self._placement=None
@@ -87,11 +88,11 @@ class ClipboardHistory(QObject):
     def _refresh(self):
         self._refresh_epoch+=1
         epoch=self._refresh_epoch
-        def ready(rows):
-            if epoch!=self._refresh_epoch:return
-            self.entries=list(rows or ())
-            if self.panel:self.panel.set_entries(self.entries[:self.limit],has_more=len(self.entries)>self.limit)
-        self._submit('list',(self.limit+1,0),ready)
+        def ready(page):
+            if epoch!=self._refresh_epoch or page is None:return
+            self.entries,self.total=page
+            if self.panel:self.panel.set_entries(self.entries,total=self.total)
+        self._submit('page',(self.limit,0),ready)
 
     def _change(self,operation,*args):
         self._action_epoch+=1
@@ -110,7 +111,7 @@ class ClipboardHistory(QObject):
         panel.activated.connect(self._activate)
         panel.preview_requested.connect(self._preview)
         panel.dragged.connect(self._drag)
-        panel.set_entries(self.entries[:self.limit],has_more=len(self.entries)>self.limit)
+        panel.set_entries(self.entries,total=self.total)
         self.panel=panel
 
     def _preview(self,key):

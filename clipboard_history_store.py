@@ -83,9 +83,10 @@ class ClipboardHistoryStore:
                     ON CONFLICT(id) DO UPDATE SET updated=excluded.updated''',
                     (key,kind,title,excerpt,payload,thumb,time.time()))
                 return key
-            if operation=='list':
-                return [dict(row) for row in db.execute('''SELECT id,kind,title,excerpt,thumbnail,updated,pinned
+            if operation in ('list','page'):
+                rows=[dict(row) for row in db.execute('''SELECT id,kind,title,excerpt,thumbnail,updated,pinned
                     FROM clips ORDER BY pinned DESC,updated DESC,id LIMIT ? OFFSET ?''',arguments)]
+                return (rows,db.execute('SELECT COUNT(*) FROM clips').fetchone()[0]) if operation=='page' else rows
             if operation=='pin':
                 db.execute('UPDATE clips SET pinned=NOT pinned WHERE id=?',arguments)
                 return True

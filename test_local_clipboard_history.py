@@ -10,7 +10,7 @@ from PySide6.QtGui import QColor, QEnterEvent, QImage
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
-from clipboard_history_panel import ClipboardHistoryPanel
+from clipboard_history_panel import ClipboardHistoryPanel,FOLDED_HEIGHT
 from clipboard_history_store import ClipboardHistoryStore
 APP=QApplication.instance() or QApplication([])
 
@@ -59,6 +59,9 @@ class LocalClipboardStoreTests(unittest.TestCase):
 
 class ClipboardHistoryPanelTests(unittest.TestCase):
     def setUp(self):
+        for path in ('clipboard_history_panel.reduced_motion','native_ui_common.reduced_motion'):
+            mocked=patch(path,return_value=False)
+            mocked.start();self.addCleanup(mocked.stop)
         self.panel=ClipboardHistoryPanel()
         self.panel.resize(332,370)
         self.rows=[dict(id=str(index),title='fixture',excerpt='fixture',updated=time.time(),
@@ -80,7 +83,7 @@ class ClipboardHistoryPanelTests(unittest.TestCase):
         QTest.mouseClick(self.panel,Qt.LeftButton,Qt.NoModifier,rect.center().toPoint())
 
     def test_hover_spreads_cards_and_thumbnail_shifts_following_rows(self):
-        self.assertGreaterEqual(self.panel._surface_height(),150)
+        self.assertEqual(self.panel._surface_height(),FOLDED_HEIGHT)
         self.assertFalse(self.panel.expanded)
         at=QPointF(60,75)
         APP.sendEvent(self.panel,QEnterEvent(at,at,QPointF(self.panel.mapToGlobal(at.toPoint()))))
