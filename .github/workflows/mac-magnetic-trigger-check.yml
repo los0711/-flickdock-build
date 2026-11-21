@@ -49,3 +49,11 @@ jobs:
             test_edge_magnetic_v1839 test_edge_magnetic_v1840 \
             test_edge_magnetic_v1842.PreviewPriorityTests \
             test_edge_magnetic_v1842.IntegratedPreviewTests -q
+      - name: Verify translator pin survives a Cocoa native restyle
+        run: |
+          profile="$(mktemp -d)"
+          status=0
+          HOME="$profile" QT_QPA_PLATFORM=cocoa FLICKDOCK_VERIFY_NATIVE_UI=1 \
+            python flickdock.py --verify-translator --verify-output "$profile/translator.json" || status=$?
+          if [ -f "$profile/translator.json" ]; then cat "$profile/translator.json"; fi
+          exit "$status"
