@@ -164,6 +164,38 @@ def credentials(*, signing_only=False, gitee_only=False):
     print('Verified publisher key, Gitee account and Cloudflare release bucket.',flush=True)
 
 
+def verified_windows_build_sha(run_id):
+    """Re-use the tested artifact of a release whose publishing step failed."""
+    from release_source_sync import WINDOWS_PUBLICATION_FILES
+
+    current = context()
+    if release_indices() != WINDOWS_INDICES or not re.fullmatch('[1-9][0-9]{0,19}',run_id):
+        raise ValueError('An existing Windows build requires a Windows-only release and numeric run ID.')
+    token = os.environ.get('GITHUB_TOKEN','')
+    if not token:
+        raise ValueError('GitHub artifact verification requires a token.')
+    base = f'https://api.github.com/repos/{REPO}/actions/runs/{run_id}'
+    headers = {'Authorization':'Bearer ' + token, 'Accept':'application/vnd.github+json'}
+    response = requests.get(base,headers=headers,timeout=30)
+    response.raise_for_status()
+    run = response.json()
+    sha = run.get('head_sha','')
+    if (run.get('path') != '.github/workflows/central-release.yml' or run.get('event') != 'workflow_dispatch'
+            or run.get('head_branch') != 'main' or run.get('status') != 'completed'
+            or (run.get('head_repository') or {}).get('full_name') != REPO
+            or not re.fullmatch('[a-f0-9]{40}',sha)):
+        raise ValueError('The selected run is not a completed central release from main.')
+    jobs = requests.get(base+'/jobs',headers=headers,timeout=30)
+    jobs.raise_for_status()
+    if not any(job['name']=='windows / build' and job['conclusion']=='success' for job in jobs.json()['jobs']):
+        raise ValueError('The selected run did not pass the native Windows build and installer checks.')
+    subprocess.run(['git','merge-base','--is-ancestor',sha,current],cwd=ROOT,check=True,timeout=30)
+    files = subprocess.check_output(['git','diff','--name-only','-z',sha,current],cwd=ROOT,timeout=30)
+    if set(files.decode('utf8').rstrip('\0').split('\0')) - WINDOWS_PUBLICATION_FILES - {''}:
+        raise ValueError('The selected artifact was built from different application source.')
+    return sha
+
+
 def _verified_builds():
     windows = ROOT/'ci-windows-release'
     mac = ROOT/'ci-macos-release'
@@ -336,12 +368,14 @@ def verify():
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('phase',choices=('preflight','verify-signing','verify-gitee','verify-credentials','stage','sign','verify'))
+    parser.add_argument('phase',choices=('preflight','verify-signing','verify-gitee','verify-credentials',
+                                        'windows-build-sha','stage','sign','verify'))
     args = parser.parse_args()
     if args.phase == 'preflight':preflight(publish=True)
     elif args.phase == 'verify-signing':credentials(signing_only=True)
     elif args.phase == 'verify-gitee':credentials(gitee_only=True)
     elif args.phase == 'verify-credentials':credentials()
+    elif args.phase == 'windows-build-sha':print(verified_windows_build_sha(os.environ.get('FLICKDOCK_WINDOWS_BUILD_RUN','')))
     elif args.phase == 'stage':stage()
     elif args.phase == 'sign':sign()
     else:verify()

@@ -239,7 +239,17 @@ def _safe_file(root: Path,name: str) -> Path:
 def installer_product_version(path: Path) -> str:
     """Read the PE product version without launching the installer."""
     if sys.platform!='win32':
-        raise ReleaseError('Installer PE version verification requires the Windows release host')
+        import pefile
+        try:
+            with pefile.PE(str(path),fast_load=True) as image:
+                image.parse_data_directories(directories=[pefile.DIRECTORY_ENTRY['IMAGE_DIRECTORY_ENTRY_RESOURCE']])
+                records = getattr(image,'VS_FIXEDFILEINFO',[])
+                if len(records)!=1 or records[0].Signature!=0xFEEF04BD or records[0].ProductVersionLS&0xffff:
+                    raise ReleaseError('Installer is missing a valid fixed PE product version')
+                ms,ls = records[0].ProductVersionMS,records[0].ProductVersionLS
+        except pefile.PEFormatError as error:
+            raise ReleaseError('Cannot read installer PE version') from error
+        return '.'.join(map(str,(ms>>16,ms&0xffff,ls>>16)))
     from ctypes import wintypes
     class FixedInfo(ctypes.Structure):
         _fields_=[(name,wintypes.DWORD) for name in (

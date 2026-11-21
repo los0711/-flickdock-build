@@ -84,6 +84,26 @@ class ReleasePipelineTests(unittest.TestCase):
         self.assertFalse(get.call_args.kwargs['allow_redirects'])
         response.close.assert_called_once()
 
+    def test_retry_can_reuse_a_passed_windows_build_only_for_the_same_application(self):
+        run = MagicMock()
+        run.json.return_value = dict(path='.github/workflows/central-release.yml',
+                                     event='workflow_dispatch',head_branch='main',status='completed',
+                                     head_repository={'full_name':pipeline.REPO},head_sha='b'*40)
+        jobs = MagicMock()
+        jobs.json.return_value = {'jobs':[{'name':'windows / build','conclusion':'success'}]}
+        env = {'FLICKDOCK_RELEASE_TARGET':'windows-x64','GITHUB_TOKEN':'fixture'}
+        with patch.dict(os.environ,env),patch.object(pipeline,'context',return_value='a'*40), \
+             patch.object(pipeline.requests,'get',side_effect=[run,jobs,run,jobs,run,jobs]), \
+             patch.object(pipeline.subprocess,'run'), \
+             patch.object(pipeline.subprocess,'check_output',side_effect=[
+                 b'release_pipeline.py\0',b'flickdock.py\0']):
+            self.assertEqual(pipeline.verified_windows_build_sha('123'),'b'*40)
+            with self.assertRaisesRegex(ValueError,'different application source'):
+                pipeline.verified_windows_build_sha('123')
+            jobs.json.return_value['jobs'][0]['conclusion']='failure'
+            with self.assertRaisesRegex(ValueError,'did not pass'):
+                pipeline.verified_windows_build_sha('123')
+
     def test_duplicate_manifest_fields_are_rejected(self):
         response = MagicMock(status_code=200)
         response.iter_content.return_value = iter([b'{"version":"1.0.0","version":"1.0.1"}'])

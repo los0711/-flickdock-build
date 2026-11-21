@@ -22,7 +22,7 @@ GITHUB_API = 'https://api.github.com/repos/' + REPO
 WINDOWS_PUBLICATION_FILES = {
     '.github/workflows/central-release.yml', 'release_pipeline.py', 'release_source_sync.py',
     'test_release_pipeline.py', 'test_release_source_sync.py', 'test_ui_feedback_v1815.py',
-    'test_feedback_v1818.py', 'offscreen_verify.py', 'build_windows_release.py',
+    'test_feedback_v1818.py', 'offscreen_verify.py', 'build_windows_release.py', 'release_manifest.py',
     'website/scripts/release_downloads.py',
     'website/test/test_release_downloads.py', 'website/download-catalog.json', 'website/public/index.html',
 }

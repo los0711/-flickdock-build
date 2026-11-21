@@ -19,9 +19,14 @@ on:
         description: Concise user-facing release notes (required for publish)
         type: string
         required: false
+      windows_build_run:
+        description: Reuse a previously verified Windows build from a completed central release
+        type: string
+        required: false
 
 permissions:
   contents: read
+  actions: read
 
 env:
   FLICKDOCK_RELEASE_TARGET: ${{ inputs.target }}
@@ -39,10 +44,13 @@ jobs:
         shell: pwsh
     timeout-minutes: 10
     environment: flickdock-release
+    outputs:
+      windows_artifact_sha: ${{ steps.windows-artifact.outputs.sha }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           persist-credentials: false
+          fetch-depth: ${{ inputs.windows_build_run != '' && '0' || '1' }}
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
           python-version: '3.12'
@@ -72,9 +80,19 @@ jobs:
           python release_pipeline.py preflight
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python release_source_sync.py --verify-baseline
+      - name: Verify the previously tested Windows artifact provenance
+        if: inputs.windows_build_run != ''
+        id: windows-artifact
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          FLICKDOCK_WINDOWS_BUILD_RUN: ${{ inputs.windows_build_run }}
+        run: |
+          $sha = python release_pipeline.py windows-build-sha
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "sha=$sha" >> $env:GITHUB_OUTPUT
 
   windows:
-    if: inputs.mode == 'publish' && inputs.target != 'mac-arm64'
+    if: inputs.mode == 'publish' && inputs.target != 'mac-arm64' && inputs.windows_build_run == ''
     needs: authorization
     uses: ./.github/workflows/release-windows.yml
     permissions:
@@ -93,9 +111,10 @@ jobs:
     if: >-
       always() && inputs.mode == 'publish' && needs.authorization.result == 'success' &&
       (needs.macos.result == 'success' || (inputs.target == 'windows-x64' && needs.macos.result == 'skipped')) &&
-      (needs.windows.result == 'success' || (inputs.target == 'mac-arm64' && needs.windows.result == 'skipped'))
+      (needs.windows.result == 'success' || (needs.windows.result == 'skipped' &&
+       (inputs.target == 'mac-arm64' || needs.authorization.outputs.windows_artifact_sha != '')))
     needs: [authorization, windows, macos]
-    runs-on: ${{ inputs.target == 'mac-arm64' && 'ubuntu-24.04' || 'windows-2025' }}
+    runs-on: ${{ (inputs.target == 'mac-arm64' || inputs.windows_build_run != '') && 'ubuntu-24.04' || 'windows-2025' }}
     defaults:
       run:
         shell: pwsh
@@ -103,6 +122,7 @@ jobs:
     environment: flickdock-release
     permissions:
       contents: write
+      actions: read
     env:
       PYTHONUTF8: '1'
       PIP_DISABLE_PIP_VERSION_CHECK: '1'
@@ -122,10 +142,17 @@ jobs:
           python -m pip install -r requirements.txt requests==2.34.2
           npm ci --prefix website --no-audit --no-fund
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        if: inputs.target != 'mac-arm64'
+        if: inputs.target != 'mac-arm64' && inputs.windows_build_run == ''
         with:
           name: FlickDock-Windows-x64-${{ github.sha }}
           path: ci-windows-release
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        if: inputs.windows_build_run != ''
+        with:
+          name: FlickDock-Windows-x64-${{ needs.authorization.outputs.windows_artifact_sha }}
+          path: ci-windows-release
+          run-id: ${{ inputs.windows_build_run }}
+          github-token: ${{ github.token }}
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         if: inputs.target != 'windows-x64'
         with:
