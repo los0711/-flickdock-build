@@ -526,6 +526,7 @@ class ClipboardTests(unittest.TestCase):
             self.assertEqual(row['kind'],'file')
             self.assertEqual(observed,[])
             history.close()
+
             receiver.set_enabled(False);self.clips[0].clear()
             with patch('clipboard_sync.time.time',return_value=time.time()+90000):
                 receiver._cleanup()
@@ -540,6 +541,38 @@ class ClipboardTests(unittest.TestCase):
             self.assertTrue(source.is_file())
         finally:
             history.close()
+
+    def test_mac_history_reissued_file_references_never_reach_another_client(self):
+        from clipboard_history_native import _remember_mac_history_payload
+
+        sender,receiver=self.clients[:2]
+        private=self.base/'0'/'clipboard-history-files'
+        private.mkdir()
+        sender._history_file_roots=(Path(str(private.absolute()).casefold()),)
+        retained=private/'retained.txt';retained.write_text('clipboard history fixture',encoding='utf8')
+        alias=self.base/'bare-reference.txt';os.link(retained,alias)
+        _remember_mac_history_payload(('files',[str(retained)]))
+
+        def copy_file(path):
+            mime=QMimeData();mime.setUrls([QUrl.fromLocalFile(str(path))]);self.clips[0].setMimeData(mime)
+
+        ordinary=self.base/'ordinary.txt';ordinary.write_text('normal copy fixture',encoding='utf8')
+        copy_file(ordinary)
+        until(lambda:receiver.view['phase']=='synced' and receiver.view['value'][0]=='files')
+        head=self.hub.head['id']
+        self.hub.calls.clear()
+        for i in range(3):
+            copy_file(alias)
+            QTest.qWait(320)
+            self.assertEqual(self.hub.head['id'],head)
+        self.assertFalse(any(method in ('POST','PUT') and (path=='/v1/clipboard' or path.endswith('/content'))
+                             for method,path in self.hub.calls))
+        self.assertEqual(Path(receiver.view['value'][1][0]).read_text(encoding='utf8'),'normal copy fixture')
+
+        ordinary.write_text('normal copy still syncs',encoding='utf8')
+        copy_file(ordinary)
+        until(lambda:receiver.view['phase']=='synced' and receiver.view['id']!=head)
+        self.assertEqual(Path(receiver.view['value'][1][0]).read_text(encoding='utf8'),'normal copy still syncs')
 
     def test_receive_cache_failure_releases_fetch_and_retries_without_changing_native_copy(self):
         client=self.clients[0]

@@ -411,8 +411,13 @@ def run(root):
             QTest.qWait(160)
             wait_for(lambda:not runtime.jobs)
             assert [row['id'] for row in runtime.entries if row['kind']=='file']==[key]
+            from Foundation import NSURL
             from PySide6.QtCore import QMimeData, QUrl
-            mime=QMimeData();mime.setUrls([QUrl.fromLocalFile(attachment[0])])
+            # The native URL variant deliberately has no transient marker,
+            # and its literal path does not contain the history directory.
+            reference=NSURL.fileURLWithPath_(attachment[0]).fileReferenceURL()
+            assert reference is not None
+            mime=QMimeData();mime.setUrls([QUrl(str(reference.absoluteString()))])
             native_board=client.clipboard
             native_sequence=client._sequence
             # Simulate an extra file-reference notification after the native
@@ -420,10 +425,12 @@ def run(root):
             begin_cloud_check()
             client.clipboard=SimpleNamespace(mimeData=lambda:mime)
             late_sequence=native_sequence()+1000000
-            client._sequence=lambda:late_sequence
             try:
-                client._changed()
-                assert client._native_format_issue=='PRIVATE_MAC_PASTEBOARD'
+                for sequence in range(late_sequence,late_sequence+3):
+                    client._sequence=lambda sequence=sequence:sequence
+                    client._schedule_change()
+                    wait_for(lambda:client._last_sequence==sequence)
+                    assert client._native_format_issue=='PRIVATE_MAC_PASTEBOARD'
             finally:
                 client.clipboard=native_board
                 client._sequence=native_sequence
@@ -431,6 +438,7 @@ def run(root):
             end_cloud_check()
             assert app.clipboard().text()==SENTINEL
             report['file_paste_history_duplicates']=0
+            report['history_file_reference_replays_blocked']=3
             report['history_paste_cloud_uploads']=len(uploads)
             report['history_paste_reopened_text']=True
             previous_images={entry['id'] for entry in runtime.entries if entry['kind']=='image'}

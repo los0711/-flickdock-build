@@ -123,6 +123,10 @@ class ClipboardFileJobs(QObject):
                     or (not holders and not releases and row.get('_file_phase')!='ready')):continue
             if not isinstance(row.get('source_stat'),list) or len(row['source_stat'])!=4:continue
             if not isinstance(row.get('file_source'),str):continue
+            roots=self.client._history_file_roots
+            if roots:
+                from clipboard_history_native import mac_history_path_is_private
+                if mac_history_path_is_private(row['file_source'],roots):continue
             if not isinstance(row.get('intent'),dict) or type(row.get('sequence')) is not int:continue
             if item is not None:
                 try:
@@ -138,6 +142,20 @@ class ClipboardFileJobs(QObject):
 
     def _restore(self,task):
         if not self.valid(task):return
+        roots=self.client._history_file_roots
+        if roots and not task.get('_file_origin_checked'):
+            from clipboard_history_native import mac_history_echo
+            def checked(allowed):
+                if not self.valid(task):return
+                if not allowed:
+                    self.client._unavailable_task(task);return
+                task['_file_origin_checked']=True
+                self._restore_verified(task)
+            task['_job']=self.client._work(lambda cancel:not mac_history_echo(('files',[task['file_source']]),roots),checked)
+            return
+        self._restore_verified(task)
+
+    def _restore_verified(self,task):
         from virtual_clipboard import remote_placeholder
         if remote_placeholder(task['file_source']):
             self.client._unavailable_task(task);return

@@ -8,7 +8,8 @@ from PySide6.QtGui import QImage,QPixmap,QImageReader
 from PySide6.QtWidgets import QApplication
 from platform_native import native_input_available,copy_activity
 from clipboard_identity import signature,content_keys
-from clipboard_history_native import image_paste_active,image_paste_change,mac_clipboard_image,private_clipboard
+from clipboard_history_native import (image_paste_active,image_paste_change,mac_clipboard_image,private_clipboard,
+    mac_clipboard_file_needs_resolving,mac_clipboard_file_path,mac_history_echo,mac_history_echo_candidate)
 from sync_scheduler import SyncScheduler
 from clipboard_inbox import ClipboardInbox
 from virtual_clipboard import describe as describe_virtual,capture as capture_virtual,VirtualClipboardError
@@ -329,6 +330,13 @@ class ClipboardSync(QObject):
         self._clock_anchor=None;self._local_clock_anchor=(time.monotonic(),round(time.time()*1000))
         self._observed_clock=0;self._local_fence=None;self._local_retry=None
         self._clock_path=Path(base)/'clipboard-clock.json';self._copy_clock=0
+        self._history_file_roots=()
+        self._history_check=None
+        self._history_result=None
+        if sys.platform=='darwin':
+            directories=(Path(base)/'clipboard-history-files',Path(base)/'clipboard-cache')
+            self._history_file_roots=tuple(Path(location.casefold()) for location in dict.fromkeys(
+                location for path in directories for location in (os.path.abspath(path),os.path.realpath(path))))
         try:self._copy_clock=int(json.loads(self._clock_path.read_text(encoding='utf8'))['sequence'])
         except (OSError,ValueError,KeyError,TypeError):pass
         self._identity=self._session_identity()
@@ -438,14 +446,6 @@ class ClipboardSync(QObject):
                 # before asking that app to render a delayed remote stream.
                 from virtual_clipboard import only_remote_placeholders
                 urls=mime.urls() if mime.hasUrls() else ()
-                if mac_clipboard and urls:
-                    retained=self._clock_path.parent.absolute()/'clipboard-history-files'
-                    if any(url.isLocalFile() and Path(os.path.abspath(url.toLocalFile())).is_relative_to(retained)
-                           for url in urls):
-                        # Cocoa or the target can announce URL formats later,
-                        # after the temporary paste's change marker is gone.
-                        self._native_format_issue='PRIVATE_MAC_PASTEBOARD'
-                        return None
                 if any(url.isLocalFile() for url in urls) and not only_remote_placeholders(mime):
                     value=_snapshot_mime(mime)
                     if value is None:
@@ -776,7 +776,8 @@ class ClipboardSync(QObject):
             self.retry.start(150)
             return
         value=pending['value'];actual=signature(self._snapshot())
-        if self._snapshot_available and actual not in (self._last_local_signature,signature(value)):
+        ignored=self._history_result is not None and self._history_result[:2]==((self._sequence(),self._generation),True)
+        if self._snapshot_available and not ignored and actual not in (self._last_local_signature,signature(value)):
             self._prepared_receive=None;self._schedule_change();return
         readable=self._snapshot_available or self._native_format_issue=='REMOTE_FILE_PLACEHOLDER'
         reader=self._native_reader
@@ -1166,6 +1167,39 @@ class ClipboardSync(QObject):
             value=(value[0],dict(value[1],_translation_sequence=sequence))
         self.copy_observed.emit(value)
 
+    def _check_history_origin(self,value,sequence):
+        """Return whether observation must stop for a pending or private read."""
+        if not self._history_file_roots or value is None:return False
+        key=(sequence,self._generation)
+        if self._history_result is not None and self._history_result[0]==key:
+            if self._history_result[1]:
+                self._native_format_issue='PRIVATE_MAC_PASTEBOARD'
+                self._observe_control_file(sequence)
+            return self._history_result[1]
+        if not mac_history_echo_candidate(value):return False
+        if self._history_check is not None:
+            if self._history_check[0]==key:return True
+            self._history_check[1].cancelled.set()
+
+        def classify(cancel):
+            if mac_history_echo(value,self._history_file_roots):return True,None
+            if value[0]=='files' and any(mac_clipboard_file_needs_resolving(path) for path in value[1]):
+                paths=[mac_clipboard_file_path(path) for path in value[1]]
+                return (False,('files',paths)) if all(paths) else (True,None)
+            return False,None
+
+        def classified(result):
+            if self._history_check is None or self._history_check[0]!=key:return
+            self._history_check=None
+            if key!=(self._sequence(),self._generation):return
+            # An inaccessible origin cannot be published as a new copy.
+            blocked,resolved=result if result is not None else (True,None)
+            self._history_result=(key,blocked,resolved)
+            self.change_debounce.start(0)
+
+        self._history_check=(key,self._work(classify,classified))
+        return True
+
     def _changed(self):
         if self.closed or self._applying:return
         sequence=self._sequence()
@@ -1176,6 +1210,7 @@ class ClipboardSync(QObject):
                 return
         if not self._active():
             value=self._snapshot()
+            if self._check_history_origin(value,sequence):return
             if self._snapshot_available:
                 self._observed_copy(value,sequence);self._set_view(value,'local');self._last_sequence=sequence
                 self._native_read_retry=(None,0)
@@ -1188,7 +1223,8 @@ class ClipboardSync(QObject):
         # Repeated native notifications for one copy must not ask another app
         # to render the same delayed clipboard again or repeat file/image work.
         if sequence is not None and sequence==self._last_sequence:return
-        value=self._snapshot();sig=signature(value)
+        value=self._snapshot()
+        if self._check_history_origin(value,sequence):return
         if not self._snapshot_available:
             if self._native_format_issue=='PRIVATE_MAC_PASTEBOARD':
                 self._last_sequence=sequence
@@ -1204,6 +1240,9 @@ class ClipboardSync(QObject):
             self._set_view(self.view['value'],self.view['phase'],self.view.get('id',''))
             self.change_debounce.start(min(NATIVE_READ_RETRY_MAX_MS,NATIVE_READ_RETRY_INITIAL_MS*2**(attempts-1)))
             return
+        if self._history_result is not None and self._history_result[0]==(sequence,self._generation):
+            value=self._history_result[2] or value
+        sig=signature(value)
         if value is None and sequence is not None and sequence!=self._last_sequence:
             # Some native owners announce a new sequence before delayed data
             # is readable. Retry briefly without consuming its copy event.
@@ -1353,6 +1392,8 @@ class ClipboardSync(QObject):
         self._local_retry=None;self._pending=pending
         def prepared(result):
             if not self._valid_task(pending):return
+            if isinstance(result,VirtualClipboardError) and result.code=='LOCAL_HISTORY_PASTE':
+                self._unavailable_task(pending);return
             if isinstance(result,VirtualClipboardError) and result.code=='REMOTE_FILE_PLACEHOLDER':
                 self._unavailable_task(pending);return
             if isinstance(result,ClipboardSizeLimit):
@@ -1364,6 +1405,7 @@ class ClipboardSync(QObject):
             if keys is not None and self.view.get('id')==pending['id']:
                 self._current_content_keys=keys;self._remember_keys(keys)
             pending['package']=result;pending['prepared']=True;self.file_jobs.prepared(pending)
+            pending['_file_origin_checked']=True
             self._set_cloud_progress(pending['id'],0,result['size'],'uploading');self._stage(pending)
         value=pending.pop('value');quick=inline_text(value)
         if quick is not None:prepared(quick);return
@@ -1373,6 +1415,8 @@ class ClipboardSync(QObject):
             pending['value']=value;self._local_retry=pending;self._pending=None;self.retry.start();return
         def prepare(cancel):
             try:
+                if self._history_file_roots and value[0]=='files' and mac_history_echo(value,self._history_file_roots):
+                    return VirtualClipboardError('LOCAL_HISTORY_PASTE')
                 result=package(value,directory,cancel)
                 if result is not None:
                     keys=content_keys(value,read_files=True,cancel=cancel)
@@ -1387,6 +1431,7 @@ class ClipboardSync(QObject):
 
     def _stage(self,pending):
         if not self._valid_task(pending):return
+        if not self._verified_file_origin(pending):return
         if not self.scheduler.connected:self._retry_on_reconnect=True;self.schedule.request();return
         if time.time()-pending['created_at']>=86400:self._clear_task(pending);self.refresh();return
         self._copy_timestamp(pending['intent'])
@@ -1415,6 +1460,7 @@ class ClipboardSync(QObject):
 
     def _upload(self,pending):
         if not self._valid_task(pending) or not pending['staged'] or not pending['prepared'] or pending.get('uploading'):return
+        if not self._verified_file_origin(pending):return
         if not self.scheduler.connected:self._retry_on_reconnect=True;self.schedule.request();return
         if time.time()-pending['created_at']>=86400:self._pending=None;self.refresh();return
         item=pending['package']
@@ -1464,6 +1510,13 @@ class ClipboardSync(QObject):
             if total>0 and sent>=total:self._priority_flags(waiting=True,sending=False)
         self._request('PUT',f'/v1/clipboard/{pending["id"]}/content',uploaded,source=item['path'],headers=headers,
                       progress=progress,_task=pending,**options)
+
+    def _verified_file_origin(self,pending):
+        if (self._history_file_roots and (pending.get('package') or {}).get('kind')=='files'
+                and not pending.get('_file_origin_checked')):
+            self._unavailable_task(pending)
+            return False
+        return True
 
     def _retry(self):
         if not self._active():return
