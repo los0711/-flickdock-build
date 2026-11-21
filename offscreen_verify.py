@@ -86,9 +86,8 @@ def run_overview(argv,load_font):
     import time
     import traceback
     from types import SimpleNamespace
-    from PySide6.QtCore import QPoint,QRect,QTimer,Qt
-    from PySide6.QtGui import QImage,QColor
-    from PySide6.QtTest import QTest
+    from PySide6.QtCore import QEvent,QPoint,QPointF,QRect,QTimer,Qt
+    from PySide6.QtGui import QImage,QColor,QMouseEvent
     from PySide6.QtWidgets import QApplication
     from app_settings import SettingsStore
     from app_version import APP_VERSION
@@ -152,9 +151,17 @@ def run_overview(argv,load_font):
                 assert capture_card(capture);report['capture']=str(capture)
             preview.copy_path_button.click();assert app.clipboard().text()==str(archive)
             preview.send_button.click();assert queued==[('lan',[str(archive)])]
-            QTest.mouseClick(preview.send_menu_button,Qt.LeftButton);send_menu=preview._send_menu
+            arrow=preview.send_menu_button
+            center=arrow.rect().center()
+            local_pos,global_pos=QPointF(center),QPointF(arrow.mapToGlobal(center))
+            for kind,buttons in ((QEvent.MouseButtonPress,Qt.LeftButton),
+                                 (QEvent.MouseButtonRelease,Qt.NoButton)):
+                app.sendEvent(arrow,QMouseEvent(kind,local_pos,global_pos,Qt.LeftButton,buttons,Qt.NoModifier))
+            send_menu=preview._send_menu
             assert send_menu is not None and send_menu.actions()[0].text()=='登录后可选择同账号设备'
-            QTest.qWait(550)
+            deadline=time.monotonic()+.55
+            while time.monotonic()<deadline:
+                app.processEvents();time.sleep(.005)
             assert send_menu.isVisible() and preview._send_menu is send_menu
             assert send_menu.actions()[-1].text()=='其他设备…'
             send_menu.actions()[-1].trigger();send_menu.close();app.processEvents()
