@@ -1,0 +1,51 @@
+name: Check the macOS magnetic trigger
+
+on:
+  push:
+    branches: [ci-macos-magnetic-trigger-1839]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    if: github.repository == 'los0711/-flickdock-build'
+    runs-on: macos-15
+    timeout-minutes: 12
+    env:
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          architecture: arm64
+      - name: Install Qt and Cocoa dependencies
+        run: |
+          python -m pip install -r requirements.txt 'pyobjc-framework-Quartz>=11,<13'
+          python ci_assets.py
+      - name: Check shelf reveal against the physical strip on Cocoa
+        run: |
+          profile="$(mktemp -d)"
+          HOME="$profile" QT_QPA_PLATFORM=cocoa python - <<'PY'
+          import os, sys, unittest
+          from PySide6.QtWidgets import QApplication
+
+          assert sys.platform == 'darwin'
+          app = QApplication([])
+          assert app.platformName() == 'cocoa'
+          from test_trigger_reliability_v1810 import TriggerReliabilityTests
+          os.environ['QT_QPA_PLATFORM'] = 'cocoa'
+          suite = unittest.TestSuite([TriggerReliabilityTests(
+              'test_cocoa_magnetic_drop_cannot_reveal_shelf_in_the_gap_beyond_the_trigger')])
+          sys.exit(not unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful())
+          PY
+      - name: Check magnetic intake and preview priority
+        run: |
+          profile="$(mktemp -d)"
+          HOME="$profile" QT_QPA_PLATFORM=offscreen python -m unittest \
+            test_edge_magnetic_v1839 test_edge_magnetic_v1840 \
+            test_edge_magnetic_v1842.PreviewPriorityTests \
+            test_edge_magnetic_v1842.IntegratedPreviewTests -q
