@@ -11,6 +11,7 @@ import sys
 import tempfile
 from threading import Event
 import time
+from unittest.mock import patch
 
 from live_translation_editor import focused_editor
 
@@ -181,7 +182,16 @@ def verify_field(folder, field):
                 stale = replace(observed,text='A stale draft.')
                 row['stale_rejected'] = not focused_editor(cancel,expected=stale,insertion=TRANSLATION)
                 translation = TRANSLATION+'\nSecond line.' if field=='multiline' else TRANSLATION
-                inserted = focused_editor(cancel,expected=observed,insertion=translation)
+                from clipboard_history_native import paste_editor_text, select_editor_text
+                paste_results = []
+                def paste(*args):
+                    result = paste_editor_text(*args)
+                    paste_results.append(getattr(result,'name',result))
+                    return result
+                with patch('clipboard_history_native.select_editor_text',wraps=select_editor_text) as select, \
+                        patch('clipboard_history_native.paste_editor_text',side_effect=paste):
+                    inserted = focused_editor(cancel,expected=observed,insertion=translation)
+                row.update(select_attempts=select.call_count,paste_results=paste_results)
                 applied = wait_for(lambda: state().get('text') == translation and state().get('inputs',0)>0)
                 current = focused_editor(cancel)
                 row.update(request_accepted=bool(inserted),updated=bool(applied),input_event=state().get('inputs',0)>0,

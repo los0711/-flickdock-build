@@ -355,7 +355,7 @@ def _confirmed_replacement(cancel, expected, text, read_current):
     return False
 
 
-def _paste_replacement(cancel, expected, text, target, read_current, *, web=False):
+def _paste_replacement(cancel, expected, text, target, read_current, *, web=False, select_range=None):
     from clipboard_history_native import paste_editor_text, select_editor_text
 
     def same_editor():
@@ -365,7 +365,9 @@ def _paste_replacement(cancel, expected, text, target, read_current, *, web=Fals
         current = focused_editor(cancel)
         return _same_draft(current,expected) and current.selection == (0,len(expected.text))
 
-    if cancel.is_set() or not same_editor() or not select_editor_text(target):
+    if cancel.is_set() or not same_editor():
+        return False
+    if not (select_range is not None and select_range()) and not select_editor_text(target):
         return False
     deadline = monotonic() + .28
     while not all_selected():
@@ -619,22 +621,24 @@ def _mac_editor(cancel, expected, insertion, sample, rejected=None):
             def read_current():
                 return read_string(attr(editor,b'AXValue'))
 
+            range_key = key(b'AXSelectedTextRange')
+            def select_range():
+                entire = offsets(0,len(text.encode('utf-16-le'))//2)
+                span = retain(ax.AXValueCreate(4,ctypes.byref(entire))) if settable(range_key) else None
+                return bool(span and ax.AXUIElementSetAttributeValue(editor,range_key,span)==0)
+
             if web:
-                return _paste_replacement(cancel,state,insertion,target,read_current,web=True)
+                return _paste_replacement(cancel,state,insertion,target,read_current,web=True,select_range=select_range)
             native = key(insertion.encode('utf8'))
             if not native:
                 return False
-            range_key = key(b'AXSelectedTextRange')
-            if selection_writable and settable(range_key):
-                entire = offsets(0, len(text.encode('utf-16-le')) // 2)
-                span = retain(ax.AXValueCreate(4, ctypes.byref(entire)))
-                if span and ax.AXUIElementSetAttributeValue(editor, range_key, span) == 0:
-                    if (not secure_input() and ax.AXUIElementSetAttributeValue(editor, selected_key, native) == 0
-                            and _confirmed_replacement(cancel,state,insertion,read_current)):
-                        return True
-                    if selected_range and _same_draft(focused_editor(cancel),state):
-                        ax.AXUIElementSetAttributeValue(editor, range_key, selected_range)
-                    return _paste_replacement(cancel,state,insertion,target,read_current)
+            if selection_writable and select_range():
+                if (not secure_input() and ax.AXUIElementSetAttributeValue(editor, selected_key, native) == 0
+                        and _confirmed_replacement(cancel,state,insertion,read_current)):
+                    return True
+                if selected_range and _same_draft(focused_editor(cancel),state):
+                    ax.AXUIElementSetAttributeValue(editor, range_key, selected_range)
+                return _paste_replacement(cancel,state,insertion,target,read_current)
             if not settable(value_key) or ax.AXUIElementSetAttributeValue(editor, value_key, native):
                 return _paste_replacement(cancel,state,insertion,target,read_current)
             caret = offsets(len(insertion.encode('utf-16-le')) // 2, 0)
