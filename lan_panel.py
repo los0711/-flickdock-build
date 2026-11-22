@@ -2117,7 +2117,7 @@ class LanPanel(QFrame):
             self._refresh_transfer_pages()
         if state=='error':self.status_label.setText(str(data.get('message') or '传输失败，请重试。')[:600])
         elif state not in ('interrupted',):self.status_label.clear()
-        self._fit_activity()
+        if not self._activity_fit_timer.isActive():self._activity_fit_timer.start(0)
 
     def _completed(self, result):
         paths=list(result.get('paths') or [])
