@@ -331,13 +331,23 @@ def _windows_editor(cancel, expected, insertion, sample, at_pointer):
                 return False
             web = web or (com.string(focused,40) or '').casefold() in ('chrome','mozilla')
             def read_current():
-                if value is not None:
-                    return com.string(value,4)
-                latest=com.object(pattern,7)
-                return com.string(latest,12,_INT(len(insertion)+3)) if latest is not None else None
+                if document is not None:
+                    latest=com.object(pattern,7)
+                    if latest is not None:
+                        return com.string(latest,12,_INT(max(MAX_TEXT_CHARS,len(insertion.encode('utf-16-le'))//2)+1))
+                    return None
+                return com.string(value,4) if value is not None else None
 
             if web:
-                return _paste_replacement(cancel,state,insertion,target,read_current,accept_unreported_selection=True)
+                # Embedded Chromium hosts can intercept Ctrl+A or select
+                # across the page. The focused editor exposes its own range.
+                if document is not None:
+                    select_range=lambda:_method(document,16,_INT)(document)>=0
+                    if _paste_replacement(cancel,state,insertion,target,read_current,
+                                          select_scope=select_range,allow_unicode=True):
+                        return True
+                return _paste_replacement(cancel,state,insertion,target,read_current,
+                                          accept_unreported_selection=document is None)
             if value is not None and _method(value, 3, _INT, ctypes.c_wchar_p)(value, insertion) >= 0:
                 if _confirmed_replacement(cancel,state,insertion,read_current):
                     return True
@@ -385,8 +395,9 @@ def _confirmed_replacement(cancel, expected, text, read_current):
 
 
 def _paste_replacement(cancel, expected, text, target, read_current, *,
-                       accept_unreported_selection=False, within_editor=False):
-    from clipboard_history_native import paste_editor_text, select_editor_text
+                       accept_unreported_selection=False, within_editor=False,
+                       select_scope=None, allow_unicode=False):
+    from clipboard_history_native import paste_editor_text, select_editor_text, type_windows_editor_text
 
     def same_editor():
         return _same_draft(focused_editor(cancel),expected)
@@ -407,7 +418,7 @@ def _paste_replacement(cancel, expected, text, target, read_current, *,
 
     if cancel.is_set() or not same_editor():
         return False
-    if not select_editor_text(target,within_editor=within_editor):
+    if not (select_scope() if select_scope is not None else select_editor_text(target,within_editor=within_editor)):
         return False
     deadline = monotonic() + .28
     while not all_selected():
@@ -416,7 +427,12 @@ def _paste_replacement(cancel, expected, text, target, read_current, *,
                 return False
             break
     paste_editor_text(text,target,cancel,still_safe)
-    return _confirmed_replacement(cancel,expected,text,read_current)
+    if _confirmed_replacement(cancel,expected,text,read_current):
+        return True
+    if allow_unicode and not cancel.is_set() and all_selected():
+        if type_windows_editor_text(text,target,all_selected):
+            return _confirmed_replacement(cancel,expected,text,read_current)
+    return False
 
 
 def _sample_windows_selection(com, automation, focused, target, cancel, at_pointer):

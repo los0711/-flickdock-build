@@ -521,6 +521,22 @@ def _send_windows_editor_shortcut(user,target,key):
     return user.SendInput(len(events),events,ctypes.sizeof(_Input))==len(events)
 
 
+def type_windows_editor_text(text,target,verify_editor):
+    """Replace a verified selection without using the clipboard or sending Enter."""
+    if (sys.platform!='win32' or not text or len(text)>24000
+            or any(ord(char)<32 or ord(char) in (0x7F,0x2028,0x2029) for char in text)):
+        return False
+    user=_windows()
+    units=[unit for (unit,) in struct.iter_unpack('<H',text.encode('utf-16-le'))]
+    events=(_Input*(2*len(units)))(*(_Input(1,_InputValue(keyboard=_Keyboard(0,unit,flags,0,0)))
+              for unit in units for flags in (4,6)))
+    if (not verify_editor() or front_target()!=target
+            or any(user.GetAsyncKeyState(key)&0x8000 for key in (0x10,0x11,0x12,0x5B,0x5C))):
+        return False
+    user.SendInput.argtypes=(wintypes.UINT,ctypes.POINTER(_Input),ctypes.c_int)
+    return user.SendInput(len(events),events,ctypes.sizeof(_Input))==len(events)
+
+
 def _paste_windows_image(png,image,target,cancel):
     from PySide6.QtCore import QBuffer,QIODevice
 
