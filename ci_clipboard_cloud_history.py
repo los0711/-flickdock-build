@@ -103,7 +103,9 @@ def run(root,credentials):
             wait(lambda:panel._stack_progress==1.,2)
             panel.repaint()
             card=next(rect for part,identity,rect in panel._hits if part=='card' and identity==key)
-            point=(panel._paint_origin()+card.center()*panel._panel_scale).toPoint()
+            visible=card.intersected(panel._scroll_rect().adjusted(0,2,0,-2))
+            assert not visible.isEmpty()
+            point=(panel._paint_origin()+visible.center()*panel._panel_scale).toPoint()
             if side=='win':
                 QCursor.setPos(panel.mapToGlobal(point))
                 QTest.qWait(130)
