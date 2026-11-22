@@ -74,7 +74,16 @@ def fixture(folder):
         record = json.loads(json_value)
         if record['field'] != clicked and record.get('location'):
             button_target = view.focusProxy() or view
-            QTest.mouseClick(button_target,Qt.LeftButton,pos=QPoint(*record['location']))
+            local = QPoint(*record['location'])
+            if sys.platform == 'darwin':
+                import Quartz
+                point = button_target.mapToGlobal(local)
+                for kind in (Quartz.kCGEventLeftMouseDown, Quartz.kCGEventLeftMouseUp):
+                    event = Quartz.CGEventCreateMouseEvent(None,kind,(point.x(),point.y()),
+                                                           Quartz.kCGMouseButtonLeft)
+                    Quartz.CGEventPost(Quartz.kCGHIDEventTap,event)
+            else:
+                QTest.mouseClick(button_target,Qt.LeftButton,pos=local)
             clicked = record['field']
         record['active'] = view.isActiveWindow()
         temporary = folder / 'state.tmp'
@@ -111,6 +120,14 @@ def fixture(folder):
                   : document.getElementById(command);
                 if (!field) return "";
                 if (!field.dataset.bound) {
+                    const events = [];
+                    window.recordedEditorEvents = events;
+                    for (const type of ["keydown", "mousedown", "paste"]) {
+                        field.ownerDocument.addEventListener(type, event => {
+                            if (events.length < 16)
+                                events.push([type, event.key || "", event.target.id || ""]);
+                        }, true);
+                    }
                     field.addEventListener("input", () => {
                         field.dataset.inputs = String(Number(field.dataset.inputs || "0") + 1);
                     });
@@ -137,8 +154,9 @@ def fixture(folder):
                     inputs: Number(field.dataset.inputs || "0"),
                     selected: field.isContentEditable ? field.ownerDocument.getSelection().toString().length
                                                      : field.selectionEnd - field.selectionStart,
-                    location: [Math.round(box.left+frame.left+14),Math.round(box.top+frame.top+10)],
-                    focused: field === field.ownerDocument.activeElement
+                    location: [Math.round(box.left+frame.left+22),Math.round(box.top+frame.top+17)],
+                    focused: field === field.ownerDocument.activeElement,
+                    events: window.recordedEditorEvents || []
                 });
             })()
         ''' % (json.dumps(command), str(changed).lower())
@@ -218,6 +236,8 @@ def verify_field(folder, field):
                 row.update(request_accepted=bool(inserted),updated=bool(applied),input_event=state().get('inputs',0)>0,
                            final_length=len(state().get('text','')),native_selection=current.selection if current else None,
                            dom_selected=state().get('selected'))
+                if not applied:
+                    row['events'] = state().get('events')
         command.write_text('clipboard',encoding='utf-8')
         restored = folder/'clipboard'
         if wait_for(restored.exists):
