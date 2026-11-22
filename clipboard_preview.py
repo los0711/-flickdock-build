@@ -60,11 +60,15 @@ def read_clip_image(value,size,cancel):
         buffer=QBuffer();buffer.setData(data.get('raw',b''));buffer.open(QIODevice.ReadOnly);reader=QImageReader(buffer)
     elif kind=='files':reader=QImageReader(data[0])
     else:return QImage()
-    dimensions=reader.size()
-    if not dimensions.isValid() or dimensions.width()*dimensions.height()>100_000_000:return QImage()
-    reader.setAutoTransform(True);reader.setScaledSize(dimensions.scaled(QSize(size,size),Qt.KeepAspectRatio))
-    image=reader.read()
-    return QImage() if cancel.is_set() else image
+    try:
+        dimensions=reader.size()
+        if not dimensions.isValid() or dimensions.width()*dimensions.height()>100_000_000:return QImage()
+        reader.setAutoTransform(True);reader.setScaledSize(dimensions.scaled(QSize(size,size),Qt.KeepAspectRatio))
+        image=reader.read()
+        return QImage() if cancel.is_set() else image
+    finally:
+        # Release the TIFF handler before the buffer it reads from.
+        del reader
 
 
 class ClipboardPresenter(QObject):

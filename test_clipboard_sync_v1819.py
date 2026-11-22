@@ -791,6 +791,26 @@ class ClipboardTests(unittest.TestCase):
         new=dict(mono=mono,at=None,floor=client._observed_clock)
         self.assertEqual(client._copy_timestamp(new),30001)
 
+    def test_tiff_clipboard_identity_and_preview_keep_the_decoder_buffer_alive(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Event
+        from PySide6.QtCore import QBuffer,QIODevice
+        from PySide6.QtGui import QImageWriter
+        from clipboard_identity import signature
+        from clipboard_preview import read_clip_image
+        if b'tiff' not in map(bytes,QImageWriter.supportedImageFormats()):
+            self.skipTest('Qt TIFF writer unavailable')
+        for color in ('#31a863','#a185ce'):
+            image=QImage(47,29,QImage.Format_ARGB32);image.fill(QColor(color))
+            buffer=QBuffer();buffer.open(QIODevice.WriteOnly)
+            self.assertTrue(image.save(buffer,'TIFF'))
+            value=('image',dict(raw=bytes(buffer.data()),mime='image/tiff'))
+            with ThreadPoolExecutor(max_workers=1) as workers:
+                observed=workers.submit(signature,value).result(timeout=3)
+                thumbnail=workers.submit(read_clip_image,value,20,Event()).result(timeout=3)
+            self.assertEqual(observed,signature(('image',dict(image=image))))
+            self.assertEqual(thumbnail.pixelColor(2,2),image.pixelColor(2,2))
+
     def test_received_encoded_image_verifies_native_bytes_without_reading_a_bitmap(self):
         from clipboard_history_store import encode_png
         from clipboard_identity import signature
