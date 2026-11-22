@@ -7,7 +7,7 @@ import subprocess
 import sys
 import tempfile
 from threading import Event
-from time import monotonic
+from time import monotonic, sleep
 
 from PySide6.QtCore import QPoint, QRect, Qt, QTimer
 from PySide6.QtGui import QCursor
@@ -53,6 +53,12 @@ def pointer(point, click=False):
         for kind in kinds:
             event = Quartz.CGEventCreateMouseEvent(None, kind, (x, y), Quartz.kCGMouseButtonLeft)
             Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
+            if click and kind != Quartz.kCGEventLeftMouseUp:
+                # Let WindowServer assign the moved pointer to its window
+                # before posting the button event for that position.
+                for _ in range(5):
+                    QApplication.processEvents()
+                    sleep(.012)
     else:
         user = ctypes.windll.user32
         assert user.SetCursorPos(x, y)
