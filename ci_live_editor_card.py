@@ -9,7 +9,7 @@ import tempfile
 from threading import Event
 from time import monotonic
 
-from PySide6.QtCore import QPoint, QRect, QTimer
+from PySide6.QtCore import QPoint, QRect, Qt, QTimer
 from PySide6.QtGui import QCursor
 from PySide6.QtWidgets import QApplication, QWidget
 
@@ -161,9 +161,9 @@ def verify(report, folder):
             windows=Quartz.CGWindowListCopyWindowInfo(Quartz.kCGWindowListOptionOnScreenOnly,Quartz.kCGNullWindowID)
             covering=[]
             for value in windows:
-                bounds=value.get(Quartz.kCGWindowBounds,{})
-                if bounds.get('X',0)<=point[0]<bounds.get('X',0)+bounds.get('Width',0) and (
-                        bounds.get('Y',0)<=point[1]<bounds.get('Y',0)+bounds.get('Height',0)):
+                window_bounds=value.get(Quartz.kCGWindowBounds,{})
+                if window_bounds.get('X',0)<=point[0]<window_bounds.get('X',0)+window_bounds.get('Width',0) and (
+                        window_bounds.get('Y',0)<=point[1]<window_bounds.get('Y',0)+window_bounds.get('Height',0)):
                     covering.append((value.get(Quartz.kCGWindowNumber),value.get(Quartz.kCGWindowOwnerName),
                                      value.get(Quartz.kCGWindowOwnerPID),value.get(Quartz.kCGWindowLayer)))
             report.update(hits=covering,panel_number=native.windowNumber(),body=point)
@@ -187,7 +187,13 @@ def verify(report, folder):
         assert wait_for(lambda: observed(card.popup.isVisible)), 'Target language menu did not open'
         report['menu_preserves_focus'] = front_target() == target and not translator.isVisible()
         assert not translator.isVisible(), report
-        card.popup.hide()
+        choices=card.popup.list
+        option=next(choices.item(index) for index in range(choices.count()) if choices.item(index).data(Qt.UserRole)=='ja')
+        choices.scrollToItem(option)
+        observed(lambda: True)
+        option_rect=choices.visualItemRect(option)
+        pointer(choices.viewport().mapToGlobal(QPoint(option_rect.left()+45,option_rect.center().y())),click=True)
+        assert wait_for(lambda: observed(lambda: not card.popup.isVisible() and live.draft.target=='ja')), report
         pointer(bounds.center())
         assert wait_for(lambda: observed(card.footer_clip.isHidden))
         assert wait_for(lambda: observed(lambda: front_target() == target)), report
@@ -198,6 +204,16 @@ def verify(report, folder):
         report['inserted'] = bool(wait_for(lambda: observed(
             lambda: state().get('text') == 'Please confirm the shipping address.'), seconds=4))
         assert report['inserted'] and front_target() == target and not translator.isVisible(), report
+        if sys.platform == 'darwin':
+            from AppKit import NSWorkspace
+            path=folder/'FlickDock verification document.txt'
+            path.write_text('这个测试文档应排除在自动翻译之外。',encoding='utf-8')
+            subprocess.run(['/usr/bin/open','-a','TextEdit',str(path)],check=True,timeout=8)
+            assert wait_for(lambda: observed(lambda:
+                NSWorkspace.sharedWorkspace().frontmostApplication().bundleIdentifier()=='com.apple.TextEdit'),
+                seconds=8), 'The actual TextEdit document did not come to the foreground'
+            assert focused_editor(Event()) is None, 'TextEdit was eligible for automatic translation'
+            report['native_document_excluded']=True
     finally:
         live.stop()
         live.pool.waitForDone(2000)
