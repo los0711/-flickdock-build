@@ -2,11 +2,8 @@
 from contextlib import ExitStack, contextmanager
 import ctypes
 from dataclasses import dataclass
-from functools import cache, lru_cache
-from ntpath import basename
+from functools import cache
 import sys
-from time import monotonic
-from urllib.parse import urlsplit
 from uuid import UUID
 
 from translation_document import python_position
@@ -27,118 +24,13 @@ class EditorSelection:
     text: str
 
 
-CHAT_TEXT_LIMIT = 2000
-CHAT_EDITOR_MAX_HEIGHT = 260
-WINDOWS_CHAT_APPS = frozenset((
-    'wechat.exe', 'weixin.exe', 'wxwork.exe', 'qq.exe', 'qqnt.exe',
-    'telegram.exe', 'whatsapp.exe', 'discord.exe', 'slack.exe', 'signal.exe',
-))
-WINDOWS_WEB_BROWSERS = frozenset(('chrome.exe', 'msedge.exe'))
-MAC_WEB_BROWSERS = frozenset(('com.apple.safari', 'com.google.chrome', 'com.microsoft.edgemac'))
-WEB_CHAT_PATHS = {
-    'web.telegram.org': ('/',),
-    'web.whatsapp.com': ('/',),
-    'discord.com': ('/channels/',),
-    'app.slack.com': ('/client/',),
-    'teams.microsoft.com': ('/v2',),
-    'teams.live.com': ('/v2',),
-    'chat.google.com': ('/',),
-}
-WEB_COMPOSER_LABELS = frozenset((
-    'message', 'message input', 'type a message', 'write a message', '输入消息', '输入讯息',
-    '键入消息', '鍵入訊息', '撰寫訊息', '撰写消息', '消息', '訊息',
-))
-MAC_CHAT_APPS = frozenset((
-    'com.tencent.xinwechat', 'com.tencent.weworkmac', 'com.tencent.qq',
-    'ru.keepcoder.telegram', 'org.telegram.desktop', 'net.whatsapp.whatsapp',
-    'com.hnc.discord', 'com.tinyspeck.slackmacgap', 'org.whispersystems.signal-desktop',
-    'com.apple.mobilesms',
-))
-
-
-def application_kind(platform, identifier):
-    name = (identifier or '').casefold()
-    if platform == 'win32':
-        name = basename(name)
-        if name in WINDOWS_CHAT_APPS:
-            return 'chat'
-        if name in WINDOWS_WEB_BROWSERS:
-            return 'browser'
-    if platform == 'darwin':
-        if name in MAC_CHAT_APPS:
-            return 'chat'
-        if name in MAC_WEB_BROWSERS:
-            return 'browser'
-    return None
-
-
-def web_chat_address(address):
-    if not address or len(address) > 2048:
-        return False
-    try:
-        url = urlsplit(address)
-        paths = WEB_CHAT_PATHS.get(url.hostname, ())
-        location = url.path or '/'
-        return (url.scheme == 'https' and url.port in (None, 443) and url.username is None and url.password is None
-                and any(location == prefix.rstrip('/') or location.startswith(prefix.rstrip('/') + '/') for prefix in paths))
-    except ValueError:
-        return False
-
-
-def web_chat_composer(label):
-    normalized = ' '.join((label or '').casefold().split())
-    return (normalized in WEB_COMPOSER_LABELS or normalized.startswith(('message #', 'message @', 'message to ')))
-
-
-def chat_composer(height, label):
-    normalized = (label or '').strip().casefold()
-    return 0 < height <= CHAT_EDITOR_MAX_HEIGHT and not any(
-        word in normalized for word in ('search', 'find in', '搜索', '搜尋', '查找', '查詢'))
-
-
-@cache
-def _process_image_api():
-    from ctypes import wintypes
-    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
-    kernel.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
-    kernel.OpenProcess.restype = wintypes.HANDLE
-    kernel.QueryFullProcessImageNameW.argtypes = (
-        wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD))
-    kernel.QueryFullProcessImageNameW.restype = wintypes.BOOL
-    kernel.CloseHandle.argtypes = (wintypes.HANDLE,)
-    return kernel
-
-
-@lru_cache(maxsize=32)
-def _windows_target_kind(target, _period):
-    from ctypes import wintypes
-    kernel = _process_image_api()
-    process = kernel.OpenProcess(0x1000, False, target[1])
-    if not process:
-        return None
-    try:
-        size = wintypes.DWORD(1024)
-        image = ctypes.create_unicode_buffer(size.value)
-        found = kernel.QueryFullProcessImageNameW(process, 0, image, ctypes.byref(size))
-        return application_kind('win32', image.value) if found else None
-    finally:
-        kernel.CloseHandle(process)
-
-
-def focused_chat_editor(cancel, *, expected=None, insertion=None, sample=False, at_pointer=False):
-    # An explicit eyedropper gesture may identify language from an external
-    # selection. Automatic editor observation is restricted before text access.
-    return focused_editor(cancel, expected=expected, insertion=insertion, sample=sample,
-                          at_pointer=at_pointer, chat_only=not sample)
-
-
-def focused_editor(cancel, *, expected=None, insertion=None, sample=False, at_pointer=False, chat_only=False):
+def focused_editor(cancel, *, expected=None, insertion=None, sample=False, at_pointer=False):
     if cancel.is_set():
         return None
     if sys.platform == 'win32':
-        return _windows_editor(cancel, expected, insertion, sample, at_pointer, chat_only)
+        return _windows_editor(cancel, expected, insertion, sample, at_pointer)
     if sys.platform == 'darwin':
-        return _mac_editor(cancel, expected, insertion, sample, chat_only=chat_only)
+        return _mac_editor(cancel, expected, insertion, sample)
     return None
 
 
@@ -252,15 +144,12 @@ class _AutomationObjects:
             self.ole.SafeArrayDestroy(array)
 
 
-def _windows_editor(cancel, expected, insertion, sample, at_pointer, chat_only):
-    from ctypes.wintypes import HWND, RECT
+def _windows_editor(cancel, expected, insertion, sample, at_pointer):
+    from ctypes.wintypes import RECT
     from clipboard_history_native import front_target, insert_text
 
     target = front_target()
     if target is None:
-        return None
-    kind = _windows_target_kind(target, int(monotonic() // 5)) if chat_only else 'unrestricted'
-    if kind is None:
         return None
     with _automation() as apartment:
         if apartment is None or cancel.is_set():
@@ -279,18 +168,6 @@ def _windows_editor(cancel, expected, insertion, sample, at_pointer, chat_only):
             return selection if front_target() == target and not cancel.is_set() else None
         if control.value != 50004:
             return None
-        bounds = com.read(focused, 43, RECT)
-        if bounds is None or bounds.right <= bounds.left or bounds.bottom <= bounds.top:
-            return None
-        maximum = CHAT_TEXT_LIMIT if chat_only else MAX_TEXT_CHARS
-        if chat_only:
-            dpi = ctypes.windll.user32.GetDpiForWindow(HWND(target[0])) or 96
-            label = com.string(focused, 23)
-            if not chat_composer((bounds.bottom-bounds.top)*96/dpi, label):
-                return None
-            if kind == 'browser' and not (web_chat_composer(label)
-                    and _windows_web_chat_document(com, automation, focused, cancel)):
-                return None
         value = com.pattern(focused, 10002, 'a94cd8b1-0844-4cd6-9d2d-640537ab39e9')
         if value is not None:
             readonly = com.read(value, 5, _INT)
@@ -301,10 +178,11 @@ def _windows_editor(cancel, expected, insertion, sample, at_pointer, chat_only):
         if value is None and (document is None or not _windows_editable_range(com, document)):
             return None
         identifier = com.runtime_id(focused)
-        if not identifier:
+        bounds = com.read(focused, 43, RECT)
+        if not identifier or bounds is None or bounds.right <= bounds.left or bounds.bottom <= bounds.top:
             return None
-        text = com.string(document, 12, _INT(maximum + 1)) if document is not None else com.string(value, 4)
-        if text is None or len(text) > maximum or cancel.is_set():
+        text = com.string(document, 12, _INT(MAX_TEXT_CHARS + 1)) if document is not None else com.string(value, 4)
+        if text is None or len(text) > MAX_TEXT_CHARS or cancel.is_set():
             return None
         selection = _windows_selection(com, pattern, document, text) if document is not None else None
         bounds = bounds.left, bounds.top, bounds.right - bounds.left, bounds.bottom - bounds.top
@@ -321,31 +199,6 @@ def _windows_editor(cancel, expected, insertion, sample, at_pointer, chat_only):
                 return False
             return bool(front_target() == target and not cancel.is_set() and insert_text(insertion, target, cancel=cancel))
         return state
-
-
-def _windows_web_chat_document(com, automation, editor, cancel):
-    walker = com.object(automation, 16)
-    if walker is None:
-        return False
-    node = com.object(walker, 3, editor)
-    trusted = False
-    deadline = monotonic() + .14
-    for _ in range(36):
-        if cancel.is_set() or monotonic() > deadline:
-            return False
-        if node is None:
-            return trusted
-        control = com.read(node, 21, _INT)
-        if control is not None and control.value == 50030:
-            # Chromium exposes the browser-owned document URL via MSAA
-            # accValue, available here through LegacyIAccessiblePattern.
-            legacy = com.pattern(node, 10018, '828055ad-355b-4435-86d5-3b51c14a9b1b')
-            address = com.string(legacy, 8) if legacy is not None else None
-            if not web_chat_address(address):
-                return False
-            trusted = True
-        node = com.object(walker, 3, node)
-    return False
 
 
 def _same_draft(state, expected):
@@ -446,9 +299,6 @@ def _mac_editor_api():
     cf.CFHash.argtypes = [_POINTER]
     cf.CFHash.restype = ctypes.c_size_t
     cf.CFStringGetTypeID.restype = ctypes.c_size_t
-    cf.CFURLGetTypeID.restype = ctypes.c_size_t
-    cf.CFURLGetString.argtypes = [_POINTER]
-    cf.CFURLGetString.restype = _POINTER
     cf.CFGetTypeID.argtypes = [_POINTER]
     cf.CFGetTypeID.restype = ctypes.c_size_t
     cf.CFStringGetLength.argtypes = [_POINTER]
@@ -458,7 +308,7 @@ def _mac_editor_api():
     return ax, cf, secure_input
 
 
-def _mac_editor(cancel, expected, insertion, sample, rejected=None, *, chat_only=False):
+def _mac_editor(cancel, expected, insertion, sample, rejected=None):
     from clipboard_history_native import front_target
     target = front_target()
     ax, cf, secure_input = _mac_editor_api()
@@ -472,14 +322,6 @@ def _mac_editor(cancel, expected, insertion, sample, rejected=None, *, chat_only
         return reject('protected input is active')
     if not target or not ax.AXIsProcessTrusted():
         return reject('no external foreground application or Accessibility grant')
-    kind = 'unrestricted'
-    if chat_only:
-        from AppKit import NSRunningApplication
-        application = NSRunningApplication.runningApplicationWithProcessIdentifier_(target)
-        kind = application_kind('darwin', application.bundleIdentifier() if application is not None else None)
-        if kind is None:
-            return None
-    maximum = CHAT_TEXT_LIMIT if chat_only else MAX_TEXT_CHARS
     with ExitStack() as stack:
         def retain(ref):
             if ref:
@@ -495,11 +337,11 @@ def _mac_editor(cancel, expected, insertion, sample, rejected=None, *, chat_only
                 return retain(result.value)
             return None
 
-        def read_string(value, maximum=MAX_TEXT_CHARS):
+        def read_string(value):
             if not value or cf.CFGetTypeID(value) != cf.CFStringGetTypeID():
                 return None
             length = cf.CFStringGetLength(value)
-            if not 0 <= length <= maximum * 2:
+            if not 0 <= length <= MAX_TEXT_CHARS * 2:
                 return None
             data = ctypes.create_string_buffer(length * 4 + 1)
             if cf.CFStringGetCString(value, data, len(data), 0x08000100):
@@ -544,6 +386,11 @@ def _mac_editor(cancel, expected, insertion, sample, rejected=None, *, chat_only
         selection_writable = settable(selected_key)
         if not selection_writable and not settable(value_key):
             return reject('neither AXSelectedText nor AXValue is writable')
+        text = read_string(attr(editor, b'AXValue'))
+        if text and all(char in '•●* ' for char in text):
+            return None
+        if text is None or len(text) > MAX_TEXT_CHARS or cancel.is_set() or secure_input():
+            return reject('AX field value unavailable')
         coordinates = ctypes.c_double * 2
         xy, wh = coordinates(), coordinates()
         point, size = attr(editor, b'AXPosition'), attr(editor, b'AXSize')
@@ -551,36 +398,6 @@ def _mac_editor(cancel, expected, insertion, sample, rejected=None, *, chat_only
             return reject('AX field rectangle unavailable')
         if min(wh) <= 0:
             return None
-        if chat_only:
-            label = read_string(attr(editor, b'AXTitle')) or read_string(attr(editor, b'AXDescription'))
-            if subrole == 'AXSearchField' or not chat_composer(wh[1], label):
-                return None
-            if kind == 'browser':
-                if not web_chat_composer(label):
-                    return None
-                trusted = False
-                node = attr(editor, b'AXParent')
-                deadline = monotonic() + .14
-                for _ in range(36):
-                    if cancel.is_set() or monotonic() > deadline:
-                        return None
-                    if not node:
-                        break
-                    if read_string(attr(node, b'AXRole')) == 'AXWebArea':
-                        address = attr(node, b'AXURL')
-                        if address and cf.CFGetTypeID(address) == cf.CFURLGetTypeID():
-                            address = cf.CFURLGetString(address)
-                        if not web_chat_address(read_string(address)):
-                            return None
-                        trusted = True
-                    node = attr(node, b'AXParent')
-                if node or not trusted:
-                    return None
-        text = read_string(attr(editor, b'AXValue'), maximum)
-        if text and all(char in '•●* ' for char in text):
-            return None
-        if text is None or len(text) > maximum or cancel.is_set() or secure_input():
-            return reject('AX field value unavailable')
         offsets = ctypes.c_long * 2
         selected = offsets()
         selected_range = attr(editor, b'AXSelectedTextRange')

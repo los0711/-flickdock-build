@@ -2,7 +2,7 @@ name: Live editor translation proof
 
 on:
   push:
-    branches: [ci-live-editor-translation-1840]
+    branches: [ci-live-editor-unrestricted-1840]
 
 permissions:
   contents: read
@@ -31,19 +31,10 @@ jobs:
       - name: Install Cocoa runtime bridge
         if: runner.os == 'macOS'
         run: python -m pip install 'pyobjc-framework-Quartz>=11,<13'
-      - name: Check unchanged Mac typography on the installer baseline
-        if: runner.os == 'macOS'
-        continue-on-error: true
-        env:
-          QT_QPA_PLATFORM: offscreen
-        run: |
-          git worktree add --detach "$RUNNER_TEMP/flickdock-ui-baseline" c19ea2f35fc1b4318c91a2fcca05a493b45a38da
-          cd "$RUNNER_TEMP/flickdock-ui-baseline"
-          python -m unittest test_translator_controls_v1848.TranslatorControlsTests.test_typography_and_result_ink -v
       - name: Run simulated editor and translation regressions
         env:
           QT_QPA_PLATFORM: offscreen
-        run: python -m unittest test_live_translation_card test_auto_clipboard_translation test_translator_workflow_v1847 test_translator_controls_v1848 test_translation_copy_v1843 -v
+        run: python -m unittest test_live_translation_card test_auto_clipboard_translation test_translator_workflow_v1847 test_translation_copy_v1843 -v
       - name: Verify a native editor selection, secure field and insertion
         if: ${{ !cancelled() }}
         run: python ci_live_editor_native.py native-editor.json

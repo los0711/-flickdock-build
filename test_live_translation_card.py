@@ -10,10 +10,7 @@ from PySide6.QtWidgets import QApplication, QWidget
 
 from live_translation import FOOTER_HEIGHT, LiveEditorTranslation, LiveTranslationCard, fit_card
 from live_translation_draft import LiveDraft
-from live_translation_editor import (
-    EditorSelection, EditorState, _windows_web_chat_document, application_kind, chat_composer,
-    web_chat_address, web_chat_composer,
-)
+from live_translation_editor import EditorSelection, EditorState
 from live_translation_motion import LiveTranslationMark, LiveTranslationNotice
 from native_ui_common import colors
 from translator_store import TranslatorStore
@@ -75,54 +72,6 @@ class LiveTranslationTests(unittest.TestCase):
         cls.app = QApplication.instance() or QApplication([])
         cls.app.setQuitOnLastWindowClosed(False)
 
-    def test_chat_scope_excludes_documents_and_verifies_browser_site_and_composer(self):
-        self.assertEqual(application_kind('win32', r'C:\Apps\WeChat\Weixin.exe'), 'chat')
-        self.assertEqual(application_kind('win32', r'C:\Browser\msedge.exe'), 'browser')
-        self.assertEqual(application_kind('darwin', 'ru.keepcoder.Telegram'), 'chat')
-        self.assertEqual(application_kind('darwin', 'com.apple.Safari'), 'browser')
-        for platform, name in (('win32','WINWORD.EXE'),('win32','wps.exe'),('darwin','com.apple.iWork.Pages')):
-            self.assertIsNone(application_kind(platform, name))
-        for url in ('https://web.whatsapp.com/', 'https://web.telegram.org/k/#chat',
-                    'https://discord.com/channels/@me', 'https://app.slack.com/client/ABC',
-                    'https://teams.microsoft.com/v2/', 'https://chat.google.com/'):
-            self.assertTrue(web_chat_address(url))
-        for url in ('https://chatgpt.com/', 'https://docs.google.com/document', 'http://web.telegram.org',
-                    'https://web.whatsapp.com.evil.test/', 'https://web.whatsapp.com@evil.test/',
-                    'https://web.telegram.org:8443/', 'https://[::1]/', 'https://discord.com/app',
-                    'https://app.slack.com/help', 'https://teams.microsoft.com/v2-documents'):
-            self.assertFalse(web_chat_address(url))
-        self.assertTrue(web_chat_composer('Type a message'))
-        self.assertFalse(web_chat_composer('Search messages'))
-        self.assertFalse(chat_composer(700, 'Message'))
-        self.assertFalse(chat_composer(40, '搜索'))
-        self.assertTrue(chat_composer(50, 'Message'))
-
-    def test_browser_ancestor_rejects_allowed_iframe_inside_other_site(self):
-        from types import SimpleNamespace
-        from threading import Event
-
-        class Automation:
-            def __init__(self, outer):
-                self.parents = {'editor':'nested', 'nested':'outer', 'outer':'window'}
-                self.addresses = {'nested':'https://web.whatsapp.com/', 'outer':outer}
-
-            def object(self, node, slot, *arguments):
-                if slot == 16:
-                    return 'walker'
-                return self.parents.get(arguments[0])
-
-            def read(self, node, slot, _type):
-                return SimpleNamespace(value=50030 if node in self.addresses else 50032)
-
-            def pattern(self, node, _id, _iid):
-                return node
-
-            def string(self, node, _slot):
-                return self.addresses.get(node)
-
-        self.assertTrue(_windows_web_chat_document(Automation('https://web.whatsapp.com'), 'uia', 'editor', Event()))
-        self.assertFalse(_windows_web_chat_document(Automation('https://chatgpt.com'), 'uia', 'editor', Event()))
-
     def test_global_translation_is_on_by_default_but_remembers_turning_it_off(self):
         from app_settings import SettingsStore
         with tempfile.TemporaryDirectory() as directory:
@@ -141,6 +90,22 @@ class LiveTranslationTests(unittest.TestCase):
         self.assertEqual(api.calls[-1][1], [{'id': '2', 'text': '周五出货。', 'before': '', 'after': ''}])
         api.resolve('We ship on Friday.')
         self.assertEqual(draft.result, 'Hello. The budget is approved. We ship on Friday.')
+
+    def test_long_draft_is_translated_incrementally(self):
+        api = UnitsApi()
+        draft = LiveDraft(api)
+        self.addCleanup(draft.reset)
+        original = '会议纪要的详细内容。' * 215
+        self.assertGreater(len(original), 2000)
+        draft.edit(original, immediate=True)
+        for _ in range(2):
+            rows = api.calls[-1][1]
+            api.resolve(*('Meeting notes.' for _ in rows))
+        self.assertTrue(draft.ready)
+        draft.edit(original + '请回复。', immediate=True)
+        self.assertEqual(api.calls[-1][1], [{'id': '215', 'text': '请回复。', 'before': '', 'after': ''}])
+        api.resolve('Please reply.')
+        self.assertTrue(draft.ready)
 
     def test_editing_the_middle_reuses_both_neighbors(self):
         api = UnitsApi()
