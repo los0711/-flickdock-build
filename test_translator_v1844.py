@@ -100,6 +100,20 @@ class NativeFixTests(unittest.TestCase):
         self.view=TranslatorDialog(SimpleNamespace(settings=SettingsStore(self.temp.name),shelf=self.shelf),api=self.api,store=self.store,speech=self.speech,detector=lambda text:'英语')
         self.view.show();self.view.source_editor.setPlainText('Hello world.');self.view.session.translate();self.api.finish('你好，世界。');settle(timeout=.02)
     def tearDown(self):self.view.shutdown();self.view.deleteLater();self.shelf.deleteLater();settle(timeout=.03);self.patch.stop();self.temp.cleanup()
+    def test_long_source_and_result_scroll_by_pixels_and_keep_the_selection(self):
+        from PySide6.QtGui import QTextCursor
+        for editor in (self.view.source_editor,self.view.output_editor):
+            editor.setPlainText('A real sample for moving the text viewport.\n'*200)
+            selected=editor.textCursor();selected.setPosition(4);selected.setPosition(12,QTextCursor.KeepAnchor)
+            editor.setTextCursor(selected)
+            bar=editor.verticalScrollBar()
+            settle(timeout=.03)
+            self.assertGreater(bar.maximum(),1200)
+            bar.setValue(12);before=editor.cursorRect(selected).top()
+            bar.setValue(13);after=editor.cursorRect(selected).top()
+            self.assertEqual(before-after,1)
+            self.assertEqual(editor.textCursor().selectedText(),selected.selectedText())
+            self.assertFalse(editor.acceptRichText())
     def test_real_close_button_stays_closed_after_refresh(self):
         self.view._speak(True);self.voice.finish_voice();self.voice.finish_audio();settle(timeout=.02)
         card=self.view.speech_bars['target'][0];self.assertTrue(card.isVisible())

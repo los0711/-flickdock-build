@@ -3,6 +3,7 @@ import codecs,queue,threading
 from pathlib import Path
 from PySide6.QtCore import QObject,QTimer,Qt,Signal
 from file_metadata import _pool
+from shortcut_preview import SUFFIXES as SHORTCUT_SUFFIXES, shortcut_details
 
 TEXT_PREVIEW_BYTES=64*1024
 
@@ -36,7 +37,12 @@ class TextPreviewLoader(QObject):
         if self._pending is None:return
         ref,epoch,cancel=self._pending;signal=self._result
         def read():
-            value=read_text_preview(ref,cancel)
+            if cancel.is_set():return
+            if Path(ref).suffix.lower() in SHORTCUT_SUFFIXES:
+                shortcut=shortcut_details(ref)
+                value=dict(text=shortcut['description'],truncated=False,shortcut_url=shortcut.get('url'))
+            else:
+                value=read_text_preview(ref,cancel)
             if not cancel.is_set():signal.emit(ref,epoch,value)
         try:_pool.submit(read)
         except queue.Full:self._retry.start(100);return

@@ -17,6 +17,7 @@ from pathlib import Path
 from shelf_file_tools import kind
 from shelf_file_tools import text_snippet
 from shelf_file_tools import TEXT_SUFFIXES
+from shortcut_preview import SUFFIXES as SHORTCUT_SUFFIXES
 from transfer_visuals import CLOUD_STATUS_LABELS
 from transfer_visuals import cloud_status_for_ref
 from transfer_visuals import file_presence_label
@@ -540,25 +541,20 @@ class PreviewPane(_PreviewSurfaceBase):
             self.copy_button.setToolTip("复制链接" if self.shelf.content.category(ref)=='links' else "复制文字")
             return
         source=Path(ref)
-        from shortcut_preview import shortcut_details
-        shortcut=shortcut_details(source)
-        if shortcut is not None:
-            if shortcut.get('url') and QApplication.instance().platformName() not in ('offscreen','minimal'):
-                self.shelf.queue_link_previews([ref])
+        suffix=source.suffix.lower()
+        if suffix in SHORTCUT_SUFFIXES:
             cover=meta.get('preview_image')
-            if cover and self._show_image(cover):pass
-            else:
-                self.text.setPlainText(shortcut['description']);self.stack.setCurrentWidget(self.text)
-        elif self.shelf.content.category(ref)=='images' and self._show_image(ref):
-            self.info.setText("矢量图像" if source.suffix.lower() in ('.svg','.svgz') else kind(ref)+" 图像")
-        elif self.shelf.content.category(ref) in ('video','audio') and MediaPreview.can_preview(ref):
-            _note_preview_event('preview.video.select' if self.shelf.content.category(ref)=='video' else 'preview.audio.select')
+            if not (cover and self._show_image(cover)):self._show_text_loading()
+            self._text_loader.request(ref)
+        elif category=='images' and self._show_image(ref):
+            self.info.setText("矢量图像" if suffix in ('.svg','.svgz') else kind(ref)+" 图像")
+        elif category in ('video','audio') and MediaPreview.can_preview(ref):
+            _note_preview_event('preview.video.select' if category=='video' else 'preview.audio.select')
             self.media.set_source(ref,poster=self.shelf.preview_cache.get(ref))
             self.stack.setCurrentWidget(self.media)
-            self.info.setText("视频" if self.shelf.content.category(ref)=='video' else "音频")
-        elif source.suffix.lower() in TEXT_SUFFIXES:
-            self.text.setPlainText('正在读取文本预览…');self.stack.setCurrentWidget(self.text)
-            self.copy_button.setEnabled(False)
+            self.info.setText("视频" if category=='video' else "音频")
+        elif suffix in TEXT_SUFFIXES:
+            self._show_text_loading()
             self._text_loader.request(ref)
         else:
             self.icon.set_content("file",pixmap=self.shelf.item_pixmap(ref,128,dpr=self.devicePixelRatioF()))
@@ -567,8 +563,18 @@ class PreviewPane(_PreviewSurfaceBase):
         self.info.setText(item_detail(self.shelf,ref))
         self.copy_button.setToolTip("复制文字内容" if self.stack.currentWidget() is self.text else "复制文件")
 
+    def _show_text_loading(self):
+        placeholder='正在读取文本预览…'
+        if self.text.document().characterCount()!=len(placeholder)+1 or self.text.toPlainText()!=placeholder:
+            self.text.setPlainText(placeholder)
+        self.stack.setCurrentWidget(self.text)
+        self.copy_button.setEnabled(False)
+
     def _text_ready(self,ref,value):
         if ref!=self.current_path or value is None:return
+        url=value.get('shortcut_url')
+        if url and QApplication.instance().platformName() not in ('offscreen','minimal'):
+            self.shelf.queue_link_previews([ref],known_urls={ref:url})
         self.copy_button.setEnabled(True)
         if value.get('error'):
             self.text.setPlainText('暂时无法读取文本预览，请打开原文件。');return

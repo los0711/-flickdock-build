@@ -209,7 +209,9 @@ class ShelfWindow(QWidget):
         # shadow, confined to the reserved animation surface margins.
         self.surface_effect = MotionShadow(self.card, alpha=SHELF_SHADOW_ALPHA,
             cache_while=lambda:(self.expanded or sys.platform=='win32' and self._dock_drag_reveal)
-                and self.presentation._timer.isActive() and not self.incoming_drop and not self.preview_playing)
+                and self.presentation._timer.isActive() and not self.incoming_drop and not self.preview_playing,
+            live_at_rest=lambda:self.expanded and not self.content_transition_active()
+                and not self.presentation._timer.isActive())
         self.surface_effect.setBlurRadius(20)
         self.surface_effect.setOffset(0, 4)
         self.card.setGraphicsEffect(self.surface_effect)
@@ -656,13 +658,13 @@ class ShelfWindow(QWidget):
         else: self.content.metadata.setdefault(ref,{}).update(result)
         self.refresh(); self.manager.save(); self.manager.update_handles()
 
-    def queue_link_previews(self,refs=None):
+    def queue_link_previews(self,refs=None,*,known_urls=None):
         from shortcut_preview import shortcut_details
         for ref in refs or self.files['permanent']:
             meta=self.content.metadata.setdefault(ref,{})
             if ref in self.resolver.pending_refs:continue
             if meta.get('preview_image') and Path(meta['preview_image']).is_file():continue
-            source=self.content.text(ref)
+            source=(known_urls or {}).get(ref) or self.content.text(ref)
             if not (isinstance(source,str) and re.fullmatch(r'https?://\S+',source,re.IGNORECASE)):
                 details=shortcut_details(ref);source=(details or {}).get('url')
             if not source or meta.get('error'):continue
@@ -1600,7 +1602,6 @@ class ShelfWindow(QWidget):
         # the compact preview with no visible way to close it.
         if self.presentation_kind=='drag':self.presentation_kind='manual'
         if not self.expanded:self._dismiss_clipboard_preview()
-        if self.popup is not None:self.popup.preview.clear_preview()
         if animate:self._capture_morph_source()
         self._transition_preparing=animate
         self.visible_state = "floating"

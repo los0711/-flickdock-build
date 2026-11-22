@@ -25,6 +25,21 @@ class TextPreviewTests(unittest.TestCase):
             self.assertIsNone(getattr(preview.text,'_flickdock_edge_fade',None))
         finally:fixture.tearDown()
 
+    def test_file_text_preview_preserves_real_pixel_scroll_positions(self):
+        fixture=w.WorkspaceTests();fixture.setUp()
+        try:
+            path=fixture.base/'pixel-scroll.txt'
+            path.write_text('预览内容可分像素滚动。\n'*180,encoding='utf-8')
+            fixture.shelf.add_paths('permanent',[str(path)])
+            preview=fixture.overview().preview
+            preview.show_path(str(path))
+            bar=preview.text.verticalScrollBar()
+            w.until(lambda:bar.maximum()>1000)
+            bar.setValue(12);top=preview.text.cursorRect().top()
+            bar.setValue(13)
+            self.assertEqual(preview.text.cursorRect().top(),top-1)
+        finally:fixture.tearDown()
+
     def test_bounded_preview_is_async_and_copy_keeps_original_file(self):
         fixture=w.WorkspaceTests();fixture.setUp()
         try:
@@ -57,6 +72,27 @@ class TextPreviewTests(unittest.TestCase):
             preview.show_path(old);preview.clear_preview()
             preview._text_loader._completed(old,preview._text_loader._epoch-1,dict(text='stale',truncated=False))
             self.assertIsNone(preview.current_path);self.assertEqual(preview.text.toPlainText(),'')
+        finally:fixture.tearDown()
+
+    def test_shortcut_preview_reads_on_worker_and_keeps_original_reference(self):
+        fixture=w.WorkspaceTests();fixture.setUp()
+        try:
+            path=fixture.base/'preview.url';ref=str(path)
+            path.write_text('[InternetShortcut]\nURL=https://example.invalid/test',encoding='utf-8')
+            fixture.shelf.add_paths('permanent',[ref])
+            preview=fixture.overview().preview
+            seen=[]
+            from text_preview import shortcut_details
+            def inspect(name):
+                seen.append(threading.get_ident())
+                return shortcut_details(name)
+            with patch('text_preview.shortcut_details',side_effect=inspect):
+                preview.show_path(ref)
+                w.until(lambda:preview.text.toPlainText()=='https://example.invalid/test')
+            self.assertEqual(len(seen),1)
+            self.assertNotEqual(seen[0],threading.get_ident())
+            self.assertEqual(preview.current_path,ref)
+            self.assertFalse(fixture.shelf.content.is_text(ref))
         finally:fixture.tearDown()
 
 if __name__=='__main__':unittest.main(verbosity=2)

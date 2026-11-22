@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (QToolButton, QAbstractButton, QApplication, QFram
 from native_ui_common import (RADIUS_PANEL_PX, PopupChevronMotion, RoundedScrollBar, RoundedSurfaceFrame, colors, icon, paint_rounded_surface,
                               qss_color, reduced_motion, reference_font, rounded_popup, screen_for_widget, set_ui_weight)
 from display_frames import DisplayAnimation, FramePulse
-from reference_widgets import IconTextButton, ToolbarButton, button, css, label
+from reference_widgets import IconTextButton, PixelScrollTextEdit, ToolbarButton, button, css, label
 from surface_morph import paint_surface_shadow
 from translation_languages import TARGETS
 from flickdock_motion import Spring
@@ -153,7 +153,7 @@ class ThinkingText(QLabel):
         painter.end()
 
 
-class StreamingResultEditor(QPlainTextEdit):
+class StreamingResultEditor(PixelScrollTextEdit):
     """Reveal the complete native document without editing it on paint frames."""
 
     WORD_INTERVAL=.07
@@ -170,6 +170,8 @@ class StreamingResultEditor(QPlainTextEdit):
         self._started_at=0.
         self._delay=self.WORD_INTERVAL
         self.textChanged.connect(self.finish_reveal)
+        self.set_viewport_fill(qss_color(colors(ui_theme.current_theme())['card']))
+        self.setProperty('scrollBackdropRole','card')
 
     def start_reveal(self,value):
         self.finish_reveal()
@@ -250,14 +252,17 @@ class StreamingResultEditor(QPlainTextEdit):
     def paintEvent(self,event):
         if not self._words:
             super().paintEvent(event);return
+        self.paint_viewport_background(event)
         painter=QPainter(self.viewport())
         painter.setPen(self.palette().color(QPalette.Text))
         painter.setClipRegion(event.region())
         clip=QRectF(event.rect())
         elapsed=time.perf_counter()-self._started_at
-        block=self.firstVisibleBlock()
+        viewport_offset=QPointF(-self.horizontalScrollBar().value(),-self.verticalScrollBar().value())
+        document_layout=self.document().documentLayout()
+        block=self.cursorForPosition(QPoint(0,max(0,event.rect().top()-6))).block()
         while block.isValid():
-            rect=self.blockBoundingGeometry(block).translated(self.contentOffset())
+            rect=document_layout.blockBoundingRect(block).translated(viewport_offset)
             if rect.top()>clip.bottom()+6:break
             if block.isVisible() and rect.bottom()+6>=clip.top():
                 self._draw_reveal_block(painter,block,rect.topLeft(),elapsed)

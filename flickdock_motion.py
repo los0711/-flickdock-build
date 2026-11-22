@@ -164,7 +164,7 @@ class MotionShadow(QGraphicsDropShadowEffect):
     The widget's hit bounds stay stable. Only its painted presentation moves,
     so pointer interaction and layout don't jitter as the surface springs.
     """
-    def __init__(self, widget: QWidget, alpha: int = 45, *, cache_while=None):
+    def __init__(self, widget: QWidget, alpha: int = 45, *, cache_while=None, live_at_rest=None):
         super().__init__(widget)
         self.sx = self.sy = 1.0
         self.dx = self.dy = 0.0
@@ -175,6 +175,7 @@ class MotionShadow(QGraphicsDropShadowEffect):
         self._source_bounds=QRectF()
         self._source_dpr=0.
         self._cache_while=cache_while
+        self._live_at_rest=live_at_rest
         self.setBlurRadius(SHELF_SHADOW_BLUR)
         self.setOffset(SHELF_SHADOW_OFFSET)
         self.setColor(shelf_shadow_color(alpha))
@@ -239,12 +240,16 @@ class MotionShadow(QGraphicsDropShadowEffect):
         bounds = self.sourceBoundingRect(Qt.CoordinateSystem.LogicalCoordinates)
         snapshot=self._surface_snapshot
         active=snapshot is not None and snapshot.active
+        direct=(not active and self.sx==self.sy==1 and self.dx==self.dy==0
+                and self._live_at_rest is not None and self._live_at_rest())
         # QWidget drawSource() can restore its own painter state and bypass
-        # the caller's scale/clip. Always composite its cached pixmap ourselves,
-        # at rest as well as in motion, so intermediate and final frames share
-        # exactly one transform-respecting path.
+        # the caller's scale/clip. In motion, keep using the same clipped
+        # pixmap compositor. The inset contents of a settled overview can
+        # instead use Qt's dirty-region paint directly.
         offset=QPoint()
-        if active and snapshot.mix<1:
+        if direct:
+            source=None
+        elif active and snapshot.mix<1:
             # The endpoint was rendered once at the final layout size. Asking
             # Qt for the live source on every blend tick repaints the entire
             # overview; use that endpoint until the final live-source handoff.
@@ -258,7 +263,8 @@ class MotionShadow(QGraphicsDropShadowEffect):
                 self._source_bounds=QRectF(bounds);self._source_dpr=ratio
             source=self._source_cache;offset=self._source_offset
         def draw_live(target):
-            if active and snapshot.mix<1:snapshot.draw_target(target,QRectF(QPointF(),bounds.size()))
+            if direct:self.drawSource(target)
+            elif active and snapshot.mix<1:snapshot.draw_target(target,QRectF(QPointF(),bounds.size()))
             else:target.drawPixmap(QPointF(offset),source)
         rect=self._surface_rect(snapshot) if active else bounds
         center = rect.center()

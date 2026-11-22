@@ -15,7 +15,7 @@ from PySide6.QtCore import QObject, QEvent, QPoint, QPointF, QRect, QRectF, QSiz
 from PySide6.QtGui import QColor, QFont, QFontMetricsF, QIcon, QPalette, QImage, QPainter, QPainterPath, QPen, QPixmap, QTextDocument, QTextOption, QTransform
 from PySide6.QtWidgets import (QLabel, QPushButton, QWidget, QFrame, QHBoxLayout,
     QVBoxLayout, QScrollArea, QLineEdit, QProgressBar, QButtonGroup, QSizePolicy, QGridLayout,
-    QStackedWidget, QPlainTextEdit, QTextEdit, QCheckBox, QApplication, QDialog, QRubberBand)
+    QStackedWidget, QTextEdit, QCheckBox, QApplication, QDialog, QRubberBand)
 
 import ui_theme
 from native_ui_common import SEGMENT_INSET_PX
@@ -184,7 +184,37 @@ class RoundedBadge(QLabel):
         super().paintEvent(event)
 
 
-class RoundedPreviewText(QPlainTextEdit):
+class PixelScrollTextEdit(QTextEdit):
+    """Plain-text editing with native scrollbar positions in pixels."""
+    def __init__(self,parent=None):
+        super().__init__(parent)
+        self.setAcceptRichText(False)
+        self._viewport_fill=None
+        self.verticalScrollBar().setSingleStep(self.fontMetrics().lineSpacing())
+
+    def changeEvent(self,event):
+        super().changeEvent(event)
+        if event.type() in (QEvent.FontChange,QEvent.StyleChange):
+            self.verticalScrollBar().setSingleStep(self.fontMetrics().lineSpacing())
+
+    def set_viewport_fill(self,fill):
+        if fill!=self._viewport_fill:
+            self._viewport_fill=fill
+            self.viewport().setAttribute(Qt.WA_OpaquePaintEvent,fill is not None)
+            self.viewport().update()
+
+    def paint_viewport_background(self,event):
+        if self._viewport_fill is not None:
+            painter=QPainter(self.viewport())
+            painter.fillRect(event.rect(),self._viewport_fill)
+            painter.end()
+
+    def paintEvent(self,event):
+        self.paint_viewport_background(event)
+        super().paintEvent(event)
+
+
+class RoundedPreviewText(PixelScrollTextEdit):
     def __init__(self,parent=None):
         super().__init__(parent)
         self.setVerticalScrollBar(RoundedScrollBar(Qt.Vertical,self,thumb_color=lambda:palette()['input_border']))
@@ -1769,8 +1799,8 @@ def build_preview(view,elided_type,image_type,media_type,content_type):
     view.icon=content_type(view,motion=view.shelf.manager.motion)
     view.text=RoundedPreviewText(view);view.text.setReadOnly(True);view.text.setAcceptDrops(False);view.text.viewport().setAcceptDrops(False)
     view.text.setProperty('scrollEdgeBlur',False)
-    css(view.text,"QPlainTextEdit{background:transparent;color:#F5F5F7;border:0;padding:14px;font:13px 'FlickDock UI';}",
-        "QPlainTextEdit{background:transparent;color:#1D1D1F;border:0;padding:14px;font:13px 'FlickDock UI';}")
+    css(view.text,"QTextEdit{background:transparent;color:#F5F5F7;border:0;padding:14px;font:13px 'FlickDock UI';}",
+        "QTextEdit{background:transparent;color:#1D1D1F;border:0;padding:14px;font:13px 'FlickDock UI';}")
     view.image=image_type(view);view.image.set_loader(view.shelf.image_cache);view.image.source_ready.connect(view._image_source_ready)
     view.media=media_type(view,motion=view.shelf.manager.motion);view.media.frame_ready.connect(view._poster_ready);view.media.playing_changed.connect(view._playing_changed)
     view.empty_preview=QWidget(view.stack)
