@@ -1,0 +1,54 @@
+name: Verify Mac clipboard recovery and editor replacement
+
+on:
+  push:
+    branches: [ci-flickdock-mac-paste-1840]
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, macos-26]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 12
+    env:
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          architecture: arm64
+      - name: Install native test dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Regress permission setup after same-version reinstall
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m unittest -v test_mac_permissions_v1821.PermissionIdentityTests test_mac_permissions_v1821.PermissionTests
+      - name: Run native card and clipboard tests on the supported system pasteboard
+        if: matrix.os == 'macos-15'
+        run: |
+          python ci_live_editor_card.py native-card.json
+          python ci_live_translation_web.py embedded-editor.json
+          python ci_clipboard_history_native.py driver "$RUNNER_TEMP/clipboard-history"
+      - name: Replace text in a native embedded editor with pasteboard reads blocked
+        if: always()
+        env:
+          FD_QA_MAC_CLIPBOARD_DENIED: '1'
+        run: python ci_live_translation_web.py denied-editor.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: mac-paste-${{ matrix.os }}-${{ github.sha }}
+          path: |
+            native-card.json
+            embedded-editor.json
+            denied-editor.json
+          if-no-files-found: warn
+          retention-days: 3

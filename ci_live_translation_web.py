@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from contextlib import nullcontext
 from html import escape
 import json
 import os
@@ -230,12 +231,15 @@ def verify_field(folder, field):
                     result = paste_editor_text(*args)
                     paste_results.append(getattr(result,'name',result))
                     return result
-                with patch('clipboard_history_native.select_editor_text',wraps=select_editor_text) as select, \
+                permission = (patch('clipboard_history_native.mac_history_paste_blocker',return_value='clipboard')
+                              if os.environ.get('FD_QA_MAC_CLIPBOARD_DENIED')=='1' else nullcontext())
+                with permission, patch('clipboard_history_native.select_editor_text',wraps=select_editor_text) as select, \
                         patch('live_translation_editor.focused_editor',side_effect=read_editor), \
                         patch('clipboard_history_native.paste_editor_text',side_effect=paste):
                     inserted = focused_editor(cancel,expected=observed,insertion=translation)
                 row.update(select_attempts=select.call_count,paste_results=paste_results)
                 if not inserted:
+                    row['status']=getattr(inserted,'name',None)
                     row['observations'] = observations
                 applied = wait_for(lambda: state().get('text') == translation and state().get('inputs',0)>0)
                 current = focused_editor(cancel)
@@ -266,7 +270,9 @@ def verify(output):
     report = {'platform': sys.platform, 'fields': {}}
     try:
         with tempfile.TemporaryDirectory(prefix='flickdock-embedded-web-') as location:
-            for field in FIELDS:
+            denied=os.environ.get('FD_QA_MAC_CLIPBOARD_DENIED')=='1'
+            assert not denied or sys.platform=='darwin'
+            for field in (('rich','embedded','protected','read-only') if denied else FIELDS):
                 folder = Path(location)/field
                 if sys.platform == 'darwin':
                     # NSWorkspace can cache the departed fixture in a
@@ -285,6 +291,8 @@ def verify(output):
             assert row.get('blocked'), (field,row)
         else:
             assert all(row.get(key) for key in ('read','stale_rejected','request_accepted','updated','input_event')), (field,row)
+            if denied:
+                assert not row['paste_results'], (field,row)
 
 
 if __name__ == '__main__':

@@ -130,6 +130,8 @@ def _windows_application_scope(pid, _period):
         size = wintypes.DWORD(1024)
         image = ctypes.create_unicode_buffer(size.value)
         if kernel.QueryFullProcessImageNameW(process, 0, image, ctypes.byref(size)):
+            if basename(image.value).casefold() == 'seda.exe':
+                return 'seda'
             return _application_scope('win32', image.value)
         return 'editor'
     finally:
@@ -270,46 +272,53 @@ class _AutomationObjects:
             self.ole.SafeArrayDestroy(array)
 
 
-def _windows_editor(cancel, expected, insertion, sample, at_pointer):
+def _windows_editor(cancel, expected, insertion, sample, at_pointer, rejected=None):
     from ctypes.wintypes import RECT
     from clipboard_history_native import front_target
 
+    def reject(reason):
+        if rejected is not None:rejected(reason)
+        return None
+
     target = front_target()
     if target is None:
-        return None
+        return reject('no external foreground window')
     scope = None if sample else _windows_application_scope(target[1], int(monotonic() // 5))
     if scope == 'document':
         return None
     with _automation() as apartment:
         if apartment is None or cancel.is_set():
-            return None
+            return reject('UI Automation unavailable')
         automation, com = apartment
         focused = com.object(automation, 8)
         if focused is None:
-            return None
+            return reject('no focused UI Automation element')
         process, control = (com.read(focused, slot, _INT) for slot in (20, 21))
         password, enabled = (com.read(focused, slot, _INT) for slot in (35, 28))
         if (process is None or process.value != target[1] or control is None
                 or password is None or password.value or enabled is None or not enabled.value):
-            return None
+            return reject(('focus rejected',process.value if process is not None else None,target[1],
+                           control.value if control is not None else None,
+                           password.value if password is not None else None,
+                           enabled.value if enabled is not None else None))
         if sample:
             selection = _sample_windows_selection(com, automation, focused, target, cancel, at_pointer)
             return selection if front_target() == target and not cancel.is_set() else None
         if control.value != 50004:
-            return None
+            return reject(('focus is not an edit control',control.value))
         value = com.pattern(focused, 10002, 'a94cd8b1-0844-4cd6-9d2d-640537ab39e9')
         if value is not None:
             readonly = com.read(value, 5, _INT)
             if readonly is None or readonly.value:
-                return None
+                return reject('value pattern is read-only')
         pattern = com.pattern(focused, 10014, '32eba289-3583-42c9-9c59-3b6d9a1e9b6a')
         document = com.object(pattern, 7) if pattern is not None else None
         if value is None and (document is None or not _windows_editable_range(com, document)):
-            return None
+            return reject(('no writable editor range',document is not None))
         identifier = com.runtime_id(focused)
         bounds = com.read(focused, 43, RECT)
         if not identifier or bounds is None or bounds.right <= bounds.left or bounds.bottom <= bounds.top:
-            return None
+            return reject('missing editor identity or geometry')
         web, document_site = False, False
         if scope == 'browser' or insertion is not None:
             web, document_site = _windows_web_context(com, automation, focused, cancel)
@@ -319,12 +328,12 @@ def _windows_editor(cancel, expected, insertion, sample, at_pointer):
             return None
         text = com.string(document, 12, _INT(MAX_TEXT_CHARS + 1)) if document is not None else com.string(value, 4)
         if text is None or len(text) > MAX_TEXT_CHARS or cancel.is_set():
-            return None
+            return reject('editor text unavailable or too long')
         selection = _windows_selection(com, pattern, document, text) if document is not None else None
         bounds = bounds.left, bounds.top, bounds.right - bounds.left, bounds.bottom - bounds.top
         state = EditorState((target, identifier), bounds, text, selection)
         if front_target() != target:
-            return None
+            return reject('foreground changed during editor read')
         if insertion is not None:
             if (not _same_draft(state, expected) or cancel.is_set() or not insertion
                     or len(insertion) > 24000 or '\0' in insertion):
@@ -336,8 +345,35 @@ def _windows_editor(cancel, expected, insertion, sample, at_pointer):
                 latest=com.object(pattern,7)
                 return com.string(latest,12,_INT(len(insertion)+3)) if latest is not None else None
 
+            if scope == 'seda' and web:
+                def read_seda_draft():
+                    latest = com.object(pattern,7) if pattern is not None else None
+                    if latest is None:
+                        return read_current()
+                    capacity = max(MAX_TEXT_CHARS, len(insertion.encode('utf-16-le')) // 2) + 1
+                    current = com.string(latest,12,_INT(capacity))
+                    # Each Chromium paragraph may contribute a terminal
+                    # layout character absent from the editable DOM value.
+                    if current is not None and current.rstrip() == insertion.rstrip():
+                        return insertion
+                    return current
+
+                # Embedded Chromium hosts can intercept Ctrl+A or select
+                # across the page. The focused editor exposes its own range.
+                if document is not None:
+                    def select_range():
+                        return _method(document,16,_INT)(document) >= 0
+
+                    if _paste_replacement(cancel,state,insertion,target,read_seda_draft,
+                                          select_scope=select_range,allow_unicode=True,
+                                          ignore_trailing_whitespace=True):
+                        return True
+                return _paste_replacement(cancel,state,insertion,target,read_seda_draft,
+                                          within_editor=True,allow_unicode=True,
+                                          ignore_trailing_whitespace=True)
             if web:
-                return _paste_replacement(cancel,state,insertion,target,read_current,accept_unreported_selection=True)
+                return _paste_replacement(cancel,state,insertion,target,read_current,
+                                          accept_unreported_selection=True)
             if value is not None and _method(value, 3, _INT, ctypes.c_wchar_p)(value, insertion) >= 0:
                 if _confirmed_replacement(cancel,state,insertion,read_current):
                     return True
@@ -385,21 +421,28 @@ def _confirmed_replacement(cancel, expected, text, read_current):
 
 
 def _paste_replacement(cancel, expected, text, target, read_current, *,
-                       accept_unreported_selection=False, within_editor=False):
-    from clipboard_history_native import paste_editor_text, select_editor_text
+                       accept_unreported_selection=False, within_editor=False,
+                       select_scope=None, allow_unicode=False, ignore_trailing_whitespace=False):
+    from clipboard_history_native import paste_editor_text, select_editor_text, type_windows_editor_text
 
     def same_editor():
         return _same_draft(focused_editor(cancel),expected)
 
+    def selection_covers_draft(current):
+        end = len(expected.text)
+        if current.selection == (0,end):
+            return True
+        return ignore_trailing_whitespace and current.selection == (0,len(expected.text.rstrip()))
+
     def all_selected():
         current = focused_editor(cancel)
-        return _same_draft(current,expected) and current.selection == (0,len(expected.text))
+        return _same_draft(current,expected) and selection_covers_draft(current)
 
     def still_safe():
         current = focused_editor(cancel)
         if not _same_draft(current,expected):
             return False
-        if current.selection == (0,len(expected.text)):
+        if selection_covers_draft(current):
             return True
         # Some web providers report the caret after a successful Select All.
         return (accept_unreported_selection and (current.selection is None
@@ -407,7 +450,7 @@ def _paste_replacement(cancel, expected, text, target, read_current, *,
 
     if cancel.is_set() or not same_editor():
         return False
-    if not select_editor_text(target,within_editor=within_editor):
+    if not (select_scope() if select_scope is not None else select_editor_text(target,within_editor=within_editor)):
         return False
     deadline = monotonic() + .28
     while not all_selected():
@@ -416,7 +459,12 @@ def _paste_replacement(cancel, expected, text, target, read_current, *,
                 return False
             break
     paste_editor_text(text,target,cancel,still_safe)
-    return _confirmed_replacement(cancel,expected,text,read_current)
+    if _confirmed_replacement(cancel,expected,text,read_current):
+        return True
+    if allow_unicode and not cancel.is_set() and all_selected():
+        if type_windows_editor_text(text,target,all_selected):
+            return _confirmed_replacement(cancel,expected,text,read_current)
+    return False
 
 
 def _sample_windows_selection(com, automation, focused, target, cancel, at_pointer):
@@ -530,7 +578,8 @@ def _mac_editor_api():
 
 
 def _mac_editor(cancel, expected, insertion, sample, rejected=None):
-    from clipboard_history_native import front_target
+    from clipboard_history_native import (MacPasteResult, front_target, mac_history_paste_blocker,
+                                          select_editor_text, type_mac_editor_text)
     target = front_target()
     ax, cf, secure_input = _mac_editor_api()
 
@@ -541,8 +590,11 @@ def _mac_editor(cancel, expected, insertion, sample, rejected=None):
 
     if secure_input():
         return reject('protected input is active')
-    if not target or not ax.AXIsProcessTrusted():
-        return reject('no external foreground application or Accessibility grant')
+    if not target:
+        return reject('no external foreground application')
+    if not ax.AXIsProcessTrusted():
+        if insertion is not None:return MacPasteResult.ACCESSIBILITY
+        return reject('missing Accessibility grant')
     scope = None if sample else _mac_application_scope(target, int(monotonic() // 5))
     if scope == 'document':
         return None
@@ -652,8 +704,10 @@ def _mac_editor(cancel, expected, insertion, sample, rejected=None):
         if selected_range and ax.AXValueGetValue(selected_range, 4, selected):
             start, length = selected
             selection = python_position(text, start), python_position(text, start + length)
-        elif text and read_string(attr(editor,b'AXSelectedText')) == text:
-            selection = 0,len(text)
+        if text and selection != (0,len(text)) and (insertion is not None or selection is None):
+            chosen=read_string(attr(editor,b'AXSelectedText'))
+            if chosen == text:
+                selection = 0,len(text)
         state = EditorState((target, cf.CFHash(editor)), tuple(round(v) for v in (*xy, *wh)), text, selection)
         if front_target() != target:
             return reject('AX foreground changed during observation')
@@ -670,19 +724,38 @@ def _mac_editor(cancel, expected, insertion, sample, rejected=None):
                 span = retain(ax.AXValueCreate(4,ctypes.byref(entire))) if settable(range_key) else None
                 return bool(span and ax.AXUIElementSetAttributeValue(editor,range_key,span)==0)
 
-            def paste_current():
-                return (_paste_replacement(cancel,state,insertion,target,read_current,
-                                           accept_unreported_selection=True)
-                        or _paste_replacement(cancel,state,insertion,target,read_current,
-                                              accept_unreported_selection=True,within_editor=True))
+            def full_selection():
+                current=focused_editor(cancel)
+                if not _same_draft(current,state) or secure_input():return False
+                if current.selection==(0,len(text)):return True
+                chosen=read_string(attr(editor,b'AXSelectedText'))
+                return bool(chosen and chosen.rstrip()==text.rstrip())
 
-            # Some embedded browsers do not expose an AXWebArea ancestor.
-            # AX range setters can change the DOM selection before paste,
-            # even when the browser does not implement the requested write.
-            if paste_current():
-                return True
-            if web or not _same_draft(focused_editor(cancel),state):
-                return False
+            blocker=mac_history_paste_blocker()
+            if blocker is None:
+                # Use the focused range before a page's Select All command.
+                if _paste_replacement(cancel,state,insertion,target,read_current,select_scope=select_range):
+                    return True
+                if _paste_replacement(cancel,state,insertion,target,read_current,
+                                      accept_unreported_selection=True,within_editor=web):
+                    return True
+                if not web and _paste_replacement(cancel,state,insertion,target,read_current,
+                                                   accept_unreported_selection=True,within_editor=True):
+                    return True
+            if not _same_draft(focused_editor(cancel),state):return False
+            if web:
+                # Pasteboard access is independent of Accessibility. A
+                # verified rich editor can accept text without a clipboard read.
+                for select_text in (select_range,lambda:select_editor_text(target,within_editor=True)):
+                    if not full_selection() and select_text():
+                        deadline=monotonic()+.25
+                        while not full_selection() and monotonic()<deadline and not cancel.wait(.02):
+                            pass
+                    if (full_selection() and type_mac_editor_text(insertion,target,cancel,full_selection)
+                            and _confirmed_replacement(cancel,state,insertion,read_current)):
+                        return True
+                    if not _same_draft(focused_editor(cancel),state):return False
+                return MacPasteResult.CLIPBOARD_PERMISSION if blocker=='clipboard' else False
             native = key(insertion.encode('utf8'))
             if not native:
                 return False
@@ -692,9 +765,10 @@ def _mac_editor(cancel, expected, insertion, sample, rejected=None):
                     return True
                 if selected_range and _same_draft(focused_editor(cancel),state):
                     ax.AXUIElementSetAttributeValue(editor, range_key, selected_range)
-            if (not _same_draft(focused_editor(cancel),state) or not settable(value_key)
-                    or ax.AXUIElementSetAttributeValue(editor, value_key, native)):
+            if not _same_draft(focused_editor(cancel),state):
                 return False
+            if not settable(value_key) or ax.AXUIElementSetAttributeValue(editor, value_key, native):
+                return MacPasteResult.CLIPBOARD_PERMISSION if blocker=='clipboard' else False
             caret = offsets(len(insertion.encode('utf-16-le')) // 2, 0)
             range_value = retain(ax.AXValueCreate(4, ctypes.byref(caret)))
             if range_value:

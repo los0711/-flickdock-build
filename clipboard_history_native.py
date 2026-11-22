@@ -512,11 +512,34 @@ def _send_windows_paste(user,target):
     return _send_windows_editor_shortcut(user,target,0x56)
 
 
-def _send_windows_editor_shortcut(user,target,key):
+def _send_windows_editor_shortcut(user,target,key,*,range_start=None):
     if front_target()!=target or any(user.GetAsyncKeyState(key)&0x8000 for key in (0x10,0x11,0x12,0x5B,0x5C)):
         return False
-    events=(_Input*4)(*(_Input(1,_InputValue(keyboard=_Keyboard(key,0,flags,0,0)))
-                       for key,flags in ((0x11,0),(key,0),(key,2),(0x11,2))))
+    strokes=[(0x11,0)]
+    if range_start is not None:
+        strokes.extend(((range_start,0),(range_start,2),(0x10,0)))
+    strokes.extend(((key,0),(key,2)))
+    if range_start is not None:
+        strokes.append((0x10,2))
+    strokes.append((0x11,2))
+    events=(_Input*len(strokes))(*(_Input(1,_InputValue(keyboard=_Keyboard(key,0,flags,0,0)))
+                                  for key,flags in strokes))
+    user.SendInput.argtypes=(wintypes.UINT,ctypes.POINTER(_Input),ctypes.c_int)
+    return user.SendInput(len(events),events,ctypes.sizeof(_Input))==len(events)
+
+
+def type_windows_editor_text(text,target,verify_editor):
+    """Replace a verified selection without using the clipboard or sending Enter."""
+    if (sys.platform!='win32' or not text or len(text)>24000
+            or any(ord(char)<32 or ord(char) in (0x7F,0x2028,0x2029) for char in text)):
+        return False
+    user=_windows()
+    units=[unit for (unit,) in struct.iter_unpack('<H',text.encode('utf-16-le'))]
+    events=(_Input*(2*len(units)))(*(_Input(1,_InputValue(keyboard=_Keyboard(0,unit,flags,0,0)))
+              for unit in units for flags in (4,6)))
+    if (not verify_editor() or front_target()!=target
+            or any(user.GetAsyncKeyState(key)&0x8000 for key in (0x10,0x11,0x12,0x5B,0x5C))):
+        return False
     user.SendInput.argtypes=(wintypes.UINT,ctypes.POINTER(_Input),ctypes.c_int)
     return user.SendInput(len(events),events,ctypes.sizeof(_Input))==len(events)
 
@@ -789,7 +812,12 @@ def select_editor_text(target,*,within_editor=False):
     """Send the normal Select All command to the foreground editor."""
     if target is None or front_target()!=target:return False
     if sys.platform=='win32':
-        return _send_windows_editor_shortcut(_windows(),target,0x41)
+        user=_windows()
+        if within_editor:
+            # Ctrl+End and Ctrl+Shift+Home are confined to the active editor
+            # in Chromium, even when the host handles Ctrl+A itself.
+            return _send_windows_editor_shortcut(user,target,0x24,range_start=0x23)
+        return _send_windows_editor_shortcut(user,target,0x41)
     if sys.platform=='darwin':
         import Quartz
         command=Quartz.kCGEventFlagMaskCommand
@@ -804,6 +832,53 @@ def select_editor_text(target,*,within_editor=False):
                 Quartz.CGEventPostToPid(target,event)
         return True
     return False
+
+
+@lru_cache(maxsize=1)
+def _mac_text_input_api():
+    graphics=ctypes.CDLL('/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics')
+    graphics.CGEventCreateKeyboardEvent.argtypes=(ctypes.c_void_p,ctypes.c_uint16,ctypes.c_bool)
+    graphics.CGEventCreateKeyboardEvent.restype=ctypes.c_void_p
+    graphics.CGEventKeyboardSetUnicodeString.argtypes=(ctypes.c_void_p,ctypes.c_ulong,
+                                                       ctypes.POINTER(ctypes.c_uint16))
+    graphics.CGEventSetFlags.argtypes=(ctypes.c_void_p,ctypes.c_uint64)
+    graphics.CGEventPostToPid.argtypes=(ctypes.c_int32,ctypes.c_void_p)
+    for name in ('CGEventKeyboardSetUnicodeString','CGEventSetFlags','CGEventPostToPid'):
+        getattr(graphics,name).restype=None
+    release=ctypes.CDLL('/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation').CFRelease
+    release.argtypes=(ctypes.c_void_p,)
+    release.restype=None
+    return graphics,release
+
+
+def type_mac_editor_text(text,target,cancel,verify_editor):
+    """Commit printable text to a verified editor without reading the pasteboard."""
+    if (sys.platform!='darwin' or not text or len(text)>4000
+            or any(ord(char)<32 or ord(char) in (0x7f,0x2028,0x2029) for char in text)
+            or cancel.is_set() or front_target()!=target or not mac_paste_allowed()):
+        return False
+    api,release=_mac_text_input_api()
+    buffers=[]
+    # Keep the UTF-16 units of a non-BMP character in the same event.
+    for start in range(0,len(text),10):
+        encoded=text[start:start+10].encode('utf-16-le')
+        count=len(encoded)//2
+        buffers.append((count,(ctypes.c_uint16*count).from_buffer_copy(encoded)))
+    events=[]
+    try:
+        for count,buffer in buffers:
+            for pressed in (True,False):
+                event=api.CGEventCreateKeyboardEvent(None,0,pressed)
+                if not event:return False
+                events.append(event)
+                api.CGEventSetFlags(event,0)
+                api.CGEventKeyboardSetUnicodeString(event,count,buffer)
+        if cancel.is_set() or not verify_editor() or front_target()!=target:return False
+        for event in events:
+            api.CGEventPostToPid(target,event)
+        return True
+    finally:
+        for event in events:release(event)
 
 
 def paste_editor_text(text,target,cancel,verify_editor):

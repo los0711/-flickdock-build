@@ -1,5 +1,6 @@
 """Read actual macOS permission state; requests run only from an explicit setup action."""
 import ctypes,sys,time
+from pathlib import Path
 from platform_native import native_input_available
 
 _clipboard_cache=None
@@ -53,7 +54,7 @@ class MacPermissionBackend:
         except (ImportError,OSError,AttributeError,RuntimeError):return 'unknown'
 
     def inspect(self,*,pointer_ok=False,peers=False):
-        return dict(clipboard=self.clipboard(),accessibility=self.paste(),
+        return dict(clipboard=self.clipboard(),accessibility=self.accessibility(),
                     input='not_required' if pointer_ok else self.input(),network='observed' if peers else 'unknown',files='on_demand')
 
     def open_settings(self,kind):
@@ -96,23 +97,30 @@ class MacPermissionBackend:
         return self.open_settings(kind)
 
 
-def setup_needed(base,backend=None):
-    from pathlib import Path
+def _setup_identity(executable=None):
     from app_version import APP_BUILD
+    path=Path(executable or sys.executable).resolve()
     try:
-        if (Path(base)/'mac-permissions-shown').read_text(encoding='utf8')==APP_BUILD:return False
-    except FileNotFoundError:
-        pass
+        stat=path.stat()
+        return f'{APP_BUILD}\n{path}\n{stat.st_dev}:{stat.st_ino}:{stat.st_mtime_ns}:{stat.st_size}'
+    except OSError:
+        return f'{APP_BUILD}\n{path}'
+
+
+def setup_needed(base,backend=None,*,executable=None):
     backend=backend or MacPermissionBackend()
-    return backend.paste()!='allowed' or backend.clipboard() not in ('allowed','legacy')
+    if backend.accessibility()=='allowed' and backend.clipboard() in ('allowed','legacy'):
+        return False
+    try:
+        return (Path(base)/'mac-permissions-shown').read_text(encoding='utf8')!=_setup_identity(executable)
+    except (OSError,UnicodeError):
+        return True
 
 
-def mark_setup_shown(base):
-    from pathlib import Path
-    from app_version import APP_BUILD
+def mark_setup_shown(base,*,executable=None):
     path=Path(base)/'mac-permissions-shown'
     path.parent.mkdir(parents=True,exist_ok=True)
-    path.write_text(APP_BUILD,encoding='utf8')
+    path.write_text(_setup_identity(executable),encoding='utf8')
 
 
 def clipboard_access(*,force=False):

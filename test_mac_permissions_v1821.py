@@ -96,26 +96,43 @@ class PermissionIdentityTests(unittest.TestCase):
 
     def test_no_restart_prompt_when_current_process_is_already_allowed(self):
         from mac_permissions import setup_needed,mark_setup_shown
-        backend=SimpleNamespace(paste=lambda:'allowed',clipboard=lambda:'allowed')
+        backend=SimpleNamespace(accessibility=lambda:'allowed',clipboard=lambda:'allowed')
         with tempfile.TemporaryDirectory() as root:
             self.assertFalse(setup_needed(root,backend))
-            backend.paste=lambda:'denied'
+            backend.accessibility=lambda:'denied'
             self.assertTrue(setup_needed(root,backend))
             mark_setup_shown(root)
             self.assertFalse(setup_needed(root,backend))
-            self.assertEqual(backend.paste(),'denied')
+            self.assertEqual(backend.accessibility(),'denied')
 
     def test_permission_guide_rechecks_only_when_the_new_build_needs_it(self):
         from mac_permissions import setup_needed,mark_setup_shown
-        backend=SimpleNamespace(paste=lambda:'denied',clipboard=lambda:'allowed')
+        backend=SimpleNamespace(accessibility=lambda:'denied',clipboard=lambda:'allowed')
         with tempfile.TemporaryDirectory() as root:
             with patch('app_version.APP_BUILD','1.8.40'):
                 mark_setup_shown(root)
                 self.assertFalse(setup_needed(root,backend))
             with patch('app_version.APP_BUILD','1.8.41'):
                 self.assertTrue(setup_needed(root,backend))
-                backend.paste=lambda:'allowed'
+                backend.accessibility=lambda:'allowed'
                 self.assertFalse(setup_needed(root,backend))
+
+    def test_same_version_reinstall_rechecks_missing_grants_once(self):
+        from mac_permissions import setup_needed,mark_setup_shown
+        backend=SimpleNamespace(accessibility=lambda:'allowed',clipboard=lambda:'denied')
+        with tempfile.TemporaryDirectory() as root:
+            app=Path(root)/'FlickDock'
+            app.write_bytes(b'original executable')
+            (Path(root)/'mac-permissions-shown').write_text('1.8.40',encoding='utf8')
+            self.assertTrue(setup_needed(root,backend,executable=app))
+            mark_setup_shown(root,executable=app)
+            self.assertFalse(setup_needed(root,backend,executable=app))
+            candidate=Path(root)/'update'
+            candidate.write_bytes(b'updated executable')
+            candidate.replace(app)
+            self.assertTrue(setup_needed(root,backend,executable=app))
+            backend.clipboard=lambda:'allowed'
+            self.assertFalse(setup_needed(root,backend,executable=app))
 
 
 class ClipboardPermissionTests(unittest.TestCase):

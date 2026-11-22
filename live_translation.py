@@ -758,7 +758,9 @@ class LiveEditorTranslation(QObject):
                 self.editor = replace(expected, text=text)
                 self.draft.reset()
             else:
-                self._sample_status('无法替换，请回到原输入框')
+                from clipboard_history_native import MacPasteResult
+                message = ok.value if isinstance(ok, MacPasteResult) else '无法替换，请回到原输入框'
+                self._sample_status(message)
                 self._sample_feedback.start()
                 if error is not None:
                     LOG.debug('Live translation insertion failed: %s', type(error).__name__)
