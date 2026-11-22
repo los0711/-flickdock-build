@@ -9,7 +9,7 @@ import tempfile
 from threading import Event
 import time
 
-from live_translation_editor import focused_editor
+from live_translation_editor import focused_chat_editor, focused_editor
 
 
 def fixture(folder):
@@ -153,6 +153,7 @@ def verify(output):
                 from live_translation_editor import _mac_editor
                 _mac_editor(cancel, None, None, False, rejected=print)
             assert editor is not None and editor.text == 'Synthetic text', (editor,state())
+            assert focused_chat_editor(cancel) is None, 'Ordinary desktop editors must never be observed in global mode'
             assert editor.selection == (0, 9), editor.selection
             sample = focused_editor(cancel, sample=True)
             assert sample is not None and sample.text == 'Synthetic', sample

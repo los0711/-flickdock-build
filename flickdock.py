@@ -668,8 +668,7 @@ class ShelfManager:
                 self.wan.identity_changed.connect(self.lan_dialog._update_ready)
                 for widget in (panel,*panel.findChildren(QWidget)):widget.setAcceptDrops(True)
             elif step==3 and self.translator_dialog is None:
-                from translator_panel import TranslatorDialog
-                self.translator_dialog=TranslatorDialog(self);self.translator_dialog.hide()
+                self._ensure_translator_dialog().hide()
             elif step==4 and self.video_dialog is None:
                 from video_panel import VideoDialog
                 self.video_dialog=VideoDialog(self,self.video_controller);self.video_dialog.hide()
@@ -882,13 +881,19 @@ class ShelfManager:
         self.shelf._release_reveal_level()
         self.video_dialog.refresh();self._center_dialog(self.video_dialog);self.video_dialog.show();self.video_dialog.raise_();self.video_dialog.activateWindow()
 
+    def _ensure_translator_dialog(self):
+        if self.translator_dialog is None:
+            from translator_panel import TranslatorDialog
+            self.translator_dialog=TranslatorDialog(self)
+            if not self.cocoa_smoke and self.app.platformName() not in ('offscreen','minimal'):
+                self.translator_dialog.resume_editor_translation()
+        return self.translator_dialog
+
     def show_translator_dialog(self,*,text=None,target=None):
         self._note_ui('translator.open')
         self._remember_overview_position()
-        from translator_panel import TranslatorDialog
-        if self.translator_dialog is None:self.translator_dialog=TranslatorDialog(self)
+        dialog=self._ensure_translator_dialog()
         self.shelf._release_reveal_level()
-        dialog=self.translator_dialog
         if not dialog.isVisible():self._center_dialog(dialog)
         if dialog.isMinimized():dialog.showNormal()
         elif not dialog.isVisible():dialog.show()

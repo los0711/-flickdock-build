@@ -10,7 +10,7 @@ from PySide6.QtWidgets import QApplication, QHBoxLayout, QLabel, QTextEdit, QVBo
 
 from flickdock_motion import Spring
 from live_translation_draft import LiveDraft
-from live_translation_editor import EditorSelection, focused_editor
+from live_translation_editor import EditorSelection, focused_chat_editor
 from native_ui_common import RoundedScrollBar, colors, font_css_stack, reduced_motion
 from platform_native import mouse_buttons_mask
 from reference_widgets import PixelScrollTextEdit, ToolbarButton
@@ -378,7 +378,7 @@ class LiveEditorTranslation(QObject):
     SAMPLE_POLL_MS = 24
     RETAINED_EDITORS = 6
 
-    def __init__(self, transport, store, parent=None, *, probe=focused_editor, rules=dict):
+    def __init__(self, transport, store, parent=None, *, probe=focused_chat_editor, rules=dict):
         super().__init__(parent)
         self.probe = probe
         self.rules = rules

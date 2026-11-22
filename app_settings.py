@@ -808,6 +808,9 @@ class SettingsStore(QObject):
     def translation_enabled(self):return self._data['translation_enabled']
 
     @property
+    def live_editor_translation_enabled(self):return self._data['live_editor_translation_enabled']
+
+    @property
     def translation_target(self):return self._data['translation_target']
 
     @property
@@ -828,6 +831,7 @@ class SettingsStore(QObject):
                       "clipboard_history_enabled": True,
                       "video_link_prompt": True, "video_download_dir": str(self.base / "videos"),
                       "translation_enabled": True, "translation_target": "zh",
+                      "live_editor_translation_enabled": True,
                       "translation_rules": {},
                       "trigger_view": "compact", "shake_sensitivity": DEFAULT_SHAKE_SENSITIVITY,
                       "view_mode": "list", "shelf_shortcut": SHELF_SHORTCUT,
@@ -872,7 +876,7 @@ class SettingsStore(QObject):
                 except ValueError:self._data['translation_rules']={}
                 target=data.get('translation_target')
                 if isinstance(target,str) and target in TARGETS:self._data['translation_target']=target
-                for name in ("sync_upload_enabled", "sync_receive_enabled", "clipboard_sync_enabled", "clipboard_notice_seen", "clipboard_success_notice", "clipboard_history_enabled", "automatic_updates", "video_link_prompt", "translation_enabled"):
+                for name in ("sync_upload_enabled", "sync_receive_enabled", "clipboard_sync_enabled", "clipboard_notice_seen", "clipboard_success_notice", "clipboard_history_enabled", "automatic_updates", "video_link_prompt", "translation_enabled", "live_editor_translation_enabled"):
                     if isinstance(data.get(name), bool):
                         self._data[name] = data[name]
                 if data.get("capture_mode") in CAPTURE_MODES:
@@ -1080,7 +1084,7 @@ class SettingsStore(QObject):
                trigger_visible=None, dock_color=None, dock_opacity=None,
                capture_mode=None, keep_empty_handle=None, trigger_view=None,
                shake_sensitivity=None, sync_upload_enabled=None, translation_enabled=None, translation_target=None,
-               translation_rules=None,
+               translation_rules=None, live_editor_translation_enabled=None,
                sync_receive_enabled=None, clipboard_sync_enabled=None, clipboard_notice_seen=None, clipboard_success_notice=None,
                clipboard_history_enabled=None, display_triggers=None, automatic_updates=None, video_link_prompt=None, video_download_dir=None, magnetic_edges=None) -> bool:
         candidate = dict(self._data)
@@ -1124,6 +1128,7 @@ class SettingsStore(QObject):
                             ("clipboard_history_enabled",clipboard_history_enabled),
                             ("video_link_prompt", video_link_prompt),
                             ("translation_enabled", translation_enabled),
+                            ("live_editor_translation_enabled", live_editor_translation_enabled),
                             ("automatic_updates", automatic_updates)):
             if value is not None:
                 if not isinstance(value, bool):

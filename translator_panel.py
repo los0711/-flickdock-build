@@ -72,7 +72,7 @@ class TranslatorDialog(ReferenceModalDialog):
         self.back_button=overview_back_button(self.title_bar,lambda:manager.return_to_overview(self));head.addWidget(self.back_button);head.addStretch(1)
         self.auto_clipboard_button=button('自动翻译','translate',variant='secondary',parent=self.title_bar)
         self.auto_clipboard_button.setCheckable(True)
-        help_text='开启后，在输入框中输入文字会发送给翻译服务并显示实时译文。点击插入，把译文放回当前输入框。'
+        help_text='自动翻译支持的聊天客户端中的消息草稿。输入文字后会调用翻译服务，点击插入可替换当前输入框。'
         self.auto_clipboard_button.setToolTip(help_text)
         self.auto_clipboard_button.setAccessibleDescription(help_text)
         self.auto_clipboard_button.setProperty('flickdockHoverHelp',True)
@@ -668,7 +668,11 @@ class TranslatorDialog(ReferenceModalDialog):
                 timer.stop();self._copy_appearance(target,False)
         super().hideEvent(event)
 
-    def _toggle_editor_translation(self, enabled):
+    def resume_editor_translation(self):
+        if self.manager.settings.live_editor_translation_enabled:
+            self._toggle_editor_translation(True, user=False)
+
+    def _toggle_editor_translation(self, enabled, *, user=True):
         live = self.live_editor_translation
         if not enabled and self.auto_clipboard_button.isChecked():
             with QSignalBlocker(self.auto_clipboard_button):
@@ -684,7 +688,7 @@ class TranslatorDialog(ReferenceModalDialog):
                 if not _mac_api()[0].AXIsProcessTrusted():
                     with QSignalBlocker(self.auto_clipboard_button):
                         self.auto_clipboard_button.setChecked(False)
-                    self._message('请在系统设置的辅助功能中允许 FlickDock，再开启自动翻译。')
+                    if user:self._message('请在系统设置的辅助功能中允许 FlickDock，再开启自动翻译。')
                     return
             from live_translation import LiveEditorTranslation
             live = self.live_editor_translation = LiveEditorTranslation(
@@ -703,7 +707,16 @@ class TranslatorDialog(ReferenceModalDialog):
             controller.suspend_invitation(live.running)
         if live.running and (notice:=getattr(self.manager,'clipboard_notice',None)) is not None:
             notice.supersede()
-        if live.running and not was_running and self.isVisible():
+        if self.auto_clipboard_button.isChecked() != live.running:
+            with QSignalBlocker(self.auto_clipboard_button):
+                self.auto_clipboard_button.setChecked(live.running)
+        settings = self.manager.settings
+        if user and hasattr(settings, 'live_editor_translation_enabled') and enabled != settings.live_editor_translation_enabled:
+            try:
+                settings.update(live_editor_translation_enabled=enabled)
+            except OSError:
+                self._message('自动翻译偏好未能写入，此次切换仅在当前运行中有效。')
+        if user and live.running and not was_running and self.isVisible():
             if self._live_activation_notice is None:
                 from live_translation_motion import LiveTranslationNotice
                 self._live_activation_notice = LiveTranslationNotice(self.surface)
@@ -1033,7 +1046,7 @@ class TranslatorDialog(ReferenceModalDialog):
         self.status.setMinimumWidth(self.status.fontMetrics().horizontalAdvance(count))
 
     def shutdown(self):
-        self._toggle_editor_translation(False)
+        self._toggle_editor_translation(False, user=False)
         if self._closing:return
         self._closing=True
         self.speech.close();self.history.set_open(False,animate=False)
