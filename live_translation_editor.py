@@ -345,15 +345,29 @@ def _windows_editor(cancel, expected, insertion, sample, at_pointer, rejected=No
                     return None
                 return com.string(value,4) if value is not None else None
 
+            def read_web_editor():
+                current = read_current()
+                if current is not None and current.rstrip('\r\n\u2028\u2029') == insertion.rstrip('\r\n\u2028\u2029'):
+                    return insertion
+                if value is not None:
+                    accessible_value = com.string(value,4)
+                    if accessible_value == insertion:
+                        return accessible_value
+                return current
+
             if web:
                 # Embedded Chromium hosts can intercept Ctrl+A or select
                 # across the page. The focused editor exposes its own range.
                 if document is not None:
                     select_range=lambda:_method(document,16,_INT)(document)>=0
-                    if _paste_replacement(cancel,state,insertion,target,read_current,
+                    if _paste_replacement(cancel,state,insertion,target,read_web_editor,
                                           select_scope=select_range,allow_unicode=True):
                         return True
-                return _paste_replacement(cancel,state,insertion,target,read_current,
+                if _same_draft(focused_editor(cancel),state) and value is not None:
+                    if _method(value,3,_INT,ctypes.c_wchar_p)(value,insertion)>=0:
+                        if _confirmed_replacement(cancel,state,insertion,read_web_editor):
+                            return True
+                return _paste_replacement(cancel,state,insertion,target,read_web_editor,
                                           within_editor=True,accept_unreported_selection=True,
                                           allow_unicode=True)
             if value is not None and _method(value, 3, _INT, ctypes.c_wchar_p)(value, insertion) >= 0:
@@ -509,7 +523,7 @@ def _windows_selection(com, pattern, document, text):
     if selected is None:
         return None
     chosen = com.string(selected,12,_INT(MAX_TEXT_CHARS+1))
-    if text and chosen and chosen.rstrip('\r\n') == text.rstrip('\r\n'):
+    if text and chosen and chosen.rstrip('\r\n\u2028\u2029') == text.rstrip('\r\n\u2028\u2029'):
         return 0,len(text)
     prefix = com.object(document,3)
     if prefix is None:

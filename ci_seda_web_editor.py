@@ -74,7 +74,8 @@ def verify(folder, electron, editor):
                     original_preserved=observed.get('text')==SOURCE,
                     adjacent_preserved=observed.get('other')=='Other input must remain unchanged',
                     clipboard_preserved=observed.get('clipboard')==CLIPBOARD, events=flags,
-                    **({} if accepted else {'selection_reads':observations}))
+                    **({} if accepted else {'selection_reads':observations,
+                            'terminal_codepoint':ord(state.text[-1]) if state.text else None}))
     finally:
         (folder/'exit').touch()
         try:child.wait(timeout=8)
