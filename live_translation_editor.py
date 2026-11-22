@@ -243,7 +243,7 @@ class _AutomationObjects:
 
 def _windows_editor(cancel, expected, insertion, sample, at_pointer):
     from ctypes.wintypes import RECT
-    from clipboard_history_native import front_target, insert_text
+    from clipboard_history_native import front_target
 
     target = front_target()
     if target is None:
@@ -301,16 +301,18 @@ def _windows_editor(cancel, expected, insertion, sample, at_pointer):
                     or len(insertion) > 24000 or '\0' in insertion):
                 return False
             web = web or (com.string(focused,40) or '').casefold() in ('chrome','mozilla')
+            def read_current():
+                if value is not None:
+                    return com.string(value,4)
+                latest=com.object(pattern,7)
+                return com.string(latest,12,_INT(len(insertion)+3)) if latest is not None else None
+
             if web:
-                return _paste_replacement(cancel,state,insertion,target)
+                return _paste_replacement(cancel,state,insertion,target,read_current)
             if value is not None and _method(value, 3, _INT, ctypes.c_wchar_p)(value, insertion) >= 0:
-                if _confirmed_replacement(cancel,state,insertion):
+                if _confirmed_replacement(cancel,state,insertion,read_current):
                     return True
-                return _paste_replacement(cancel,state,insertion,target)
-            if document is None or len(insertion) > 4096 or _method(document, 16, _INT)(document) < 0:
-                return _paste_replacement(cancel,state,insertion,target)
-            return bool(front_target() == target and not cancel.is_set() and insert_text(insertion,target,cancel=cancel)
-                        and _confirmed_replacement(cancel,state,insertion))
+            return _paste_replacement(cancel,state,insertion,target,read_current)
         return state
 
 
@@ -339,23 +341,21 @@ def _same_draft(state, expected):
     return state is not None and expected is not None and state.identity == expected.identity and state.text == expected.text
 
 
-def _confirmed_replacement(cancel, expected, text):
+def _confirmed_replacement(cancel, expected, text, read_current):
     if text == expected.text:
         return True
     deadline = monotonic() + .48
     normalized = text.replace('\r\n','\n').replace('\r','\n')
     while not cancel.is_set():
-        current = focused_editor(cancel)
-        if current is None or current.identity != expected.identity:
-            return False
-        if current.text.replace('\r\n','\n').replace('\r','\n') == normalized:
+        current = read_current()
+        if current is not None and current.replace('\r\n','\n').replace('\r','\n') == normalized:
             return True
         if monotonic() >= deadline or cancel.wait(.03):
             return False
     return False
 
 
-def _paste_replacement(cancel, expected, text, target):
+def _paste_replacement(cancel, expected, text, target, read_current):
     from clipboard_history_native import paste_editor_text, select_editor_text
 
     def all_selected():
@@ -369,7 +369,7 @@ def _paste_replacement(cancel, expected, text, target):
         if monotonic() >= deadline or cancel.wait(.02):
             return False
     paste_editor_text(text,target,cancel,all_selected)
-    return _confirmed_replacement(cancel,expected,text)
+    return _confirmed_replacement(cancel,expected,text,read_current)
 
 
 def _sample_windows_selection(com, automation, focused, target, cancel, at_pointer):
@@ -435,14 +435,18 @@ def _first_windows_selection(com, pattern):
 
 def _windows_selection(com, pattern, document, text):
     selected = _first_windows_selection(com, pattern)
-    prefix = com.object(document, 3)
-    if selected is None or prefix is None:
+    if selected is None:
+        return None
+    chosen = com.string(selected,12,_INT(MAX_TEXT_CHARS+1))
+    if text and chosen == text:
+        return 0,len(text)
+    prefix = com.object(document,3)
+    if prefix is None:
         return None
     move = _method(prefix, 15, _INT, _INT, _POINTER, _INT)
     if move(prefix, 1, selected, 0) < 0:
         return None
     before = com.string(prefix, 12, _INT(MAX_TEXT_CHARS + 1))
-    chosen = com.string(selected, 12, _INT(MAX_TEXT_CHARS + 1))
     if before is None or chosen is None or text[len(before):len(before) + len(chosen)] != chosen:
         return None
     return len(before), len(before) + len(chosen)
@@ -595,14 +599,20 @@ def _mac_editor(cancel, expected, insertion, sample, rejected=None):
         if selected_range and ax.AXValueGetValue(selected_range, 4, selected):
             start, length = selected
             selection = python_position(text, start), python_position(text, start + length)
+        elif text and read_string(attr(editor,b'AXSelectedText')) == text:
+            selection = 0,len(text)
         state = EditorState((target, cf.CFHash(editor)), tuple(round(v) for v in (*xy, *wh)), text, selection)
         if front_target() != target:
             return reject('AX foreground changed during observation')
         if insertion is not None:
-            if not _same_draft(state, expected) or cancel.is_set() or secure_input() or len(insertion) > 24000:
+            if (not _same_draft(state,expected) or cancel.is_set() or secure_input() or not insertion
+                    or len(insertion)>24000 or '\0' in insertion):
                 return False
+            def read_current():
+                return read_string(attr(editor,b'AXValue'))
+
             if web:
-                return _paste_replacement(cancel,state,insertion,target)
+                return _paste_replacement(cancel,state,insertion,target,read_current)
             native = key(insertion.encode('utf8'))
             if not native:
                 return False
@@ -612,16 +622,17 @@ def _mac_editor(cancel, expected, insertion, sample, rejected=None):
                 span = retain(ax.AXValueCreate(4, ctypes.byref(entire)))
                 if span and ax.AXUIElementSetAttributeValue(editor, range_key, span) == 0:
                     if (not secure_input() and ax.AXUIElementSetAttributeValue(editor, selected_key, native) == 0
-                            and _confirmed_replacement(cancel,state,insertion)):
+                            and _confirmed_replacement(cancel,state,insertion,read_current)):
                         return True
-                    if selected_range:
+                    if selected_range and _same_draft(focused_editor(cancel),state):
                         ax.AXUIElementSetAttributeValue(editor, range_key, selected_range)
-                    return _paste_replacement(cancel,state,insertion,target)
+                    return _paste_replacement(cancel,state,insertion,target,read_current)
             if not settable(value_key) or ax.AXUIElementSetAttributeValue(editor, value_key, native):
-                return _paste_replacement(cancel,state,insertion,target)
+                return _paste_replacement(cancel,state,insertion,target,read_current)
             caret = offsets(len(insertion.encode('utf-16-le')) // 2, 0)
             range_value = retain(ax.AXValueCreate(4, ctypes.byref(caret)))
             if range_value:
                 ax.AXUIElementSetAttributeValue(editor, range_key, range_value)
-            return _confirmed_replacement(cancel,state,insertion) or _paste_replacement(cancel,state,insertion,target)
+            return (_confirmed_replacement(cancel,state,insertion,read_current)
+                    or _paste_replacement(cancel,state,insertion,target,read_current))
         return state

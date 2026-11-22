@@ -84,6 +84,12 @@ def fixture(folder):
             app.quit()
             return
         changed = command != last
+        if changed:
+            view.raise_()
+            view.activateWindow()
+            view.setFocus()
+            if sys.platform == 'darwin':
+                NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
         script = '''
             (() => {
                 const command = %s;
@@ -113,6 +119,8 @@ def fixture(folder):
                 return JSON.stringify({
                     field: command, text: field.isContentEditable ? field.innerText : field.value,
                     inputs: Number(field.dataset.inputs || "0"),
+                    selected: field.isContentEditable ? field.ownerDocument.getSelection().toString().length
+                                                     : field.selectionEnd - field.selectionStart,
                     focused: field === field.ownerDocument.activeElement
                 });
             })()
@@ -169,9 +177,12 @@ def verify(output):
                 if observed is not None:
                     inserted = focused_editor(cancel, expected=observed, insertion=TRANSLATION)
                     applied = wait_for(lambda: state().get('text') == TRANSLATION and state().get('inputs',0)>0)
+                    current=focused_editor(cancel)
                     row.update(request_accepted=bool(inserted), updated=bool(applied),
                                text_matches=state().get('text') == TRANSLATION,
-                               input_event=state().get('inputs',0)>0,final_length=len(state().get('text','')))
+                               input_event=state().get('inputs',0)>0,final_length=len(state().get('text','')),
+                               native_selection=current.selection if current else None,
+                               dom_selected=state().get('selected'))
                 report['fields'][field] = row
         finally:
             command.write_text('exit', encoding='utf-8')
