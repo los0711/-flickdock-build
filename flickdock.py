@@ -289,6 +289,8 @@ class ShelfManager:
         self.app.setQuitOnLastWindowClosed(False)
         if not self.cocoa_smoke and self.app.platformName() not in ('offscreen','minimal'):
             QTimer.singleShot(0,self.account.resume)
+            if self.settings.live_editor_translation_enabled:
+                QTimer.singleShot(0,self.app,self._start_default_editor_translation)
         if sys.platform=='darwin':
             QTimer.singleShot(1200,self.app,self._present_mac_setup)
         self.update_timer = QTimer(self.app)
@@ -880,6 +882,10 @@ class ShelfManager:
         if url is not None:self.video_dialog.url.setText(url);self.video_controller.parse(url)
         self.shelf._release_reveal_level()
         self.video_dialog.refresh();self._center_dialog(self.video_dialog);self.video_dialog.show();self.video_dialog.raise_();self.video_dialog.activateWindow()
+
+    def _start_default_editor_translation(self):
+        if not self._quitting and self.settings.live_editor_translation_enabled:
+            self._ensure_translator_dialog()
 
     def _ensure_translator_dialog(self):
         if self.translator_dialog is None:

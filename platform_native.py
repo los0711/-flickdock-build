@@ -132,7 +132,7 @@ def keep_tool_visible_when_inactive(widget, *, platform=None):
     return True
 
 
-def configure_passive_cocoa_panel(widget):
+def configure_passive_cocoa_panel(widget, *, mouse_tracking=False):
     if sys.platform!='darwin' or not native_input_available():return False
     try:
         import AppKit
@@ -143,6 +143,8 @@ def configure_passive_cocoa_panel(widget):
         panel.setStyleMask_(panel.styleMask() | AppKit.NSWindowStyleMaskNonactivatingPanel)
         panel.setBecomesKeyOnlyIfNeeded_(True)
         panel.setHidesOnDeactivate_(False)
+        if mouse_tracking:
+            panel.setAcceptsMouseMovedEvents_(True)
         return True
     except Exception as error:
         if not _recoverable_native_window_error(error):raise

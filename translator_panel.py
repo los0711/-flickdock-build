@@ -40,6 +40,8 @@ class TranslatorDialog(ReferenceModalDialog):
         self._compact_footer=None;self._notice='';self._notice_role='secondary';self._shown_notice_role='red'
         self._was_polishing=False
         self.live_editor_translation=None
+        self._live_permission_retry=QTimer(self, interval=2000)
+        self._live_permission_retry.timeout.connect(self.resume_editor_translation)
         self._live_activation_notice=None
         self._last_polish_revision={}
         self._polish_arrival=PolishArrival(self)
@@ -671,9 +673,13 @@ class TranslatorDialog(ReferenceModalDialog):
     def resume_editor_translation(self):
         if self.manager.settings.live_editor_translation_enabled:
             self._toggle_editor_translation(True, user=False)
+        else:
+            self._live_permission_retry.stop()
 
     def _toggle_editor_translation(self, enabled, *, user=True):
         live = self.live_editor_translation
+        if not enabled:
+            self._live_permission_retry.stop()
         if not enabled and self.auto_clipboard_button.isChecked():
             with QSignalBlocker(self.auto_clipboard_button):
                 self.auto_clipboard_button.setChecked(False)
@@ -688,8 +694,12 @@ class TranslatorDialog(ReferenceModalDialog):
                 if not _mac_api()[0].AXIsProcessTrusted():
                     with QSignalBlocker(self.auto_clipboard_button):
                         self.auto_clipboard_button.setChecked(False)
-                    if user:self._message('请在系统设置的辅助功能中允许 FlickDock，再开启自动翻译。')
+                    if user:
+                        self._message('请在系统设置的辅助功能中允许 FlickDock，再开启自动翻译。')
+                    elif not self._live_permission_retry.isActive():
+                        self._live_permission_retry.start()
                     return
+                self._live_permission_retry.stop()
             from live_translation import LiveEditorTranslation
             live = self.live_editor_translation = LiveEditorTranslation(
                 self._transport, self.store, self, rules=lambda:getattr(self.manager.settings,'translation_rules',{}))
@@ -720,6 +730,7 @@ class TranslatorDialog(ReferenceModalDialog):
         if overview is not None:
             overview.sync_live_translation_mark()
         self.auto_clipboard_button.setProperty('referenceVariant','primary' if live.running else 'secondary')
+        self.auto_clipboard_button.setText('自动翻译已开启' if live.running else '自动翻译')
         self.auto_clipboard_button.update()
 
     def closeEvent(self,event):

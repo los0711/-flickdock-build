@@ -34,7 +34,16 @@ _WINDOWS_DOCUMENTS = frozenset((
 _MAC_DOCUMENTS = frozenset((
     'com.microsoft.word', 'com.microsoft.excel', 'com.microsoft.powerpoint',
     'com.apple.iwork.pages', 'com.apple.iwork.numbers', 'com.apple.iwork.keynote',
-    'com.apple.textedit', 'com.kingsoft.wpsoffice.mac', 'org.libreoffice.script',
+    'com.apple.textedit', 'com.apple.notes', 'com.apple.preview', 'com.kingsoft.wpsoffice.mac',
+    'org.libreoffice.script', 'md.obsidian',
+))
+_MAC_DOCUMENT_EXECUTABLES = frozenset((
+    'textedit', 'pages', 'numbers', 'keynote', 'microsoft word', 'microsoft excel',
+    'microsoft powerpoint', 'libreoffice', 'soffice', 'wpsoffice',
+))
+_DOCUMENT_EXTENSIONS = frozenset((
+    '.txt', '.md', '.rtf', '.rtfd', '.pdf', '.doc', '.docx', '.xls', '.xlsx',
+    '.ppt', '.pptx', '.odt', '.ods', '.odp', '.pages', '.numbers', '.key',
 ))
 _WINDOWS_BROWSERS = frozenset((
     'chrome.exe', 'msedge.exe', 'firefox.exe', 'brave.exe', 'opera.exe', 'vivaldi.exe', 'arc.exe',
@@ -59,7 +68,7 @@ def _application_scope(platform, identifier):
         documents, browsers = _WINDOWS_DOCUMENTS, _WINDOWS_BROWSERS
     else:
         documents, browsers = _MAC_DOCUMENTS, _MAC_BROWSERS
-    if name in documents:
+    if name in documents or (platform == 'darwin' and name.startswith('com.kingsoft.wpsoffice.')):
         return 'document'
     if name in browsers:
         return 'browser'
@@ -82,6 +91,19 @@ def _is_web_document(address):
     if host in _OFFICE_PORTALS:
         return any(part in _OFFICE_EDITORS for part in path.split('/'))
     return host.endswith('.sharepoint.com') and path.endswith(('/doc.aspx', '/wopiframe.aspx'))
+
+
+def _is_mac_document_address(address):
+    if _is_web_document(address):
+        return True
+    if not address or len(address) > 8192:
+        return False
+    try:
+        url = urlsplit(address)
+    except ValueError:
+        return False
+    suffix = url.path.rsplit('/', 1)[-1].rpartition('.')
+    return url.scheme == 'file' and bool(suffix[1]) and '.' + suffix[2].casefold() in _DOCUMENT_EXTENSIONS
 
 
 @cache
@@ -118,7 +140,14 @@ def _windows_application_scope(pid, _period):
 def _mac_application_scope(pid, _period):
     from AppKit import NSRunningApplication
     application = NSRunningApplication.runningApplicationWithProcessIdentifier_(pid)
-    return _application_scope('darwin', application.bundleIdentifier() if application is not None else None)
+    if application is None:
+        return 'editor'
+    scope = _application_scope('darwin', application.bundleIdentifier())
+    executable = application.executableURL()
+    if (scope == 'editor' and executable is not None
+            and (executable.lastPathComponent() or '').casefold() in _MAC_DOCUMENT_EXECUTABLES):
+        return 'document'
+    return scope
 
 
 def focused_editor(cancel, *, expected=None, insertion=None, sample=False, at_pointer=False):
@@ -543,6 +572,11 @@ def _mac_editor(cancel, expected, insertion, sample, rejected=None):
                 return data.value.decode('utf8')
             return None
 
+        def read_address(value):
+            if value and cf.CFGetTypeID(value) == cf.CFURLGetTypeID():
+                value = cf.CFURLGetString(value)
+            return read_string(value)
+
         root = retain(ax.AXUIElementCreateSystemWide())
         if not root:
             return None
@@ -573,6 +607,9 @@ def _mac_editor(cancel, expected, insertion, sample, rejected=None):
             return None
         if role not in ('AXTextArea', 'AXTextField'):
             return reject('AX focus does not expose an editable field role')
+        window = attr(editor, b'AXWindow')
+        if window and _is_mac_document_address(read_address(attr(window, b'AXDocument'))):
+            return reject('focused window belongs to a document')
         selected_key, value_key = key(b'AXSelectedText'), key(b'AXValue')
 
         def settable(attribute):
@@ -591,10 +628,7 @@ def _mac_editor(cancel, expected, insertion, sample, rejected=None):
                     break
                 if read_string(attr(node, b'AXRole')) == 'AXWebArea':
                     web = True
-                    address = attr(node, b'AXURL')
-                    if address and cf.CFGetTypeID(address) == cf.CFURLGetTypeID():
-                        address = cf.CFURLGetString(address)
-                    if _is_web_document(read_string(address)):
+                    if _is_mac_document_address(read_address(attr(node, b'AXURL'))):
                         return None
                 node = attr(node, b'AXParent')
         if cancel.is_set() or secure_input():
