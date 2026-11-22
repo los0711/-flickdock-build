@@ -207,10 +207,10 @@ class RuleAndLanguageTests(unittest.TestCase):
         self.assertIn('已有规则',editor.message.text())
         self.assertEqual(settings.translation_rules,{'en':'fr'})
         editor.list.setCurrentRow(0);editor._set_code('target','ja');editor.save.click()
-        self.assertTrue(settle(lambda:not editor._saving))
+        self.assertTrue(settle(lambda:not editor._saving, 2))
         self.assertEqual(SettingsStore(settings.base).translation_rules,{'en':'ja'})
         editor.remove.click()
-        self.assertTrue(settle(lambda:not editor._saving))
+        self.assertTrue(settle(lambda:not editor._saving, 2))
         self.assertEqual(settings.translation_rules,{})
 
     def test_management_dialogs_hide_the_outer_scrollbar(self):

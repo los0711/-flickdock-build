@@ -98,6 +98,9 @@ def verify(output):
             cancel = Event()
             assert wait_for(lambda: state().get('active')), 'Fixture never received native editor focus'
             editor = wait_for(lambda: focused_editor(cancel))
+            if editor is None and sys.platform == 'darwin':
+                from live_translation_editor import _mac_editor
+                _mac_editor(cancel, None, None, False, rejected=print)
             assert editor is not None and editor.text == 'Synthetic text', (editor,state())
             assert editor.selection == (0, 9), editor.selection
             sample = focused_editor(cancel, sample=True)

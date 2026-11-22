@@ -246,6 +246,8 @@ def _mac_editor_api():
     ax.AXUIElementGetPid.argtypes = [_POINTER, ctypes.POINTER(_INT)]
     ax.AXUIElementIsAttributeSettable.argtypes = [_POINTER, _POINTER, ctypes.POINTER(ctypes.c_ubyte)]
     ax.AXUIElementSetAttributeValue.argtypes = [_POINTER, _POINTER, _POINTER]
+    ax.AXValueCreate.argtypes = [_INT, _POINTER]
+    ax.AXValueCreate.restype = _POINTER
     cf.CFHash.argtypes = [_POINTER]
     cf.CFHash.restype = ctypes.c_size_t
     cf.CFStringGetTypeID.restype = ctypes.c_size_t
@@ -258,12 +260,18 @@ def _mac_editor_api():
     return ax, cf
 
 
-def _mac_editor(cancel, expected, insertion, sample):
+def _mac_editor(cancel, expected, insertion, sample, rejected=None):
     from clipboard_history_native import front_target
     target = front_target()
     ax, cf = _mac_editor_api()
-    if not target or not ax.AXIsProcessTrusted():
+
+    def reject(reason):
+        if rejected is not None:
+            rejected(reason)
         return None
+
+    if not target or not ax.AXIsProcessTrusted():
+        return reject('no external foreground application or Accessibility grant')
     with ExitStack() as stack:
         def retain(ref):
             if ref:
@@ -296,11 +304,11 @@ def _mac_editor(cancel, expected, insertion, sample):
         ax.AXUIElementSetMessagingTimeout(root, .055)
         editor = attr(root, b'AXFocusedUIElement')
         if not editor:
-            return None
+            return reject('no AX focused control')
         ax.AXUIElementSetMessagingTimeout(editor, .055)
         pid = _INT()
         if ax.AXUIElementGetPid(editor, ctypes.byref(pid)) or pid.value != target:
-            return None
+            return reject('AX focus belongs to another process')
         role = read_string(attr(editor, b'AXRole'))
         subrole = read_string(attr(editor, b'AXSubrole'))
         if subrole == 'AXSecureTextField':
@@ -311,19 +319,24 @@ def _mac_editor(cancel, expected, insertion, sample):
                 return EditorSelection((target, cf.CFHash(editor)), selected)
             return None
         if role not in ('AXTextArea', 'AXTextField'):
-            return None
-        selected_key = key(b'AXSelectedText')
-        writable = ctypes.c_ubyte()
-        if ax.AXUIElementIsAttributeSettable(editor, selected_key, ctypes.byref(writable)) or not writable.value:
-            return None
+            return reject('AX focus does not expose an editable field role')
+        selected_key, value_key = key(b'AXSelectedText'), key(b'AXValue')
+
+        def settable(attribute):
+            writable = ctypes.c_ubyte()
+            return not ax.AXUIElementIsAttributeSettable(editor, attribute, ctypes.byref(writable)) and bool(writable.value)
+
+        selection_writable = settable(selected_key)
+        if not selection_writable and not settable(value_key):
+            return reject('neither AXSelectedText nor AXValue is writable')
         text = read_string(attr(editor, b'AXValue'))
         if text is None or len(text) > MAX_TEXT_CHARS or cancel.is_set():
-            return None
+            return reject('AX field value unavailable')
         coordinates = ctypes.c_double * 2
         xy, wh = coordinates(), coordinates()
         point, size = attr(editor, b'AXPosition'), attr(editor, b'AXSize')
         if not point or not size or not ax.AXValueGetValue(point, 1, xy) or not ax.AXValueGetValue(size, 2, wh):
-            return None
+            return reject('AX field rectangle unavailable')
         if min(wh) <= 0:
             return None
         offsets = ctypes.c_long * 2
@@ -335,10 +348,25 @@ def _mac_editor(cancel, expected, insertion, sample):
         selection = python_position(text, start), python_position(text, start + length)
         state = EditorState((target, cf.CFHash(editor)), tuple(round(v) for v in (*xy, *wh)), text, selection)
         if front_target() != target:
-            return None
+            return reject('AX foreground changed during observation')
         if insertion is not None:
-            if state != expected or cancel.is_set():
+            if state != expected or cancel.is_set() or len(insertion) > 4096:
                 return False
-            native = key(insertion.encode('utf8'))
-            return bool(native and ax.AXUIElementSetAttributeValue(editor, selected_key, native) == 0)
+            if selection_writable:
+                native = key(insertion.encode('utf8'))
+                return bool(native and ax.AXUIElementSetAttributeValue(editor, selected_key, native) == 0)
+            # Several Cocoa/Qt inputs provide a writable plain value but expose
+            # selected text as read-only. Preserve their original text and range.
+            if role != 'AXTextField' or not selected_range:
+                return False
+            begin, end = selection
+            native = key((text[:begin] + insertion + text[end:]).encode('utf8'))
+            if not native or ax.AXUIElementSetAttributeValue(editor, value_key, native):
+                return False
+            updated = text[:begin] + insertion
+            caret = offsets(len(updated.encode('utf-16-le')) // 2, 0)
+            range_value = retain(ax.AXValueCreate(4, ctypes.byref(caret)))
+            if range_value:
+                ax.AXUIElementSetAttributeValue(editor, key(b'AXSelectedTextRange'), range_value)
+            return True
         return state
