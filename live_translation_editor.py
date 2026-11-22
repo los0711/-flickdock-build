@@ -642,8 +642,13 @@ def _mac_editor(cancel, expected, insertion, sample, rejected=None):
                         or _paste_replacement(cancel,state,insertion,target,read_current,
                                               accept_unreported_selection=True,within_editor=True))
 
-            if web:
-                return paste_current()
+            # Some embedded browsers do not expose an AXWebArea ancestor.
+            # AX range setters can change the DOM selection before paste,
+            # even when the browser does not implement the requested write.
+            if paste_current():
+                return True
+            if web or not _same_draft(focused_editor(cancel),state):
+                return False
             native = key(insertion.encode('utf8'))
             if not native:
                 return False
@@ -653,12 +658,12 @@ def _mac_editor(cancel, expected, insertion, sample, rejected=None):
                     return True
                 if selected_range and _same_draft(focused_editor(cancel),state):
                     ax.AXUIElementSetAttributeValue(editor, range_key, selected_range)
-                return paste_current()
+                return False
             if not settable(value_key) or ax.AXUIElementSetAttributeValue(editor, value_key, native):
-                return paste_current()
+                return False
             caret = offsets(len(insertion.encode('utf-16-le')) // 2, 0)
             range_value = retain(ax.AXValueCreate(4, ctypes.byref(caret)))
             if range_value:
                 ax.AXUIElementSetAttributeValue(editor, range_key, range_value)
-            return _confirmed_replacement(cancel,state,insertion,read_current) or paste_current()
+            return _confirmed_replacement(cancel,state,insertion,read_current)
         return state

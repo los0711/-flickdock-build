@@ -30,6 +30,7 @@ on:
     branches: [cloud-build]
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -316,6 +317,21 @@ jobs:
               assert frozen['ok'] and frozen['frozen'] and frozen['version']==APP_VERSION
               assert frozen['renderer']=='qvideosink-raster' and frozen['native_renderer'] is False and frozen['presented_playback_frames']>1
           PY
+      - name: Install this exact package over the previous higher version
+        if: github.ref_name == 'ci-flickdock-live-web-insertion-1840'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          gh run download 45014804976 -R "$GITHUB_REPOSITORY" \
+            -n 'FlickDock-macOS-incomplete-arm64-2d20943203dc269dfda3aa3cc1a01ee6a2af9928' -D "$RUNNER_TEMP/previous"
+          (cd "$RUNNER_TEMP/previous" && echo '74a55c51198caf98d0b1ee0d0529c4c1887ce37d1a00bcd094a0d4aece938e59  FlickDock-1.8.40-macOS-arm64.pkg' | shasum -a 256 -c -)
+          candidate="$(cd ../outputs && pwd)/FlickDock-1.8.40-macOS-arm64.pkg"
+          pkgutil --expand-full "$candidate" "$RUNNER_TEMP/candidate"
+          mkdir "$RUNNER_TEMP/overwrite"
+          python ci_mac_pkg_overwrite.py "$RUNNER_TEMP/previous/FlickDock-1.8.40-macOS-arm64.pkg" \
+            "$RUNNER_TEMP/candidate/Payload/FlickDock.app" "$RUNNER_TEMP/overwrite/proof" --candidate "$candidate"
+          cp "$RUNNER_TEMP/overwrite/proof/mac-cover-report.json" ../outputs/mac-cover-arm64.json
       - name: Gather verified release artifacts
         run: |
           python - <<'PY'
@@ -332,6 +348,8 @@ jobs:
               path = source / 'mac-finder-${{ matrix.arch }}.json'
               assert path.is_file()
               shutil.copy2(path, target / path.name)
+          if '${{ github.ref_name }}' == 'ci-flickdock-live-web-insertion-1840':
+              shutil.copy2(source / 'mac-cover-arm64.json', target / 'mac-cover-arm64.json')
           PY
       - name: Retain build artifacts for verification
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

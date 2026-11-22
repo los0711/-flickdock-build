@@ -149,6 +149,11 @@ def fixture(folder):
                 const box = field.getBoundingClientRect();
                 const frame = command === "embedded" ? document.getElementById("frame").getBoundingClientRect()
                                                       : {left:0, top:0};
+                const others = ["plain","multiline","rich","protected","read-only"]
+                    .filter(id => id !== command).map(id => {
+                        const node = document.getElementById(id);
+                        return node.isContentEditable ? node.innerText : node.value;
+                    });
                 return JSON.stringify({
                     field: command, text: field.isContentEditable ? field.innerText : field.value,
                     inputs: Number(field.dataset.inputs || "0"),
@@ -156,7 +161,8 @@ def fixture(folder):
                                                      : field.selectionEnd - field.selectionStart,
                     location: [Math.round(box.left+frame.left+22),Math.round(box.top+frame.top+17)],
                     focused: field === field.ownerDocument.activeElement,
-                    events: window.recordedEditorEvents || []
+                    events: window.recordedEditorEvents || [],
+                    others
                 });
             })()
         ''' % (json.dumps(command), str(changed).lower())
@@ -235,7 +241,8 @@ def verify_field(folder, field):
                 current = focused_editor(cancel)
                 row.update(request_accepted=bool(inserted),updated=bool(applied),input_event=state().get('inputs',0)>0,
                            final_length=len(state().get('text','')),native_selection=current.selection if current else None,
-                           dom_selected=state().get('selected'))
+                           dom_selected=state().get('selected'),neighbours_untouched=all(
+                               value==DRAFT for value in state().get('others',())))
                 if not applied:
                     row['events'] = state().get('events')
         command.write_text('clipboard',encoding='utf-8')
