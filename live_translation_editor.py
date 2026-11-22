@@ -15,7 +15,7 @@ class EditorState:
     identity: tuple
     bounds: tuple
     text: str
-    selection: tuple = (0, 0)
+    selection: tuple[int, int] | None = None
 
 
 @dataclass(frozen=True)
@@ -184,7 +184,7 @@ def _windows_editor(cancel, expected, insertion, sample, at_pointer):
         text = com.string(document, 12, _INT(MAX_TEXT_CHARS + 1)) if document is not None else com.string(value, 4)
         if text is None or len(text) > MAX_TEXT_CHARS or cancel.is_set():
             return None
-        selection = _windows_selection(com, pattern, document, text) if document is not None else (0, 0)
+        selection = _windows_selection(com, pattern, document, text) if document is not None else None
         bounds = bounds.left, bounds.top, bounds.right - bounds.left, bounds.bottom - bounds.top
         state = EditorState((target, identifier), bounds, text, selection)
         if front_target() != target:
@@ -270,14 +270,14 @@ def _windows_selection(com, pattern, document, text):
     selected = _first_windows_selection(com, pattern)
     prefix = com.object(document, 3)
     if selected is None or prefix is None:
-        return 0, 0
+        return None
     move = _method(prefix, 15, _INT, _INT, _POINTER, _INT)
     if move(prefix, 1, selected, 0) < 0:
-        return 0, 0
+        return None
     before = com.string(prefix, 12, _INT(MAX_TEXT_CHARS + 1))
     chosen = com.string(selected, 12, _INT(MAX_TEXT_CHARS + 1))
-    if before is None or not chosen or text[len(before):len(before) + len(chosen)] != chosen:
-        return 0, 0
+    if before is None or chosen is None or text[len(before):len(before) + len(chosen)] != chosen:
+        return None
     return len(before), len(before) + len(chosen)
 
 
@@ -401,10 +401,10 @@ def _mac_editor(cancel, expected, insertion, sample, rejected=None):
         offsets = ctypes.c_long * 2
         selected = offsets()
         selected_range = attr(editor, b'AXSelectedTextRange')
-        if selected_range:
-            ax.AXValueGetValue(selected_range, 4, selected)
-        start, length = selected
-        selection = python_position(text, start), python_position(text, start + length)
+        selection = None
+        if selected_range and ax.AXValueGetValue(selected_range, 4, selected):
+            start, length = selected
+            selection = python_position(text, start), python_position(text, start + length)
         state = EditorState((target, cf.CFHash(editor)), tuple(round(v) for v in (*xy, *wh)), text, selection)
         if front_target() != target:
             return reject('AX foreground changed during observation')

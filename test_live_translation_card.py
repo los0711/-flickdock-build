@@ -4,14 +4,23 @@ import time
 import unittest
 from unittest.mock import patch
 
-from PySide6.QtCore import QObject, QPoint, QRect, QSize, Qt, Signal
+from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, QSize, Qt, Signal
+from PySide6.QtGui import QEnterEvent
 from PySide6.QtWidgets import QApplication, QWidget
 
-from live_translation import LiveEditorTranslation, fit_card
+from live_translation import FOOTER_HEIGHT, LiveEditorTranslation, LiveTranslationCard, fit_card
 from live_translation_draft import LiveDraft
 from live_translation_editor import EditorSelection, EditorState
 from live_translation_motion import LiveTranslationMark, LiveTranslationNotice
 from translator_store import TranslatorStore
+
+
+def complete(request, *texts):
+    _, data, finish = request
+    rows = data['units']
+    assert len(rows) == len(texts)
+    result = [dict(id=row['id'], text=text) for row, text in zip(rows, texts)]
+    finish(dict(operation='translate_units', units=result), None)
 
 
 class UnitsApi(QObject):
@@ -124,7 +133,8 @@ class LiveTranslationTests(unittest.TestCase):
 
     def test_language_tool_samples_one_finished_selection(self):
         bounds = (60, 150, 570, 110)
-        editor = EditorState(('scenario',), bounds, '消息。', (0, 1))
+        field = [EditorState(('scenario',), bounds, '')]
+        transport = Transport()
         samples = []
         selected = EditorSelection(('other-control',), 'Bonjour à tous')
 
@@ -134,16 +144,20 @@ class LiveTranslationTests(unittest.TestCase):
             if sample:
                 samples.append(at_pointer)
                 return selected
-            return editor
+            return field[0]
 
         with tempfile.TemporaryDirectory() as directory:
             store = TranslatorStore(directory, autoload=False)
-            live = LiveEditorTranslation(Transport(), store, probe=probe)
+            live = LiveEditorTranslation(transport, store, probe=probe)
             try:
                 with patch('live_translation.content_language', return_value='fr'), \
                         patch('live_translation.mouse_buttons_mask', side_effect=lambda: buttons[0]):
                     live.start('en')
                     self.assertTrue(wait_for(self.app, lambda: live.editor is not None))
+                    field[0] = EditorState(('scenario',), bounds, '今天有消息。')
+                    self.assertTrue(wait_for(self.app, lambda: len(transport.requests) == 1))
+                    complete(transport.requests[-1], 'There is news today.')
+                    self.assertTrue(live.card.isVisible())
                     live.card.sample.setChecked(True)
                     live._toggle_sample()
                     self.assertEqual(samples, [])
@@ -153,6 +167,103 @@ class LiveTranslationTests(unittest.TestCase):
                     self.assertTrue(wait_for(self.app, lambda: live.draft.target == 'fr'))
                     self.assertFalse(live.card.sample.isChecked())
                     self.assertEqual(samples, [True])
+                    self.assertTrue(live.card.isVisible())
+                    self.assertEqual(live.card.result.toPlainText(), 'There is news today.')
+                    self.assertFalse(live.card.insert.isEnabled())
+                    self.assertEqual(len(transport.requests), 2)
+                    field[0] = None
+                    self.assertTrue(wait_for(self.app, lambda: live.job is not None))
+                    self.app.processEvents()
+                    self.assertTrue(live.card.isVisible())
+                    field[0] = EditorState(('scenario',), bounds, '今天有消息。')
+                    complete(transport.requests[-1], 'Il y a des nouvelles aujourd’hui.')
+                    self.assertTrue(live.draft.ready)
+                    self.assertTrue(live.card.isVisible())
+                    self.assertEqual(live.card.result.toPlainText(), 'Il y a des nouvelles aujourd’hui.')
+                    field[0] = EditorState(('scenario',), bounds, '')
+                    self.assertTrue(wait_for(self.app, lambda: not live.card.isVisible()))
+            finally:
+                live.stop()
+                live.pool.waitForDone(1000)
+                live.card.close()
+                store.close()
+
+    def test_hover_reveals_footer_below_stationary_text_and_tracks_input(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = TranslatorStore(directory, autoload=False)
+            card = LiveTranslationCard(store)
+            try:
+                def screen(bounds):
+                    return QRect(*bounds), self.app.primaryScreen()
+
+                with patch('live_translation._editor_geometry', side_effect=screen), \
+                        patch('live_translation.reduced_motion', return_value=False), \
+                        patch('native_ui_common.reduced_motion', return_value=False):
+                    card.result.setPlainText('One line.')
+                    first = (34, 100, 360, 36)
+                    self.assertTrue(card.set_bounds(first))
+                    card.present()
+                    self.assertTrue(wait_for(self.app, lambda: card.motion.values['y'] == 0))
+                    card._set_footer(False)
+                    self.assertTrue(wait_for(self.app, card.footer_clip.isHidden))
+                    original_host = card.geometry()
+                    original_text = card.result.geometry()
+                    collapsed = card.surface.height()
+                    self.assertEqual(card.width(), 620)
+                    self.assertEqual(card.y(), QRect(*first).bottom() + 11)
+                    self.app.sendEvent(card, QEnterEvent(QPointF(10, 10), QPointF(10, 10), QPointF(10, 10)))
+                    self.assertTrue(wait_for(self.app, lambda: collapsed < card.surface.height() < collapsed + FOOTER_HEIGHT))
+                    self.assertTrue(wait_for(self.app, lambda: card.surface.height() == collapsed + FOOTER_HEIGHT))
+                    self.assertEqual(card.geometry(), original_host)
+                    self.assertEqual(card.result.geometry(), original_text)
+                    self.app.sendEvent(card, QEvent(QEvent.Leave))
+                    self.assertTrue(wait_for(self.app, lambda: collapsed < card.surface.height() < collapsed + FOOTER_HEIGHT))
+                    self.assertTrue(wait_for(self.app, card.footer_clip.isHidden))
+                    second = (first[0] + 90, first[1] + 85, *first[2:])
+                    self.assertTrue(card.set_bounds(second))
+                    card.present()
+                    self.assertEqual(card.pos(), original_host.topLeft() + QPoint(90, 85))
+                    self.assertFalse(card.geometry().intersects(QRect(*second)))
+            finally:
+                card.close()
+                store.close()
+
+    def test_follow_caret_and_selection_in_long_translation(self):
+        bounds = (60, 105, 450, 120)
+        samples = [EditorState(('long',), bounds, '')]
+        original_sentences = [f'第 {index} 段消息。' for index in range(24)]
+        source = '\n'.join(original_sentences)
+        translated = [f'Translated paragraph number {index}.' for index in range(24)]
+        transport = Transport()
+        with tempfile.TemporaryDirectory() as directory:
+            store = TranslatorStore(directory, autoload=False)
+            live = LiveEditorTranslation(transport, store, probe=lambda cancel: samples[0])
+            try:
+                with patch('live_translation._editor_geometry', return_value=(QRect(*bounds), self.app.primaryScreen())), \
+                        patch('live_translation.mouse_buttons_mask', return_value=0):
+                    live.start('en')
+                    self.assertTrue(wait_for(self.app, lambda: live.editor is not None))
+                    samples[0] = EditorState(('long',), bounds, source)
+                    self.assertTrue(wait_for(self.app, lambda: len(transport.requests) == 1))
+                    complete(transport.requests[-1], *translated)
+                    scroll = live.card.result.verticalScrollBar()
+                    self.assertGreater(scroll.maximum(), 0)
+                    self.assertEqual(scroll.value(), scroll.maximum())
+                    samples[0] = EditorState(('long',), bounds, source, (0, 0))
+                    self.assertTrue(wait_for(self.app, lambda: scroll.value() == 0))
+                    begin = source.index(original_sentences[-1])
+                    samples[0] = EditorState(('long',), bounds, source, (begin, len(source)))
+                    self.assertTrue(wait_for(self.app, lambda: bool(live.card.result.extraSelections())))
+                    self.assertGreater(scroll.value(), 0)
+                    highlights = live.card.result.extraSelections()
+                    self.assertEqual(highlights[0].cursor.selectedText(), translated[-1])
+                    changed = source.replace(original_sentences[10], '第十段已更改。', 1)
+                    samples[0] = EditorState(('long',), bounds, changed)
+                    self.assertTrue(wait_for(self.app, lambda: len(transport.requests) == 2))
+                    self.assertEqual(len(transport.requests[-1][1]['units']), 1)
+                    complete(transport.requests[-1], 'Paragraph ten was updated.')
+                    self.assertGreater(scroll.value(), 0)
+                    self.assertLess(scroll.value(), scroll.maximum())
             finally:
                 live.stop()
                 live.pool.waitForDone(1000)
@@ -216,7 +327,7 @@ class LiveTranslationTests(unittest.TestCase):
                     self.assertTrue(live.card.handle.isHidden())
                     self.assertFalse(live.card.result.property('scrollEdgeBlur'))
                     self.assertEqual(live.card.result.verticalScrollBar().maximum(), 0)
-                    self.assertLessEqual(live.card.height(), 96)
+                    self.assertLessEqual(live.card.surface.height(), 64)
                     completed_editor = fixture[0]
                     fixture[0] = None
                     self.assertTrue(wait_for(self.app, lambda: not live.card.isVisible()))
@@ -224,6 +335,8 @@ class LiveTranslationTests(unittest.TestCase):
                     self.assertTrue(wait_for(self.app, live.card.isVisible))
                     self.assertEqual(live.card.result.toPlainText(), 'This is a new message.')
                     self.assertEqual(len(transport.requests), 1)
+                    live.card._set_footer(True)
+                    self.assertTrue(wait_for(self.app, lambda: live.card.footer_clip.height() == FOOTER_HEIGHT))
                     live.card._choose_target()
                     self.assertTrue(live.card.popup.isVisible())
                     self.assertTrue(live.card.popup.windowFlags() & Qt.WindowStaysOnTopHint)

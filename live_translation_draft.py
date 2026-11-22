@@ -20,6 +20,7 @@ class LiveDraft(QObject):
         self.document = TranslationDocument()
         self.text = self.result = self.error = ''
         self.target = 'en'
+        self.result_target = ''
         self.generation = 0
         self.pending = None
         self.queued = False
@@ -33,7 +34,8 @@ class LiveDraft(QObject):
 
     @property
     def ready(self):
-        return bool(self.result and not self.error and self.document.matches(self.text, self.result))
+        return bool(self.result and not self.error and self.result_target == self.target
+                    and self.document.matches(self.text, self.result))
 
     def _cancel(self):
         self.generation += 1
@@ -42,27 +44,35 @@ class LiveDraft(QObject):
         self.queued = False
         self.timer.stop()
 
-    def restore(self, document, target):
+    def restore(self, document, target, result_target, source):
         self._cancel()
         self.document = document
-        self.target = target
+        self.target, self.result_target = target, result_target
         self.text, self.result, self.error = document.source, document.target, ''
-        self.changed.emit()
+        if source != self.text:
+            self.edit(source)
+        elif result_target != target:
+            self._ready()
+        else:
+            self.changed.emit()
 
     def reset(self):
         self._cancel()
         self.document = TranslationDocument()
-        self.text = self.result = self.error = ''
+        self.text = self.result = self.error = self.result_target = ''
         self.changed.emit()
 
-    def set_target(self, code):
+    def set_target(self, code, *, source=None):
         if code not in TARGETS or code == self.target:
             return
-        text = self.text
+        text = self.text if source is None else source
+        self._cancel()
         self.target = code
-        self.reset()
-        if text:
+        self.text = self.error = ''
+        if text.strip():
             self.edit(text, immediate=True)
+        else:
+            self.reset()
 
     def edit(self, text, *, immediate=False):
         if text == self.text:
@@ -93,7 +103,7 @@ class LiveDraft(QObject):
             return
         if quick_content_language(text, preferred=self.target) == self.target:
             self.document.pair(text, text)
-            self.result = text
+            self.result, self.result_target = text, self.target
             self.changed.emit()
             return
         options = ('auto', self.target, ())
@@ -111,7 +121,7 @@ class LiveDraft(QObject):
             completed = self.document.commit(text, units, options)
             self.pending = None
             if self.text == text:
-                self.result = completed
+                self.result, self.result_target = completed, self.target
             self.changed.emit()
             if self.queued:
                 self._ready()

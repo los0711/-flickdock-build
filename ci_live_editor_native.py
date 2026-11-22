@@ -79,6 +79,47 @@ def wait_for(predicate, seconds=10):
     return None
 
 
+def verify_windows_card(folder, editor):
+    from PySide6.QtCore import QPoint, QRect
+    from PySide6.QtGui import QCursor
+    from PySide6.QtWidgets import QApplication
+
+    from live_translation import FOOTER_HEIGHT, LiveTranslationCard
+    from translator_store import TranslatorStore
+
+    app = QApplication([])
+    app.setQuitOnLastWindowClosed(False)
+    store = TranslatorStore(folder, autoload=False)
+    card = LiveTranslationCard(store)
+
+    def observe(predicate):
+        app.processEvents()
+        return predicate()
+
+    try:
+        bounds = QRect(*editor.bounds)
+        QCursor.setPos(bounds.center())
+        card.result.setPlainText('Synthetic translation')
+        assert card.set_bounds(editor.bounds)
+        card.present()
+        assert wait_for(lambda: observe(lambda: card.motion.values['y'] == 0))
+        assert card.footer_clip.isHidden()
+        assert not card.geometry().intersects(bounds)
+        host = card.geometry()
+        collapsed = card.surface.height()
+        QCursor.setPos(card.mapToGlobal(QPoint(20, collapsed // 2)))
+        assert wait_for(lambda: observe(lambda: card.footer_clip.height() == FOOTER_HEIGHT))
+        assert card.geometry() == host
+        QCursor.setPos(bounds.center())
+        assert wait_for(lambda: observe(card.footer_clip.isHidden))
+        assert card.surface.height() == collapsed
+        assert focused_editor(Event()).identity == editor.identity
+    finally:
+        card.close()
+        store.close()
+        app.processEvents()
+
+
 def verify(output):
     if os.environ.get('GITHUB_ACTIONS') != 'true':
         raise RuntimeError('Run on a disposable CI desktop.')
@@ -126,8 +167,13 @@ def verify(output):
             assert wait_for(lambda: state().get('text') == 'abc')
             editor = wait_for(lambda: focused_editor(cancel))
             assert editor is not None and editor.text == 'abc'
+            assert editor.selection in (None, (3, 3)), editor.selection
+            result['collapsed_caret'] = editor.selection
             assert focused_editor(cancel, expected=editor, insertion='123')
             assert wait_for(lambda: state().get('text') == '123'), state()
+            if sys.platform == 'win32':
+                verify_windows_card(folder, editor)
+                result['native_card_hover'] = True
             result['native_checked'] = True
         finally:
             cmd.write_text('exit', encoding='utf8')

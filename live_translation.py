@@ -5,7 +5,7 @@ import sys
 from time import monotonic
 
 from PySide6.QtCore import QEvent, QObject, QPoint, QRect, QSize, Qt, QThreadPool, QTimer, Signal
-from PySide6.QtGui import QColor, QFontMetrics, QTextCharFormat, QTextCursor, QTextOption
+from PySide6.QtGui import QColor, QCursor, QFontMetrics, QRegion, QTextCharFormat, QTextCursor, QTextOption
 from PySide6.QtWidgets import QApplication, QHBoxLayout, QLabel, QTextEdit, QVBoxLayout, QWidget
 
 from flickdock_motion import Spring
@@ -26,12 +26,13 @@ import ui_theme
 
 LOG = logging.getLogger(__name__)
 CARD_GAP = 10
-CARD_WIDTH = 520
-CARD_MIN_HEIGHT = 74
-CARD_MAX_HEIGHT = 128
+CARD_WIDTH = 620
+CARD_MIN_HEIGHT = 38
+CARD_MAX_HEIGHT = 116
+FOOTER_HEIGHT = 42
 
 
-def fit_card(area, obstacle, size, preferred=None):
+def fit_card(area, obstacle, size, preferred=None, *, below_first=False):
     """Project the drag target onto a screen region with no editor overlap."""
     reserved = obstacle.adjusted(-CARD_GAP, -CARD_GAP, CARD_GAP, CARD_GAP).intersected(area)
     if reserved.isEmpty():
@@ -43,12 +44,14 @@ def fit_card(area, obstacle, size, preferred=None):
         QRect(area.left(), area.top(), reserved.left() - area.left(), area.height()),
     )
     candidates = []
-    for region in available:
+    for index, region in enumerate(available):
         if region.width() < size.width() or region.height() < size.height():
             continue
         target = preferred or QPoint(obstacle.left(), obstacle.bottom() + CARD_GAP + 1)
         point = QPoint(max(region.left(), min(target.x(), region.right() - size.width() + 1)),
                        max(region.top(), min(target.y(), region.bottom() - size.height() + 1)))
+        if below_first and index == 0:
+            return QRect(point, size)
         candidates.append(((point - target).manhattanLength(), QRect(point, size)))
     return min(candidates, key=lambda item: item[0])[1] if candidates else QRect()
 
@@ -90,26 +93,27 @@ class LiveTranslationCard(QWidget):
         self.setAccessibleName('实时翻译')
         self.anchor_area = QRect()
         self.obstacle = QRect()
-        self.desired = None
+        self.anchor = QPoint()
+        self.drag_offset = QPoint()
         self.goal = QRect()
         self.target = 'en'
         self.drag_origin = None
         self.deferred_hide = False
         self._measure_key = None
         self._body_height = 20
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-        self.surface = TranslatorSurface(self, role='popup_surface', radius=24)
-        outer.addWidget(self.surface)
-        body = QVBoxLayout(self.surface)
+        self._base_height = CARD_MIN_HEIGHT
+        self._footer_open = False
+        self.surface = TranslatorSurface(self, role='popup_surface', radius=14)
+        self.content = QWidget(self.surface)
+        body = QVBoxLayout(self.content)
         body.setContentsMargins(14, 8, 14, 9)
         body.setSpacing(3)
-        self.handle = QLabel(self.surface)
+        self.handle = QLabel(self.content)
         self.handle.hide()
         self.handle.setCursor(Qt.SizeAllCursor)
         self.handle.installEventFilter(self)
         body.addWidget(self.handle)
-        self.result = PixelScrollTextEdit(self.surface)
+        self.result = PixelScrollTextEdit(self.content)
         self.result.setProperty('scrollEdgeBlur', False)
         self.result.setVerticalScrollBar(RoundedScrollBar(Qt.Vertical, self.result))
         self.result.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
@@ -126,13 +130,17 @@ class LiveTranslationCard(QWidget):
         self._result_viewport.installEventFilter(self)
         self.surface.installEventFilter(self)
         body.addWidget(self.result, 1)
-        footer = QHBoxLayout()
+        self.footer_clip = QWidget(self.surface)
+        self.footer_clip.hide()
+        self.footer = QWidget(self.footer_clip)
+        footer = QHBoxLayout(self.footer)
+        footer.setContentsMargins(14, 0, 14, 0)
         footer.setSpacing(6)
-        self.language = LanguageButton(self.surface)
+        self.language = LanguageButton(self.footer)
         self.language.setFocusPolicy(Qt.NoFocus)
         self.language.setAccessibleName('目标语言')
         footer.addWidget(self.language)
-        self.sample = ToolbarButton('pipette', self.surface)
+        self.sample = ToolbarButton('pipette', self.footer)
         self.sample.setFocusPolicy(Qt.NoFocus)
         self.sample.setFixedSize(32, 32)
         self.sample.setCheckable(True)
@@ -140,12 +148,12 @@ class LiveTranslationCard(QWidget):
         self.sample.setAccessibleName(self.sample.toolTip())
         footer.addWidget(self.sample)
         footer.addStretch(1)
-        self.insert = translator_action('插入', 'return', self.surface, variant='primary')
+        self.insert = translator_action('插入', 'return', self.footer, variant='primary')
         self.insert.setFixedHeight(32)
         self.insert.setFocusPolicy(Qt.NoFocus)
         footer.addWidget(self.insert)
-        body.addLayout(footer)
         self.popup = LanguagePopup(store, self)
+        self.popup.installEventFilter(self)
         self.popup.setWindowFlag(Qt.WindowStaysOnTopHint, True)
         self.language.clicked.connect(self._choose_target)
         self.sample.clicked.connect(self.sample_requested)
@@ -153,6 +161,7 @@ class LiveTranslationCard(QWidget):
         self.popup.selected.connect(self.target_changed)
         self.motion = Spring(self, {'y': 12., 'opacity': 0.}, self._frame)
         self.motion.settled.connect(self._settled)
+        self.footer_motion = Spring(self, {'h': 0.}, self._layout_surface)
         self.theme = None
         self.set_target(self.target)
         self.refresh_theme()
@@ -190,7 +199,7 @@ class LiveTranslationCard(QWidget):
                 QRect(0, 0, room, 10000), Qt.TextWordWrap | Qt.TextWrapAnywhere, text)
             self._body_height = max(18, rect.height() + 4)
         status_height = 16 if not self.handle.isHidden() else 0
-        return min(CARD_MAX_HEIGHT, max(CARD_MIN_HEIGHT, 53 + status_height + self._body_height))
+        return min(CARD_MAX_HEIGHT, max(CARD_MIN_HEIGHT, 17 + status_height + self._body_height))
 
     def set_bounds(self, bounds):
         obstacle, screen = _editor_geometry(bounds)
@@ -198,20 +207,59 @@ class LiveTranslationCard(QWidget):
             self.withdraw(immediate=True)
             return False
         self.obstacle = obstacle
+        self.anchor = obstacle.bottomLeft() + QPoint(0, CARD_GAP + 1)
         self.anchor_area = screen.availableGeometry().adjusted(10, 10, -10, -10)
         width = min(CARD_WIDTH, self.anchor_area.width())
-        for candidate in dict.fromkeys((width, min(width, 380), 252)):
-            size = QSize(candidate, self._card_height(candidate))
+        for candidate in dict.fromkeys((width, min(width, 430), 252)):
             if candidate < 252:
                 continue
-            goal = fit_card(self.anchor_area, self.obstacle, size, self.desired)
+            base = self._card_height(candidate)
+            size = QSize(candidate, base + FOOTER_HEIGHT)
+            goal = fit_card(self.anchor_area, obstacle, size, self.anchor + self.drag_offset, below_first=True)
             if not goal.isEmpty():
-                if goal.size() != self.size():
-                    self.resize(goal.size())
+                self._base_height = base
                 self.goal = goal
+                if size != self.size():
+                    self.resize(size)
+                self._layout_surface(self.footer_motion.values)
                 return True
         self.withdraw(immediate=True)
         return False
+
+    def _layout_surface(self, values):
+        extent = max(0, min(FOOTER_HEIGHT, round(values['h'])))
+        height = self._base_height + extent
+        self.content.setGeometry(0, 0, self.width(), self._base_height)
+        self.footer_clip.setGeometry(0, self._base_height, self.width(), extent)
+        self.footer.setGeometry(0, 4 + (FOOTER_HEIGHT - extent) // 5, self.width(), 32)
+        if self.surface.size() != QSize(self.width(), height):
+            self.surface.resize(self.width(), height)
+            # Keep the native host stable while the visible surface grows.
+            self.setMask(QRegion(self.surface.rect()))
+        self.footer_clip.setVisible(extent > 0)
+
+    def _set_footer(self, expanded):
+        if self._footer_open == expanded:
+            return
+        self._footer_open = expanded
+        target = {'h': float(FOOTER_HEIGHT if expanded else 0)}
+        if reduced_motion():
+            self.footer_motion.jump(target)
+        else:
+            self.footer_motion.animate(target, response=.195, damping=.92)
+
+    def enterEvent(self, event):
+        super().enterEvent(event)
+        self._set_footer(True)
+
+    def leaveEvent(self, event):
+        super().leaveEvent(event)
+        if self.drag_origin is None and not self.popup.isVisible():
+            self._set_footer(False)
+
+    def _restore_hover(self):
+        if self.isVisible() and not self.popup.isVisible():
+            self._set_footer(self.surface.rect().contains(self.mapFromGlobal(QCursor.pos())))
 
     def present(self):
         appearing = self.deferred_hide or not self.isVisible()
@@ -233,6 +281,8 @@ class LiveTranslationCard(QWidget):
         if immediate:
             self.motion.stop()
             self.hide()
+            self._footer_open = False
+            self.footer_motion.jump({'h': 0.})
         elif not self.deferred_hide:
             self.deferred_hide = True
             self.motion.animate_physical({'y': 8., 'opacity': 0.}, 280, 22)
@@ -250,22 +300,28 @@ class LiveTranslationCard(QWidget):
             return
         above = self.goal.bottom() <= self.obstacle.top()
         requested = self.goal.topLeft() + QPoint(0, round(-offset if above else offset))
+        # Keep the placement anchor across drag/focus updates and use the
+        # unobstructed side picked for this editor.
         frame = fit_card(self.anchor_area, self.obstacle, self.size(), requested)
         if not frame.isEmpty() and self.pos() != frame.topLeft():
             self.move(frame.topLeft())
 
     def eventFilter(self, source, event):
+        if source is getattr(self, 'popup', None) and event.type() == QEvent.Hide:
+            QTimer.singleShot(0, self, self._restore_hover)
         if source is self.handle or source is self.surface or source is getattr(self, '_result_viewport', None):
             if event.type() == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
                 self.drag_origin = event.globalPosition().toPoint() - self.pos()
                 return True
             if self.drag_origin is not None and event.type() == QEvent.MouseMove:
-                self.desired = event.globalPosition().toPoint() - self.drag_origin
-                self.goal = fit_card(self.anchor_area, self.obstacle, self.size(), self.desired)
+                requested = event.globalPosition().toPoint() - self.drag_origin
+                self.drag_offset = requested - self.anchor
+                self.goal = fit_card(self.anchor_area, self.obstacle, self.size(), requested, below_first=True)
                 self._place(0)
                 return True
             if event.type() == QEvent.MouseButtonRelease and self.drag_origin is not None:
                 self.drag_origin = None
+                self._restore_hover()
                 return True
         return super().eventFilter(source, event)
 
@@ -302,6 +358,18 @@ class LiveTranslationCard(QWidget):
                 item.cursor, item.format = cursor, formatting
                 selections.append(item)
         self.result.setExtraSelections(selections)
+        focus = ranges or context
+        if focus:
+            self.reveal(focus[0][0])
+
+    def reveal(self, offset):
+        if self.result.verticalScrollBar().maximum() <= 0:
+            return
+        text = self.result.toPlainText()
+        cursor = self.result.textCursor()
+        cursor.setPosition(text_to_editor_position(text, max(0, min(offset, len(text)))))
+        self.result.setTextCursor(cursor)
+        self.result.ensureCursorVisible()
 
 
 class LiveEditorTranslation(QObject):
@@ -330,6 +398,8 @@ class LiveEditorTranslation(QObject):
         self.job = None
         self.insertion = None
         self._applied_selection = None
+        self._edit_anchor = 0
+        self._language_focus_grace = 0.
         self._sample_active = False
         self._sample_pressed = False
         self._sample_until = 0.
@@ -368,6 +438,7 @@ class LiveEditorTranslation(QObject):
             self.insertion.cancel.set()
         self.editor = None
         self.retained.clear()
+        self._language_focus_grace = 0.
         self._submitting = False
         self._cancel_sample()
         self._sample_feedback.stop()
@@ -426,6 +497,8 @@ class LiveEditorTranslation(QObject):
             if self._sample_active:
                 self._observed_sample(value)
             return
+        if value is None and self.editor is not None and monotonic() < self._language_focus_grace:
+            return
         previous, self.editor = self.editor, value
         if value is None and previous is None:
             return
@@ -435,34 +508,54 @@ class LiveEditorTranslation(QObject):
         if value.text != previous.text:
             self._applied_selection = None
             self.alignment.cancel()
+            self._edit_anchor = self._last_edit_position(previous.text, value.text)
             if not self._manual_language and value.text.strip():
                 source = quick_content_language(value.text)
                 target = self.rules().get(source, self._default_target)
                 if target in TARGETS and target != self.draft.target:
-                    self.draft.reset()
-                    self.draft.set_target(target)
                     self.card.set_target(target)
+                    self.draft.set_target(target, source=value.text)
+                    return
             submitted_boundary = (bool(value.text) and value.text.startswith(previous.text)
                                   and value.text[-1] in '。！？!?;；\n.')
             self.draft.edit(value.text, immediate=submitted_boundary)
         self._render()
 
+    @staticmethod
+    def _last_edit_position(before, after):
+        # Native providers may expose the text without exposing the caret.
+        # The unchanged suffix anchors a mid-document edit without jumping
+        # to the end of the whole translation.
+        prefix = 0
+        for old, new in zip(before, after):
+            if old != new:
+                break
+            prefix += 1
+        suffix = 0
+        limit = min(len(before), len(after)) - prefix
+        while suffix < limit and before[-suffix - 1] == after[-suffix - 1]:
+            suffix += 1
+        return len(after) - suffix
+
     def _change_editor(self, previous, value):
         self._applied_selection = None
+        self._edit_anchor = len(value.text) if value is not None else 0
+        self._language_focus_grace = 0.
+        if value is not None and (previous is None or previous.identity != value.identity):
+            self.card.drag_offset = QPoint()
         self._cancel_sample()
         self.alignment.cancel()
         if previous is not None and previous.text.strip() and (self.draft.document.target or self._manual_language):
             self.retained.pop(previous.identity, None)
-            self.retained[previous.identity] = (self.draft.document, self.draft.target, self._manual_language)
+            self.retained[previous.identity] = (
+                self.draft.document, self.draft.target, self.draft.result_target, self._manual_language)
             if len(self.retained) > self.RETAINED_EDITORS:
                 self.retained.popitem(last=False)
         cached = self.retained.pop(value.identity, None) if value is not None else None
         if cached is not None and value.text.strip():
-            document, target, self._manual_language = cached
+            document, target, result_target, self._manual_language = cached
             self.card.set_target(target)
-            self.draft.restore(document, target)
-            if document.source != value.text:
-                self.draft.edit(value.text)
+            self.draft.restore(document, target, result_target, value.text)
         else:
             self.draft.reset()
 
@@ -474,7 +567,7 @@ class LiveEditorTranslation(QObject):
             self._sample_feedback.stop()
             self.poll.setInterval(self.SAMPLE_POLL_MS)
             self.card.insert.setEnabled(False)
-            self._sample_status('请划选要识别语言的文字')
+            self._render()
         else:
             self._cancel_sample()
             self._render()
@@ -522,8 +615,12 @@ class LiveEditorTranslation(QObject):
         self._manual_language = True
         self._cancel_sample()
         self._applied_selection = None
-        self.draft.set_target(code)
+        self._language_focus_grace = monotonic() + 1.25
+        self.alignment.cancel()
+        self.card.result.setExtraSelections([])
         self.card.set_target(code)
+        self.draft.set_target(code)
+        self._render()
 
     def _render(self):
         observed = self.editor
@@ -532,7 +629,10 @@ class LiveEditorTranslation(QObject):
             return
         text = self.draft.result or self.draft.error
         if text != self.card.result.toPlainText():
+            scroll = self.card.result.verticalScrollBar()
+            previous_scroll = scroll.value()
             self.card.result.setPlainText(text)
+            scroll.setValue(previous_scroll)
         if self.card.handle.text() != self._sample_message:
             self.card.handle.setText(self._sample_message)
         self.card.handle.setVisible(bool(self._sample_message))
@@ -542,11 +642,26 @@ class LiveEditorTranslation(QObject):
             self.draft.ready and self.draft.text == observed.text and not self._submitting and not self._sample_active)
         self.card.present()
         if self.draft.ready and not mouse_buttons_mask() & 1:
-            key = observed.selection, observed.text, self.draft.result
+            selection = observed.selection or (self._edit_anchor, self._edit_anchor)
+            key = selection, observed.text, self.draft.result
             if key != self._applied_selection:
                 self._applied_selection = key
-                self.alignment.document = self.draft.document
-                self.alignment.select('source', *observed.selection, observed.text, self.draft.result)
+                begin, end = selection
+                document = self.draft.document
+                self.alignment.document = document
+                self.alignment.select('source', begin, end, observed.text, self.draft.result)
+                if begin == end:
+                    self._follow_caret(document, end)
+
+    def _follow_caret(self, document, offset):
+        if document.source == document.target:
+            self.card.reveal(offset)
+            return
+        for start, end, target_start, target_end in document.spans:
+            if offset <= end:
+                self.card.reveal(target_end if offset >= start else target_start)
+                return
+        self.card.reveal(len(document.target))
 
     def _insert(self):
         if (not self.draft.ready or self.editor is None or self.draft.text != self.editor.text
