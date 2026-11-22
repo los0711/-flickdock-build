@@ -105,6 +105,33 @@ class DisplayFramesTests(unittest.TestCase):
     def tearDown(self):
         self.window.close();self.window.deleteLater();flush()
 
+    def test_cocoa_first_paint_hands_off_without_dispatching_a_second_frame(self):
+        from display_frames import WindowFrames
+        pulse=FramePulse(self.window,follow_refresh_rate=True)
+        pulse.start();flush()
+        clock=pulse.clock
+        self.assertIsInstance(clock,WindowFrames)
+        dispatched=Mock()
+        pulse.timeout.connect(dispatched)
+        native=Mock()
+        clock._display_paced=True
+        clock.refresh_hz=120.
+        clock._cocoa_link=native
+        clock._last_dispatch=100.
+        clock._arm_stall_timer()
+        clock._arm_cadence_timer(.05)
+        clock.eventFilter(clock.handle,QEvent(QEvent.UpdateRequest))
+        self.assertTrue(clock._stall_timer,'A QWidget paint must not end the Cocoa startup watch')
+        with patch('display_frames.time.perf_counter',return_value=100.002):
+            clock._cocoa_tick(native)
+        dispatched.assert_not_called()
+        self.assertFalse(clock._cadence_active())
+        self.assertFalse(clock._stall_timer)
+        with patch('display_frames.time.perf_counter',return_value=100.010):
+            clock._cocoa_tick(native)
+        dispatched.assert_called_once()
+        pulse.stop()
+
     def test_window_coalesces_clients_without_animation_polling_timers(self):
         first,second=FramePulse(self.window),FramePulse(self.window)
         first.start();second.start();flush();clock=first.clock

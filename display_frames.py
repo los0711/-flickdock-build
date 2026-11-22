@@ -336,6 +336,10 @@ class WindowFrames(QObject):
             self._cocoa_link=candidate
             candidate.addToRunLoop_forMode_(NSRunLoop.mainRunLoop(),NSRunLoopCommonModes)
             self._arm_stall_timer()
+            # A freshly exposed Cocoa window may wait several refreshes for
+            # its first display-link pulse. Keep the first visible motion
+            # moving on the screen cadence while the native link starts.
+            self._arm_cadence_timer(self.display_period())
         except Exception as error:
             from platform_native import _recoverable_native_window_error
             if candidate is not None:candidate.invalidate()
@@ -354,8 +358,13 @@ class WindowFrames(QObject):
         if not self.pulses or not self.window.isVisible() or self.window.isMinimized():
             self._stop_cocoa_link()
             return
+        starting=bool(self._stall_timer)
         self._cancel_stall_timer()
         now=time.perf_counter()
+        if starting:
+            self._cancel_cadence_timer();self._next_frame_at=0.0
+            if self._last_dispatch and now-self._last_dispatch<self.display_period()/2:
+                return
         capped=self._rate_capped()
         if self.trace is not None:
             self.trace.update_request(self._trace_phase(),capped=capped)
@@ -551,7 +560,8 @@ class WindowFrames(QObject):
                 self._stop_cocoa_link()
                 if self.trace is not None:self.trace.end_phase()
         elif watched is self.handle and kind == QEvent.UpdateRequest:
-            self.pending = False;self._cancel_stall_timer()
+            self.pending = False
+            if self._cocoa_link is None:self._cancel_stall_timer()
             if self.display_period():
                 # Every animated widget update also produces an UpdateRequest.
                 # Dispatching here would recreate the ~200 Hz feedback loop
