@@ -1,0 +1,105 @@
+name: Install and launch the retained Apple Silicon package
+
+on:
+  push:
+    branches: [ci-live-editor-macos-installed-1840]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  install:
+    runs-on: macos-15
+    timeout-minutes: 43
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PACKAGE_RUN: '45014804976'
+      PACKAGE_COMMIT: 2d20943203dc269dfda3aa3cc1a01ee6a2af9928
+    steps:
+      - name: Retrieve the verified package from the Apple Silicon build
+        run: |
+          set -eu
+          gh run watch "$PACKAGE_RUN" -R "$GITHUB_REPOSITORY" --interval 15
+          prefix="FlickDock-macOS-arm64-$PACKAGE_COMMIT"
+          gh run download "$PACKAGE_RUN" -R "$GITHUB_REPOSITORY" -n "$prefix" -D "$RUNNER_TEMP/flickdock-package" ||
+            gh run download "$PACKAGE_RUN" -R "$GITHUB_REPOSITORY" -n "FlickDock-macOS-incomplete-arm64-$PACKAGE_COMMIT" -D "$RUNNER_TEMP/flickdock-package"
+      - name: Test fresh installation, replacement and automatic launch
+        run: |
+          python3 - <<'PY'
+          import hashlib,json,os,plistlib,subprocess,time
+          from pathlib import Path
+
+          scratch=Path(os.environ['RUNNER_TEMP'])
+          source=scratch/'flickdock-package'
+          proof=scratch/'flickdock-installed-proof'
+          proof.mkdir()
+          report={'ok':False,'checks':[]}
+          def checksum(path):
+              with path.open('rb') as stream:
+                  return hashlib.file_digest(stream,'sha256').hexdigest()
+          def command(*arguments,**kwargs):
+              return subprocess.run([str(argument) for argument in arguments],check=True,text=True,timeout=120,**kwargs)
+          def pids():
+              target=r'^/Applications/FlickDock\.app/Contents/MacOS/FlickDock( |$)'
+              result=subprocess.run(['/usr/bin/pgrep','-f',target],capture_output=True,text=True,timeout=10)
+              assert result.returncode in (0,1),result.stderr
+              return set(result.stdout.split())
+          def wait_for(predicate):
+              deadline=time.monotonic()+30
+              while time.monotonic()<deadline:
+                  value=predicate()
+                  if value:return value
+                  time.sleep(.2)
+              raise AssertionError('Timed out waiting for the installed application')
+
+          try:
+              manifest=json.loads((source/'mac-build-1.8.40-arm64.json').read_text())
+              assert manifest['ok'] and manifest['pkg_payload_verified'] and manifest['architecture']=='arm64'
+              installer=source/'FlickDock-1.8.40-macOS-arm64.pkg'
+              record=next(record for record in manifest['artifacts'] if record['name']==installer.name)
+              assert installer.stat().st_size==record['bytes'] and checksum(installer)==record['sha256']
+              report['sha256']=record['sha256']
+              expanded=scratch/'flickdock-expanded'
+              command('/usr/sbin/pkgutil','--expand-full',installer,expanded)
+              packaged_binary=expanded/'Payload/FlickDock.app/Contents/MacOS/FlickDock'
+              expected_binary=checksum(packaged_binary)
+
+              app=Path('/Applications/FlickDock.app')
+              binary=app/'Contents/MacOS/FlickDock'
+              assert not app.exists() and not pids()
+              command('sudo','/usr/sbin/installer','-pkg',installer,'-target','/')
+              first=wait_for(pids)
+              assert len(first)==1,first
+              info=plistlib.loads((app/'Contents/Info.plist').read_bytes())
+              assert info['CFBundleShortVersionString']=='1.8.40'
+              assert checksum(binary)==expected_binary
+              assert command('/usr/bin/lipo','-archs',binary,capture_output=True).stdout.strip()=='arm64'
+              command('/usr/bin/codesign','--verify','--deep','--strict',app)
+              assert pids()==first
+              report['checks'].append('fresh install and automatic launch')
+
+              command('/bin/kill','-TERM',first.pop())
+              wait_for(lambda:not pids())
+              marker=app/'Contents/Resources/.flickdock-old-fixture'
+              command('sudo','/usr/bin/touch',marker)
+              assert marker.exists()
+              command('sudo','/usr/sbin/installer','-pkg',installer,'-target','/')
+              restarted=wait_for(pids)
+              assert len(restarted)==1 and not marker.exists()
+              assert checksum(binary)==expected_binary
+              command('/usr/bin/codesign','--verify','--deep','--strict',app)
+              assert pids()==restarted
+              report['checks'].append('overwrite removes old bundle files and starts the installed application')
+              report['ok']=True
+          finally:
+              (proof/'mac-installed-arm64.json').write_text(json.dumps(report,indent=2)+'\n')
+          PY
+      - name: Retain the installation report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: installed-mac-arm64
+          path: ${{ runner.temp }}/flickdock-installed-proof/
+          if-no-files-found: ignore
+          retention-days: 3
