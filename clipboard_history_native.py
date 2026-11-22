@@ -509,10 +509,14 @@ def _set_windows_formats(user,formats):
 
 
 def _send_windows_paste(user,target):
+    return _send_windows_editor_shortcut(user,target,0x56)
+
+
+def _send_windows_editor_shortcut(user,target,key):
     if front_target()!=target or any(user.GetAsyncKeyState(key)&0x8000 for key in (0x10,0x11,0x12,0x5B,0x5C)):
         return False
     events=(_Input*4)(*(_Input(1,_InputValue(keyboard=_Keyboard(key,0,flags,0,0)))
-                       for key,flags in ((0x11,0),(0x56,0),(0x56,2),(0x11,2))))
+                       for key,flags in ((0x11,0),(key,0),(key,2),(0x11,2))))
     user.SendInput.argtypes=(wintypes.UINT,ctypes.POINTER(_Input),ctypes.c_int)
     return user.SendInput(len(events),events,ctypes.sizeof(_Input))==len(events)
 
@@ -532,7 +536,7 @@ def _windows_file_drop(paths):
     return struct.pack('<IiiII',20,0,0,0,1)+('\0'.join(paths)+'\0\0').encode('utf-16-le')
 
 
-def _paste_windows_formats(formats,target,cancel):
+def _paste_windows_formats(formats,target,cancel,*,verify_editor=None):
     user,kernel,ole,gdi=_windows_clipboard_api()
     owner=user.CreateWindowExW(0,'STATIC','',0,0,0,0,0,-3,None,None,None)  # HWND_MESSAGE
     if not owner:return False
@@ -567,7 +571,9 @@ def _paste_windows_formats(formats,target,cancel):
         temporary_sequence=user.GetClipboardSequenceNumber()
         if user.GetClipboardOwner()!=owner:return False
         _mark_paste_change(temporary_sequence)
-        if not installed or cancel.is_set() or not _send_windows_paste(user,target):return False
+        if (not installed or cancel.is_set() or (verify_editor is not None and not verify_editor())
+                or user.GetClipboardOwner()!=owner
+                or not _send_windows_paste(user,target)):return False
         # Once the key event is posted, an app can read asynchronously.
         # Even a subsequent history click cannot restore ahead of that read.
         time.sleep(_PASTE_GRACE_SECONDS)
@@ -630,7 +636,7 @@ def _wait_mac_paste_read(provider,board,sequence):
     return True
 
 
-def _paste_mac_payload(payload,target,cancel,*,image=False,files=False):
+def _paste_mac_payload(payload,target,cancel,*,image=False,files=False,verify_editor=None):
     import Quartz
     import objc
     from AppKit import NSImage, NSPasteboard, NSPasteboardContentsCurrentHostOnly, NSPasteboardItem
@@ -704,6 +710,8 @@ def _paste_mac_payload(payload,target,cancel,*,image=False,files=False):
             if not installed:return MacPasteResult.UNAVAILABLE
             if cancel.is_set():return MacPasteResult.CANCELLED
             if front_target()!=target:return MacPasteResult.FOCUS
+            if verify_editor is not None and not verify_editor():return MacPasteResult.FOCUS
+            if board.changeCount()!=sequence:return MacPasteResult.CLIPBOARD_CHANGED
             for event in (down,up):
                 Quartz.CGEventSetFlags(event,Quartz.kCGEventFlagMaskCommand)
                 Quartz.CGEventPostToPid(target,event)
@@ -751,7 +759,7 @@ def _mac_pasteboard_has_files(items,paths):
     return None not in expected and sorted(actual)==sorted(expected)
 
 
-def _insert_mac_history(payload,target,*,cancel=None,image=False,files=False):
+def _insert_mac_history(payload,target,*,cancel=None,image=False,files=False,verify_editor=None):
     if not payload:return MacPasteResult.UNAVAILABLE
     if target is None or front_target()!=target:return MacPasteResult.FOCUS
     cancel=cancel or Event()
@@ -770,10 +778,41 @@ def _insert_mac_history(payload,target,*,cancel=None,image=False,files=False):
         # The fence covers the whole replacement, its restore and the settle
         # window after it, so nothing can publish the temporary payload.
         with history_paste_scope(local_value):
-            return _paste_mac_payload(payload,target,cancel,image=image,files=files)
+            options={'verify_editor':verify_editor} if verify_editor is not None else {}
+            return _paste_mac_payload(payload,target,cancel,image=image,files=files,**options)
     finally:
         _IMAGE_PASTE_LOCK.release()
 
+
+def select_editor_text(target):
+    """Send the normal Select All command to the foreground editor."""
+    if target is None or front_target()!=target:return False
+    if sys.platform=='win32':
+        return _send_windows_editor_shortcut(_windows(),target,0x41)
+    if sys.platform=='darwin':
+        import Quartz
+        events=[Quartz.CGEventCreateKeyboardEvent(None,0,pressed) for pressed in (True,False)]  # ANSI A
+        if any(event is None for event in events) or front_target()!=target:return False
+        for event in events:
+            Quartz.CGEventSetFlags(event,Quartz.kCGEventFlagMaskCommand)
+            Quartz.CGEventPostToPid(target,event)
+        return True
+    return False
+
+
+def paste_editor_text(text,target,cancel,verify_editor):
+    """Paste plain text with a protected, temporary clipboard and verified focus."""
+    if sys.platform=='darwin':
+        return _insert_mac_history(text,target,cancel=cancel,verify_editor=verify_editor)
+    if sys.platform!='win32' or not _IMAGE_PASTE_LOCK.acquire(blocking=False):
+        return False
+    try:
+        native_text=text.replace('\r\n','\n').replace('\r','\n').replace('\n','\r\n')
+        with history_paste_scope(('text',dict(text=text))):
+            return _paste_windows_formats(((13,(native_text+'\0').encode('utf-16-le')),),
+                                          target,cancel,verify_editor=verify_editor)
+    finally:
+        _IMAGE_PASTE_LOCK.release()
 
 def insert_image(png,target,*,cancel=None):
     """Paste an image while preserving a snapshot of the user's clipboard."""

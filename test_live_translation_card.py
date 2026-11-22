@@ -12,7 +12,7 @@ from PySide6.QtWidgets import QApplication, QWidget
 
 from live_translation import FOOTER_HEIGHT, LiveEditorTranslation, LiveTranslationCard, fit_card
 from live_translation_draft import LiveDraft
-from live_translation_editor import EditorSelection, EditorState, _application_scope, _is_web_document, _windows_web_document
+from live_translation_editor import EditorSelection, EditorState, _application_scope, _is_web_document, _windows_web_context
 from live_translation_motion import LiveTranslationMark, LiveTranslationNotice
 from native_ui_common import colors
 from translator_store import TranslatorStore
@@ -131,8 +131,8 @@ class LiveTranslationTests(unittest.TestCase):
 
         for address, is_document in (('https://docs.google.com/document/d/test/edit', True),
                                      ('https://claude.ai/new', False), (None, False)):
-            self.assertEqual(_windows_web_document(Automation(address), 'automation', 'editor', Event()),
-                             is_document)
+            self.assertEqual(_windows_web_context(Automation(address), 'automation', 'editor', Event()),
+                             (True,is_document))
 
     def test_append_sends_only_the_new_sentence(self):
         api = UnitsApi()

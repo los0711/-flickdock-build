@@ -161,15 +161,17 @@ def verify(output):
                 observed = wait_for(lambda: focused_editor(cancel),
                                     interval=1 if field in ('protected', 'read-only') else 4)
                 if field in ('protected', 'read-only'):
-                    report['fields'][field] = {'blocked': observed is None}
+                    attempted = focused_editor(cancel,expected=observed,insertion=TRANSLATION) if observed else False
+                    report['fields'][field] = dict(blocked=not attempted and state().get('text') == DRAFT,
+                                                   readable=observed is not None)
                     continue
-                row = {'read': observed is not None}
+                row = dict(read=observed is not None,original_length=len(observed.text) if observed else None)
                 if observed is not None:
                     inserted = focused_editor(cancel, expected=observed, insertion=TRANSLATION)
                     applied = wait_for(lambda: state().get('text') == TRANSLATION and state().get('inputs',0)>0)
                     row.update(request_accepted=bool(inserted), updated=bool(applied),
                                text_matches=state().get('text') == TRANSLATION,
-                               input_event=state().get('inputs',0)>0)
+                               input_event=state().get('inputs',0)>0,final_length=len(state().get('text','')))
                 report['fields'][field] = row
         finally:
             command.write_text('exit', encoding='utf-8')
