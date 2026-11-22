@@ -115,9 +115,13 @@ def run(root,credentials):
             wait(lambda:bool(panel._feedback) or (len(successful_pastes)==prior+1 and history._insert_job is None),8)
             assert len(successful_pastes)==prior+1, (panel._feedback,current_process()==pid)
             if kind=='image':
+                wait(lambda:(target_dir/'image-inserted').is_file(),8)
                 assert json.loads((target_dir/'image-incoming.json').read_bytes())['color']==fixture
             else:
-                assert any(json.loads(item.read_bytes())['text']==fixture for item in target_dir.glob('observed-*.json'))
+                def received_text():
+                    return any(json.loads(item.read_bytes())['text']==fixture
+                               for item in target_dir.glob('observed-*.json'))
+                wait(received_text,8)
             QTest.qWait(1200)
             assert board.text()==original
             assert (client._seen,len(mutations),history.total)==before
