@@ -743,9 +743,7 @@ def _mac_editor(cancel, expected, insertion, sample, rejected=None):
                                                    accept_unreported_selection=True,within_editor=True):
                     return True
             if not _same_draft(focused_editor(cancel),state):return False
-            if web:
-                # Pasteboard access is independent of Accessibility. A
-                # verified rich editor can accept text without a clipboard read.
+            def type_into_selection():
                 for select_text in (select_range,lambda:select_editor_text(target,within_editor=True)):
                     if not full_selection() and select_text():
                         deadline=monotonic()+.25
@@ -755,19 +753,25 @@ def _mac_editor(cancel, expected, insertion, sample, rejected=None):
                             and _confirmed_replacement(cancel,state,insertion,read_current)):
                         return True
                     if not _same_draft(focused_editor(cancel),state):return False
-                return MacPasteResult.CLIPBOARD_PERMISSION if blocker=='clipboard' else False
-            native = key(insertion.encode('utf8'))
-            if not native:
                 return False
-            if selection_writable and select_range():
-                if (not secure_input() and ax.AXUIElementSetAttributeValue(editor, selected_key, native) == 0
-                        and _confirmed_replacement(cancel,state,insertion,read_current)):
-                    return True
-                if selected_range and _same_draft(focused_editor(cancel),state):
-                    ax.AXUIElementSetAttributeValue(editor, range_key, selected_range)
+
+            # Some WebViews do not report AXWebArea. When the pasteboard
+            # cannot be read, try the bound editor before accessibility
+            # value writes so the web app still receives a normal input event.
+            if (web or blocker=='clipboard') and type_into_selection():
+                return True
             if not _same_draft(focused_editor(cancel),state):
                 return False
-            if not settable(value_key) or ax.AXUIElementSetAttributeValue(editor, value_key, native):
+            if web:return MacPasteResult.CLIPBOARD_PERMISSION if blocker=='clipboard' else False
+            native = key(insertion.encode('utf8'))
+            if native and selection_writable and select_range() and full_selection():
+                if (ax.AXUIElementSetAttributeValue(editor,selected_key,native)==0
+                        and _confirmed_replacement(cancel,state,insertion,read_current)):
+                    return True
+            if not _same_draft(focused_editor(cancel),state):return False
+            if not native or not settable(value_key):
+                return MacPasteResult.CLIPBOARD_PERMISSION if blocker=='clipboard' else False
+            if ax.AXUIElementSetAttributeValue(editor,value_key,native):
                 return MacPasteResult.CLIPBOARD_PERMISSION if blocker=='clipboard' else False
             caret = offsets(len(insertion.encode('utf-16-le')) // 2, 0)
             range_value = retain(ax.AXValueCreate(4, ctypes.byref(caret)))
