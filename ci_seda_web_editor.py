@@ -57,6 +57,7 @@ def click_insert(folder, sample):
         if not wait_for(lambda:observed(lambda:card.footer_clip.height()==FOOTER_HEIGHT and card.insert.isEnabled())):
             return {'card_ready':True,'hover_opens':False}
         clicks=[]
+        requested=live.draft.result
         card.insert.clicked.connect(lambda _checked=False:clicks.append(True))
         for _ in range(2):
             button=card.screen_point(card.insert,card.insert.rect().center())
@@ -85,6 +86,9 @@ def click_insert(folder, sample):
                 'click_received':bool(clicks),'focus_retained':front_target()==target,
                 'input_events':sample().get('inputs'),
                 'adjacent_preserved':sample().get('other')=='Other input must remain unchanged',
+                **({} if applied else {'requested':requested,'actual':sample().get('text'),
+                    'clipboard_preserved':sample().get('clipboard')==CLIPBOARD,
+                    'settled':not live._submitting,'message':live._sample_message}),
                 **({} if clicks else {'point':button.toTuple(),'card_frame':card.screen_frame().getRect(),
                     'status':live._sample_message,'entered':card.insert.underMouse(),
                     'native_hit':('card' if hit==int(card.winId()) else 'fixture' if hit_pid.value==target[1] else 'other'),
