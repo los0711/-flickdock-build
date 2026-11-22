@@ -31,8 +31,9 @@ app.whenReady().then(async () => {
     </script>`);
   const window = new BrowserWindow({
     width: 660, height: 420, x: 120, y: 130, autoHideMenuBar: true,
-    webPreferences: { webviewTag: true, contextIsolation: true, sandbox: true }
+    webPreferences: { webviewTag: true, contextIsolation: true, sandbox: true, spellcheck: false }
   });
+  window.webContents.on('will-attach-webview',(_event, preferences) => { preferences.spellcheck=false; });
   window.webContents.on('did-attach-webview', (_event, view) => {
     view.on('before-input-event', (event, input) => {
       if (input.type === 'keyDown' && input.control) {
@@ -51,7 +52,7 @@ app.whenReady().then(async () => {
       })()`);
       const timer = setInterval(async () => {
         if (fs.existsSync(path.join(folder, 'exit'))) {
-          clearInterval(timer); app.quit(); return;
+          clearInterval(timer); app.exit(0); return;
         }
         try {
           const state = await view.executeJavaScript(`(() => {

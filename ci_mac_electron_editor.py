@@ -62,7 +62,7 @@ def verify(folder, electron, editor, *, deny_clipboard):
         try:
             process.wait(timeout=8)
         except subprocess.TimeoutExpired:
-            process.terminate()
+            process.kill()
             process.wait(timeout=5)
 
 

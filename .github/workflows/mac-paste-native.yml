@@ -17,6 +17,7 @@ jobs:
     timeout-minutes: 12
     env:
       PYTHONUTF8: '1'
+      PYTHONFAULTHANDLER: '1'
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
