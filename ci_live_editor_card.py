@@ -149,6 +149,12 @@ def verify(report, folder):
                           hover_timer=card._hover_timer.isActive(), local=card.mapFromGlobal(QCursor.pos()).toTuple(),
                           extent=card.footer_clip.height(), footer_open=card._footer_open,
                           cocoa=card._cocoa_card, visible=card.isVisible(), probe_rejections=failures, updates=updates)
+        if sys.platform == 'darwin' and card._cocoa_host is not None:
+            native=card._cocoa_host.panel
+            panel_frame=native.frame()
+            report.update(pointer_accepted=not native.ignoresMouseEvents(), native_visible=native.isVisible(),
+                          native_frame=(panel_frame.origin.x,panel_frame.origin.y,panel_frame.size.width,panel_frame.size.height),
+                          native_level=native.level(),native_alpha=native.alphaValue())
         pointer(body, click=True)
         wait_for(lambda: observed(lambda: False), seconds=.25)
         report['body_preserves_focus'] = front_target() == target and not translator.isVisible()

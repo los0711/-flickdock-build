@@ -180,6 +180,7 @@ class CocoaNonActivatingHost:
         self.panel.setBackgroundColor_(AppKit.NSColor.clearColor())
         self.panel.setHasShadow_(False)
         self.panel.setAcceptsMouseMovedEvents_(True)
+        self.panel.setIgnoresMouseEvents_(False)
         self.panel.setLevel_(AppKit.NSFloatingWindowLevel)
         self.panel.setCollectionBehavior_(_fullscreen_collection_behavior(self.panel,AppKit))
         self.parent=QWindow.fromWinId(objc.pyobjc_id(self.panel.contentView()))
@@ -202,6 +203,10 @@ class CocoaNonActivatingHost:
 
     def hide(self):
         self.panel.orderOut_(None)
+
+    def accept_pointer(self, inside):
+        if bool(self.panel.ignoresMouseEvents())==inside:
+            self.panel.setIgnoresMouseEvents_(not inside)
 
     def opacity(self, alpha):
         self.panel.setAlphaValue_(alpha)

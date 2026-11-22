@@ -272,7 +272,9 @@ class LiveTranslationCard(QWidget):
 
     def _restore_hover(self):
         if self.isVisible() and not self.deferred_hide and self.drag_origin is None and not self.popup.isVisible():
-            self._set_footer(self.surface.geometry().contains(self.mapFromGlobal(QCursor.pos())))
+            inside=self.surface.geometry().contains(self.mapFromGlobal(QCursor.pos()))
+            if self._cocoa_host is not None:self._cocoa_host.accept_pointer(inside)
+            self._set_footer(inside)
 
     def present(self):
         appearing = self.deferred_hide or not self.isVisible()
