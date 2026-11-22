@@ -1,0 +1,56 @@
+name: Display cadence native proof
+on:
+  push:
+    branches: [ci-display-cadence-1847-native-proof]
+
+permissions:
+  contents: read
+
+jobs:
+  desktop:
+    if: github.repository == 'los0711/-flickdock-build'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2025
+            arch: x64
+          - os: macos-15
+            arch: arm64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    env:
+      PYTHONUTF8: '1'
+      PYTHONFAULTHANDLER: '1'
+      PIP_DISABLE_PIP_VERSION_CHECK: '1'
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          architecture: ${{ matrix.arch }}
+      - run: python -m pip install -r requirements.txt
+      - if: runner.os == 'macOS'
+        run: python -m pip install 'pyobjc-framework-Quartz>=11,<13'
+      - name: Regress scheduler, wheel, popup, tooltip and history behavior in isolation
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m unittest test_display_frames test_scroll_motion_v1837 test_tooltips_v1837 test_rounded_lan test_html_native_lan.NativeLanTests.test_device_picker_uses_adjacent_rows_and_the_same_rounded_backing_for_motion test_local_clipboard_history -q
+      - name: Verify real Cocoa and Win32 utility window behavior
+        run: python ci_utility_windows.py --output native-utility.json
+      - name: Verify actual Windows OLE drops with the new frame scheduler
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:APPDATA = Join-Path $env:RUNNER_TEMP 'cadence-1847-ole-profile'
+          $env:LOCALAPPDATA = $env:APPDATA
+          python ci_windows_drag_preview.py driver (Join-Path $env:RUNNER_TEMP 'cadence-1847-native-ole') 100
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: native-utility-${{ runner.os }}
+          path: |
+            native-utility.json
+            ${{ runner.temp }}/cadence-1847-native-ole/drag-preview.json
