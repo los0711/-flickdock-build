@@ -24,11 +24,11 @@ class EditorSelection:
     text: str
 
 
-def focused_editor(cancel, *, expected=None, insertion=None, sample=False):
+def focused_editor(cancel, *, expected=None, insertion=None, sample=False, at_pointer=False):
     if cancel.is_set():
         return None
     if sys.platform == 'win32':
-        return _windows_editor(cancel, expected, insertion, sample)
+        return _windows_editor(cancel, expected, insertion, sample, at_pointer)
     if sys.platform == 'darwin':
         return _mac_editor(cancel, expected, insertion, sample)
     return None
@@ -144,7 +144,7 @@ class _AutomationObjects:
             self.ole.SafeArrayDestroy(array)
 
 
-def _windows_editor(cancel, expected, insertion, sample):
+def _windows_editor(cancel, expected, insertion, sample, at_pointer):
     from ctypes.wintypes import RECT
     from clipboard_history_native import front_target, insert_text
 
@@ -164,13 +164,8 @@ def _windows_editor(cancel, expected, insertion, sample):
                 or password is None or password.value or enabled is None or not enabled.value):
             return None
         if sample:
-            pattern = com.pattern(focused, 10014, '32eba289-3583-42c9-9c59-3b6d9a1e9b6a')
-            span = _first_windows_selection(com, pattern)
-            identity = com.runtime_id(focused)
-            if identity and front_target() == target and not cancel.is_set():
-                selected = com.string(span, 12, _INT(1001)) if span is not None else ''
-                return EditorSelection((target, identity), selected or '')
-            return None
+            selection = _sample_windows_selection(com, automation, focused, target, cancel, at_pointer)
+            return selection if front_target() == target and not cancel.is_set() else None
         if control.value != 50004:
             return None
         value = com.pattern(focused, 10002, 'a94cd8b1-0844-4cd6-9d2d-640537ab39e9')
@@ -195,8 +190,55 @@ def _windows_editor(cancel, expected, insertion, sample):
         if front_target() != target:
             return None
         if insertion is not None:
-            return bool(state == expected and not cancel.is_set() and insert_text(insertion, target, cancel=cancel))
+            if (not _same_draft(state, expected) or cancel.is_set() or not insertion
+                    or len(insertion) > 24000 or '\0' in insertion):
+                return False
+            if value is not None and _method(value, 3, _INT, ctypes.c_wchar_p)(value, insertion) >= 0:
+                return True
+            if document is None or len(insertion) > 4096 or _method(document, 16, _INT)(document) < 0:
+                return False
+            return bool(front_target() == target and not cancel.is_set() and insert_text(insertion, target, cancel=cancel))
         return state
+
+
+def _same_draft(state, expected):
+    return expected is not None and state.identity == expected.identity and state.text == expected.text
+
+
+def _sample_windows_selection(com, automation, focused, target, cancel, at_pointer):
+    from ctypes.wintypes import POINT
+
+    def read(element):
+        process, password = (com.read(element, slot, _INT) for slot in (20, 35))
+        if process is None or process.value != target[1] or password is None or password.value or cancel.is_set():
+            return None
+        pattern = com.pattern(element, 10014, '32eba289-3583-42c9-9c59-3b6d9a1e9b6a')
+        span = _first_windows_selection(com, pattern)
+        if span is None:
+            return None
+        text = com.string(span, 12, _INT(1001)) or ''
+        identity = com.runtime_id(element) if text.strip() and len(text) <= 1000 else ()
+        return EditorSelection((target, identity), text) if identity else None
+
+    if at_pointer:
+        point = POINT()
+        pointer_ready = ctypes.windll.user32.GetCursorPos(ctypes.byref(point))
+        if pointer_ready:
+            element = com.object(automation, 7, point)
+            walker = com.object(automation, 16)
+            # Browsers commonly expose selection on the document ancestor,
+            # even though the pointer is over one of its text descendants.
+            for _ in range(7):
+                if element is None or cancel.is_set():
+                    break
+                process, password = (com.read(element, index, _INT) for index in (20, 35))
+                if process is None or process.value != target[1] or password is None or password.value:
+                    break
+                selected = read(element)
+                if selected is not None:
+                    return selected
+                element = com.object(walker, 3, element) if walker is not None else None
+    return read(focused)
 
 
 class _Variant(ctypes.Union):
@@ -367,23 +409,26 @@ def _mac_editor(cancel, expected, insertion, sample, rejected=None):
         if front_target() != target:
             return reject('AX foreground changed during observation')
         if insertion is not None:
-            if state != expected or cancel.is_set() or len(insertion) > 4096:
+            if not _same_draft(state, expected) or cancel.is_set() or secure_input() or len(insertion) > 24000:
                 return False
-            if selection_writable:
-                native = key(insertion.encode('utf8'))
-                return bool(native and ax.AXUIElementSetAttributeValue(editor, selected_key, native) == 0)
-            # Several Cocoa/Qt inputs provide a writable plain value but expose
-            # selected text as read-only. Preserve their original text and range.
-            if role != 'AXTextField' or not selected_range:
+            native = key(insertion.encode('utf8'))
+            if not native:
                 return False
-            begin, end = selection
-            native = key((text[:begin] + insertion + text[end:]).encode('utf8'))
-            if not native or ax.AXUIElementSetAttributeValue(editor, value_key, native):
+            range_key = key(b'AXSelectedTextRange')
+            if selection_writable and settable(range_key):
+                entire = offsets(0, len(text.encode('utf-16-le')) // 2)
+                span = retain(ax.AXValueCreate(4, ctypes.byref(entire)))
+                if span and ax.AXUIElementSetAttributeValue(editor, range_key, span) == 0:
+                    if not secure_input() and ax.AXUIElementSetAttributeValue(editor, selected_key, native) == 0:
+                        return True
+                    if selected_range:
+                        ax.AXUIElementSetAttributeValue(editor, range_key, selected_range)
+                    return False
+            if role != 'AXTextField' or not settable(value_key) or ax.AXUIElementSetAttributeValue(editor, value_key, native):
                 return False
-            updated = text[:begin] + insertion
-            caret = offsets(len(updated.encode('utf-16-le')) // 2, 0)
+            caret = offsets(len(insertion.encode('utf-16-le')) // 2, 0)
             range_value = retain(ax.AXValueCreate(4, ctypes.byref(caret)))
             if range_value:
-                ax.AXUIElementSetAttributeValue(editor, key(b'AXSelectedTextRange'), range_value)
+                ax.AXUIElementSetAttributeValue(editor, range_key, range_value)
             return True
         return state

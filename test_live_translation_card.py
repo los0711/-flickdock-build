@@ -4,7 +4,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-from PySide6.QtCore import QObject, QPoint, QRect, QSize, Signal
+from PySide6.QtCore import QObject, QPoint, QRect, QSize, Qt, Signal
 from PySide6.QtWidgets import QApplication, QWidget
 
 from live_translation import LiveEditorTranslation, fit_card
@@ -128,9 +128,11 @@ class LiveTranslationTests(unittest.TestCase):
         samples = []
         selected = EditorSelection(('other-control',), 'Bonjour à tous')
 
-        def probe(cancel, *, sample=False):
+        buttons = [0]
+
+        def probe(cancel, *, sample=False, at_pointer=False):
             if sample:
-                samples.append(sample)
+                samples.append(at_pointer)
                 return selected
             return editor
 
@@ -139,11 +141,15 @@ class LiveTranslationTests(unittest.TestCase):
             live = LiveEditorTranslation(Transport(), store, probe=probe)
             try:
                 with patch('live_translation.content_language', return_value='fr'), \
-                        patch('live_translation.mouse_buttons_mask', return_value=0):
+                        patch('live_translation.mouse_buttons_mask', side_effect=lambda: buttons[0]):
                     live.start('en')
                     self.assertTrue(wait_for(self.app, lambda: live.editor is not None))
                     live.card.sample.setChecked(True)
                     live._toggle_sample()
+                    self.assertEqual(samples, [])
+                    buttons[0] = 1
+                    self.assertTrue(wait_for(self.app, lambda: live._sample_pressed))
+                    buttons[0] = 0
                     self.assertTrue(wait_for(self.app, lambda: live.draft.target == 'fr'))
                     self.assertFalse(live.card.sample.isChecked())
                     self.assertEqual(samples, [True])
@@ -207,6 +213,22 @@ class LiveTranslationTests(unittest.TestCase):
                     self.assertTrue(live.card.geometry().intersected(QRect(*bounds)).isEmpty())
                     finish(dict(operation='translate_units', units=[dict(id='0', text='This is a new message.')]), None)
                     self.assertTrue(live.card.insert.isEnabled())
+                    self.assertTrue(live.card.handle.isHidden())
+                    self.assertFalse(live.card.result.property('scrollEdgeBlur'))
+                    self.assertEqual(live.card.result.verticalScrollBar().maximum(), 0)
+                    self.assertLessEqual(live.card.height(), 96)
+                    completed_editor = fixture[0]
+                    fixture[0] = None
+                    self.assertTrue(wait_for(self.app, lambda: not live.card.isVisible()))
+                    fixture[0] = completed_editor
+                    self.assertTrue(wait_for(self.app, live.card.isVisible))
+                    self.assertEqual(live.card.result.toPlainText(), 'This is a new message.')
+                    self.assertEqual(len(transport.requests), 1)
+                    live.card._choose_target()
+                    self.assertTrue(live.card.popup.isVisible())
+                    self.assertTrue(live.card.popup.windowFlags() & Qt.WindowStaysOnTopHint)
+                    self.assertFalse(live.card.popup.geometry().intersects(QRect(*bounds)))
+                    live.card.popup.hide()
                     live.card.insert.click()
                     self.assertTrue(wait_for(self.app, lambda: bool(inserted)))
                     self.assertEqual(inserted, ['This is a new message.'])
@@ -215,6 +237,7 @@ class LiveTranslationTests(unittest.TestCase):
                     self.assertTrue(wait_for(self.app, live.card.isVisible))
                     fixture[0] = EditorState(('test-editor',), bounds, '')
                     self.assertTrue(wait_for(self.app, lambda: not live.card.isVisible()))
+                    self.assertFalse(live.draft.ready)
             finally:
                 live.stop()
                 live.pool.waitForDone(1000)

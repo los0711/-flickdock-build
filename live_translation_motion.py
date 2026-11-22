@@ -7,8 +7,7 @@ from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QWidget
 
 from display_frames import FramePulse
-from native_ui_common import colors, reduced_motion
-import ui_theme
+from native_ui_common import reduced_motion
 
 
 @dataclass(frozen=True)
@@ -141,7 +140,7 @@ class LiveTranslationMark(QWidget):
     def paintEvent(self, event):
         with QPainter(self) as painter:
             frame = 34 if self.started is None else (perf_counter() - self.started) * 30
-            tint = colors(ui_theme.current_theme())['action']
+            tint = '#FFFFFF'
             _draw(painter, QRectF(self.rect()), ZAP, frame, tint)
 
 
@@ -196,7 +195,7 @@ class LiveTranslationNotice(QWidget):
             painter.drawRoundedRect(rect.adjusted(.5, .5, -.5, -.5), 27, 27)
             y = rect.center().y()
             icon_rect = QRectF(rect.center().x() - 42, y - 91, 84, 84)
-            _draw(painter, icon_rect, NAVIGATION, 40 if still else elapsed * 30, colors(ui_theme.current_theme())['action'])
+            _draw(painter, icon_rect, NAVIGATION, 40 if still else elapsed * 30, '#FFFFFF')
             painter.translate(0, 0 if still else 9 * (1 - entrance))
             font = self.font()
             font.setPixelSize(23)

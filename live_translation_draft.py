@@ -35,12 +35,22 @@ class LiveDraft(QObject):
     def ready(self):
         return bool(self.result and not self.error and self.document.matches(self.text, self.result))
 
-    def reset(self):
+    def _cancel(self):
         self.generation += 1
         self.api.cancel()
         self.pending = None
         self.queued = False
         self.timer.stop()
+
+    def restore(self, document, target):
+        self._cancel()
+        self.document = document
+        self.target = target
+        self.text, self.result, self.error = document.source, document.target, ''
+        self.changed.emit()
+
+    def reset(self):
+        self._cancel()
         self.document = TranslationDocument()
         self.text = self.result = self.error = ''
         self.changed.emit()

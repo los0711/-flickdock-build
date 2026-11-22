@@ -785,11 +785,15 @@ class TranslatorPopup(QFrame):
                 self.setAttribute(Qt.WA_NoMouseReplay,True);self.hide();return True
         return False
 
-    def popup_below(self,anchor):
+    def popup_below(self,anchor,*,position=None):
         self._dropdown_anchor=anchor
         self._anchor=weakref.ref(anchor);QApplication.instance().installEventFilter(self)
         self.setAttribute(Qt.WA_NoMouseReplay,True)
-        self.adjustSize();point=anchor.mapToGlobal(QPoint(0,anchor.height()+4))-QPoint(8,0)
+        self.adjustSize()
+        if position is not None:
+            self.move(position);self.show();self.raise_()
+            return
+        point=anchor.mapToGlobal(QPoint(0,anchor.height()+4))-QPoint(8,0)
         screen=screen_for_widget(anchor)
         if screen:
             area=screen.availableGeometry();point.setX(max(area.left(),min(point.x(),area.right()-self.width()+1)))

@@ -111,6 +111,12 @@ def verify(output):
             assert editor.selection == (0, 9), editor.selection
             sample = focused_editor(cancel, sample=True)
             assert sample is not None and sample.text == 'Synthetic', sample
+            if sys.platform == 'win32':
+                import ctypes
+                x, y, width, height = editor.bounds
+                assert ctypes.windll.user32.SetCursorPos(x + width // 2, y + height // 2)
+                sample = focused_editor(cancel, sample=True, at_pointer=True)
+                assert sample is not None and sample.text == 'Synthetic', sample
             cmd.write_text('secure', encoding='utf8')
             assert wait_for(lambda: state().get('text') == 'Do not read this fixture')
             assert focused_editor(cancel) is None
@@ -121,7 +127,7 @@ def verify(output):
             editor = wait_for(lambda: focused_editor(cancel))
             assert editor is not None and editor.text == 'abc'
             assert focused_editor(cancel, expected=editor, insertion='123')
-            assert wait_for(lambda: state().get('text') == 'abc123'), state()
+            assert wait_for(lambda: state().get('text') == '123'), state()
             result['native_checked'] = True
         finally:
             cmd.write_text('exit', encoding='utf8')
