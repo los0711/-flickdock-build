@@ -42,6 +42,11 @@ jobs:
         env:
           FD_QA_MAC_CLIPBOARD_DENIED: '1'
         run: python ci_live_translation_web.py denied-editor.json
+      - name: Exercise native Electron chat editing with or without pasteboard access
+        if: always() && matrix.os == 'macos-15'
+        run: |
+          npm install --prefix "$RUNNER_TEMP/flickdock-electron-qa" --no-save --no-fund --no-audit electron@37.3.1
+          python ci_mac_electron_editor.py "$RUNNER_TEMP/flickdock-electron-qa/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron" native-electron.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
@@ -50,5 +55,6 @@ jobs:
             native-card.json
             embedded-editor.json
             denied-editor.json
+            native-electron.json
           if-no-files-found: warn
           retention-days: 3

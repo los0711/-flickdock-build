@@ -79,10 +79,11 @@ def fixture(folder):
             if sys.platform == 'darwin':
                 import Quartz
                 point = button_target.mapToGlobal(local)
-                for kind in (Quartz.kCGEventLeftMouseDown, Quartz.kCGEventLeftMouseUp):
+                for kind in (Quartz.kCGEventMouseMoved, Quartz.kCGEventLeftMouseDown, Quartz.kCGEventLeftMouseUp):
                     event = Quartz.CGEventCreateMouseEvent(None,kind,(point.x(),point.y()),
                                                            Quartz.kCGMouseButtonLeft)
                     Quartz.CGEventPost(Quartz.kCGHIDEventTap,event)
+                    app.processEvents()
             else:
                 QTest.mouseClick(button_target,Qt.LeftButton,pos=local)
             clicked = record['field']
@@ -162,6 +163,8 @@ def fixture(folder):
                                                      : field.selectionEnd - field.selectionStart,
                     location: [Math.round(box.left+frame.left+22),Math.round(box.top+frame.top+17)],
                     focused: field === field.ownerDocument.activeElement,
+                    caret_inside: !field.isContentEditable ||
+                        field.contains(field.ownerDocument.getSelection().anchorNode),
                     events: window.recordedEditorEvents || [],
                     others
                 });
@@ -203,6 +206,8 @@ def verify_field(folder, field):
         cancel = Event()
         assert wait_for(lambda: state().get('field') == field and state().get('focused') and state().get('active'),
                         interval=9), state()
+        if field in ('rich','embedded'):
+            assert wait_for(lambda:state().get('caret_inside')), 'The browser caret never entered the editor'
         protected = field in ('protected', 'read-only')
         observed = wait_for(lambda: focused_editor(cancel),interval=1 if protected else 4)
         if observed is None and not protected and sys.platform == 'darwin':
