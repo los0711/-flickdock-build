@@ -336,6 +336,30 @@ class ClipboardHistoryPanelTests(unittest.TestCase):
         self.click('clear');self.assertFalse(cleared)
         self.click('clear');self.assertEqual(cleared,[True])
 
+    def test_row_preview_wraps_twice_with_pin_above_delete(self):
+        text='第一行 🙂\nSecond line\nThird line'
+        row=dict(self.rows[0],title='第一行 🙂',excerpt=text)
+        self.panel.set_entries([row])
+        self.assertEqual(self.panel._title_lines(text,250),('第一行 🙂','Second line…'))
+        wrapped=self.panel._title_lines('同一行很长的中文文字🙂'*12,125)
+        self.assertEqual(len(wrapped),2)
+        self.assertTrue(wrapped[1].endswith('…'))
+
+        for dark in (False,True):
+            with self.subTest(dark=dark):
+                self.panel.set_dark(dark)
+                with patch.object(self.panel,'_caption',wraps=self.panel._caption) as paint_caption:
+                    self.panel.repaint()
+                targets={part:rect for part,key,rect in self.panel._hits if key==row['id']}
+                self.assertEqual(targets['pin'].x(),targets['remove'].x())
+                self.assertLess(targets['pin'].bottom(),targets['remove'].top())
+                self.assertTrue(targets['card'].contains(targets['remove']))
+                captions=[call.args[2] for call in paint_caption.call_args_list
+                          if call.args[1] in ('第一行 🙂','Second line…')]
+                self.assertEqual(len(captions),2)
+                self.assertEqual(captions[0].bottom(),captions[1].top())
+                self.assertLess(captions[1].right(),targets['pin'].left())
+
     def test_popup_keeps_gap_and_above_fallback_attached(self):
         anchor=QRect(160,590,332,300)
         self.panel.place(anchor,QRect(0,0,900,940))
