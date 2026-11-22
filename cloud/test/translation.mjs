@@ -43,13 +43,13 @@ response=await awesomeAlign(request(words),alignmentEnv,async(url,options)=>{
   assert.deepEqual(JSON.parse(options.body),words);
   return Response.json(mapped);
 });
-assert.deepEqual(await response.json(),mapped);
+assert.deepEqual(await response.json(),{schema_version:1,...mapped});
 response=await awesomeAlign(request(words),alignmentEnv,async()=>new Response('private provider error',{
   status:503,headers:{'Retry-After':'2'}
 }));
 assert.equal(response.status,503);
 assert.equal(response.headers.get('Retry-After'),'2');
-assert.deepEqual(await response.json(),{error:{code:'ALIGNMENT_UNAVAILABLE'}});
+assert.deepEqual(await response.json(),{schema_version:1,error:{code:'ALIGNMENT_UNAVAILABLE'}});
 assert.equal((await awesomeAlign(request(words),env,()=>assert.fail('No matching provider'))).status,503);
 assert.equal((await awesomeAlign(request({...words,source_text:'😀'.repeat(6001)}),alignmentEnv,
   ()=>assert.fail('Over-limit payload must be rejected'))).status,413);

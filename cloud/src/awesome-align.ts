@@ -8,7 +8,7 @@ const LANG = /^(?:auto|[a-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,3})$/;
 function reply(status: number, code: string, retry?: string | null) {
   const headers = new Headers({'Cache-Control':'no-store'});
   if (retry && /^\d{1,4}$/.test(retry)) headers.set('Retry-After',retry);
-  return Response.json({error:{code}}, {status,headers});
+  return Response.json({schema_version:1,error:{code}}, {status,headers});
 }
 
 async function boundedJson(body: ReadableStream<Uint8Array> | null, limit: number) {
@@ -76,7 +76,7 @@ export async function awesomeAlign(request: Request,env: ServiceEnv,upstream: ty
         || typeof model_version!=='string' || !model_version || model_version.length>128
         || typeof alignment_version!=='string' || !alignment_version || alignment_version.length>64
         || !Array.isArray(alignments) || !Array.isArray(reverse_alignments)) return reply(502,'INVALID_ALIGNMENT_RESULT');
-    return Response.json({protocol_version,model_version,alignment_version,offset_unit,alignments,reverse_alignments},
+    return Response.json({schema_version:1,protocol_version,model_version,alignment_version,offset_unit,alignments,reverse_alignments},
       {headers:{'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'}});
   } catch {
     return reply(503,'ALIGNMENT_UNAVAILABLE');

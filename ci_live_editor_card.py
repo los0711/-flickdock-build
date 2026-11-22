@@ -62,6 +62,9 @@ def pointer(point, click=False):
 
 
 def verify(report, folder):
+    if sys.platform == 'darwin':
+        from platform_native import configure_media_backend
+        configure_media_backend()
     app = QApplication([])
     app.setQuitOnLastWindowClosed(False)
     if sys.platform == 'darwin':
@@ -149,6 +152,16 @@ def verify(report, folder):
         pointer(body, click=True)
         wait_for(lambda: observed(lambda: False), seconds=.25)
         report['body_preserves_focus'] = front_target() == target and not translator.isVisible()
+        if sys.platform == 'darwin' and not report['body_preserves_focus']:
+            import AppKit
+            import objc
+            native=objc.objc_object(c_void_p=ctypes.c_void_p(int(card.winId()))).window()
+            active=AppKit.NSWorkspace.sharedWorkspace().frontmostApplication()
+            report.update(before_target=target, after_target=front_target(), active_process=active.processIdentifier(),
+                          own_pid=os.getpid(), is_native_host=bool(card._cocoa_host and native==card._cocoa_host.panel),
+                          panel_class=native.className(), panel_mask=int(native.styleMask()),
+                          app_key=bool(native.isKeyWindow()), card_visible=card.isVisible(),
+                          translator_visible=translator.isVisible(), updates=updates)
         assert report['hover_opens'] and report['body_preserves_focus'], report
         assert card.screen_frame() == frame
         pointer(card.language.mapToGlobal(card.language.rect().center()), click=True)
