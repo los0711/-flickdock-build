@@ -9,7 +9,7 @@ from PySide6.QtWidgets import QApplication
 
 from live_translation import LiveEditorTranslation, fit_card
 from live_translation_draft import LiveDraft
-from live_translation_editor import EditorState
+from live_translation_editor import EditorSelection, EditorState
 from translator_store import TranslatorStore
 
 
@@ -120,6 +120,37 @@ class LiveTranslationTests(unittest.TestCase):
                 self.assertTrue(area.contains(rect))
                 self.assertFalse(rect.intersects(editor.adjusted(-9, -9, 9, 9)))
         self.assertTrue(fit_card(area, area, QSize(400, 158)).isEmpty())
+
+    def test_language_tool_samples_one_finished_selection(self):
+        bounds = (60, 150, 570, 110)
+        editor = EditorState(('scenario',), bounds, '消息。', (0, 1))
+        samples = []
+        selected = EditorSelection(('other-control',), 'Bonjour à tous')
+
+        def probe(cancel, *, sample=False):
+            if sample:
+                samples.append(sample)
+                return selected
+            return editor
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = TranslatorStore(directory, autoload=False)
+            live = LiveEditorTranslation(Transport(), store, probe=probe)
+            try:
+                with patch('live_translation.content_language', return_value='fr'), \
+                        patch('live_translation.mouse_buttons_mask', return_value=0):
+                    live.start('en')
+                    self.assertTrue(wait_for(self.app, lambda: live.editor is not None))
+                    live.card.sample.setChecked(True)
+                    live._toggle_sample()
+                    self.assertTrue(wait_for(self.app, lambda: live.draft.target == 'fr'))
+                    self.assertFalse(live.card.sample.isChecked())
+                    self.assertEqual(samples, [True])
+            finally:
+                live.stop()
+                live.pool.waitForDone(1000)
+                live.card.close()
+                store.close()
 
     def test_popup_after_typing_clears_and_inserts_without_a_clipboard_call(self):
         bounds = (60, 150, 570, 110)

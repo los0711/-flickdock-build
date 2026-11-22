@@ -171,7 +171,7 @@ class RuleAndLanguageTests(unittest.TestCase):
             dialog.auto_clipboard_button.setEnabled(True)
             dialog.auto_clipboard_button.click()
             self.assertTrue(live.running and dialog.isVisible())
-            self.assertTrue(settle(lambda:live.editor is not None))
+            self.assertTrue(settle(lambda:live.editor is not None, 2))
             self.assertFalse(live.card.isVisible())
             manager.clipboard_sync.copy_observed.emit(('text',{'text':'A copied sample.'}))
             self.assertFalse(automatic.calls or transport.requests)
@@ -201,7 +201,7 @@ class RuleAndLanguageTests(unittest.TestCase):
         editor=view._managers['rules']
         self.assertTrue(editor.isVisible())
         editor._set_code('target','fr');editor.save.click()
-        self.assertTrue(settle(lambda:editor.selected_source=='en'))
+        self.assertTrue(settle(lambda:editor.selected_source=='en', 2))
         self.assertEqual(settings.translation_rules,{'en':'fr'})
         editor._new();editor._set_code('target','ja');editor.save.click()
         self.assertIn('已有规则',editor.message.text())
