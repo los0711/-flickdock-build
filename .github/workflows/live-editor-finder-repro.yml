@@ -22,7 +22,7 @@ jobs:
         run: |
           set -eu
           package_folder="$RUNNER_TEMP/retained"
-          gh run download 45014804976 --repo "$GITHUB_C:/Users/Roooger/Documents/Codex/2026-11-14/0a0a0a/work/live-editor-translation-1840/../live-editor-mac-finder-repro-1840SITORY" \
+          gh run download 45014804976 --repo "$GITHUB_REPOSITORY" \
             --name 'FlickDock-macOS-incomplete-arm64-2d20943203dc269dfda3aa3cc1a01ee6a2af9928' --dir "$package_folder"
           installer="$package_folder/FlickDock-1.8.40-macOS-arm64.pkg"
           echo "74a55c51198caf98d0b1ee0d0529c4c1887ce37d1a00bcd094a0d4aece938e59  $installer" | shasum -a 256 -c -
