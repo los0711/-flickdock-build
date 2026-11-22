@@ -52,6 +52,8 @@ class ClipboardHistory(QObject):
         self.screenshots.received.connect(self._saved_screenshot)
         self.screenshots.failed.connect(self._screenshot_error)
         manager.clipboard_sync.copy_observed.connect(self.observe)
+        self._cloud_content_signal=getattr(manager.clipboard_sync,'cloud_content_received',None)
+        if self._cloud_content_signal is not None:self._cloud_content_signal.connect(self._remember_content)
         self._cloud_files_signal=getattr(manager.clipboard_sync,'cloud_files_received',None)
         if self._cloud_files_signal is not None:self._cloud_files_signal.connect(self._remember_cloud_files)
 
@@ -115,6 +117,10 @@ class ClipboardHistory(QObject):
         except (OSError,RuntimeError,ImportError) as error:
             LOG.warning('Clipboard history privacy check failed (%s)',type(error).__name__)
             return
+        self._remember_content(value)
+
+    def _remember_content(self,value):
+        if not self.enabled or self.closed:return
         # A blocked disk must not accumulate unbounded clipboard images.
         if len(self.jobs)>=24:
             if self.panel:self.panel.feedback('历史存储繁忙')
@@ -341,6 +347,7 @@ class ClipboardHistory(QObject):
         self.screenshots.close()
         if self._insert_job is not None:self._insert_job.cancel.set()
         self.manager.clipboard_sync.copy_observed.disconnect(self.observe)
+        if self._cloud_content_signal is not None:self._cloud_content_signal.disconnect(self._remember_content)
         if self._cloud_files_signal is not None:self._cloud_files_signal.disconnect(self._remember_cloud_files)
         if self.panel is not None:
             self.panel.close()

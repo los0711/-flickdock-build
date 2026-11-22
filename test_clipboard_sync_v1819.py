@@ -676,6 +676,70 @@ class ClipboardTests(unittest.TestCase):
         finally:
             history.close()
 
+    def test_copies_from_each_device_enter_the_other_devices_history_without_being_republished(self):
+        from clipboard_history_runtime import ClipboardHistory
+        from clipboard_history_store import ClipboardHistoryStore
+
+        histories=[ClipboardHistory(SimpleNamespace(app=APP,clipboard_sync=client),self.base/str(index))
+                   for index,client in enumerate(self.clients)]
+        observed=[[],[],[]]
+        for index,(client,history) in enumerate(zip(self.clients,histories)):
+            client.copy_observed.connect(observed[index].append)
+            history.set_enabled(True)
+
+        try:
+            with patch('clipboard_history_runtime.private_clipboard',return_value=False):
+                text=QMimeData();text.setText('Shared note');text.setHtml('<p><b>Shared note</b></p>')
+                self.clips[0].setMimeData(text)
+                until(lambda:all(history.total==1 for history in histories))
+                self.assertEqual([len(events) for events in observed],[1,0,0])
+
+                address='https://example.test/clipboard'
+                self.clips[1].text(address)
+                until(lambda:all(history.total==2 for history in histories))
+                self.assertEqual([len(events) for events in observed],[1,1,0])
+
+                image=QImage(23,17,QImage.Format_ARGB32);image.fill(QColor('#3a84c1'))
+                mime=QMimeData();mime.setImageData(image);self.clips[2].setMimeData(mime)
+                until(lambda:all(history.total==3 for history in histories))
+                self.assertEqual([len(events) for events in observed],[1,1,1])
+
+            for client in self.clients:client.request_refresh()
+            QTest.qWait(150)
+            self.assertEqual(self.hub.version,3)
+            for index,history in enumerate(histories):
+                self.assertEqual(history.total,3)
+                rows={row['kind']:row['id'] for row in history.entries}
+                self.assertEqual(set(rows),{'text','link','image'})
+                history.close()
+                store=ClipboardHistoryStore(self.base/str(index))
+                self.assertEqual(store.execute('payload',rows['text']),
+                                 ('text',dict(text='Shared note',html='<p><b>Shared note</b></p>')))
+                self.assertEqual(store.execute('payload',rows['link'])[1]['text'],address)
+                restored=QImage.fromData(store.execute('payload',rows['image'])[1])
+                self.assertEqual(restored.size(),image.size())
+                self.assertEqual(restored.pixelColor(10,10),image.pixelColor(10,10))
+        finally:
+            for history in histories:history.close()
+
+    def test_remote_clipboard_is_not_saved_while_history_is_disabled(self):
+        from clipboard_history_runtime import ClipboardHistory
+
+        receiver=self.clients[0]
+        history=ClipboardHistory(SimpleNamespace(app=APP,clipboard_sync=receiver),self.base/'0')
+        try:
+            self.clips[1].text('Copy while history is disabled')
+            until(lambda:self.clips[0].mimeData().text()=='Copy while history is disabled')
+            self.assertFalse(history.jobs)
+            self.assertFalse(history.store.path.exists())
+
+            history.set_enabled(True)
+            self.clips[1].text('Copy after history is enabled')
+            until(lambda:history.total==1)
+            self.assertEqual(history.entries[0]['title'],'Copy after history is enabled')
+        finally:
+            history.close()
+
     def test_mac_history_reissued_file_references_never_reach_another_client(self):
         from clipboard_history_native import _remember_mac_history_payload
 
