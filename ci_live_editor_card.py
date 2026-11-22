@@ -134,7 +134,7 @@ def verify(report, folder):
         report['editor_probe_ms'] = latencies
         pointer(bounds.center())
         assert wait_for(lambda: observed(lambda: card.motion.values['y'] == 0 and card.footer_clip.isHidden()))
-        frame = card.geometry()
+        frame = card.screen_frame()
         assert not frame.intersects(bounds)
         body = card.surface.mapToGlobal(QPoint(35, card.surface.height() // 2))
         pointer(body)
@@ -150,7 +150,7 @@ def verify(report, folder):
         wait_for(lambda: observed(lambda: False), seconds=.25)
         report['body_preserves_focus'] = front_target() == target and not translator.isVisible()
         assert report['hover_opens'] and report['body_preserves_focus'], report
-        assert card.geometry() == frame
+        assert card.screen_frame() == frame
         pointer(card.language.mapToGlobal(card.language.rect().center()), click=True)
         assert wait_for(lambda: observed(card.popup.isVisible)), 'Target language menu did not open'
         report['menu_preserves_focus'] = front_target() == target and not translator.isVisible()

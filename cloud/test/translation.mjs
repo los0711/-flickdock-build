@@ -39,7 +39,7 @@ const mapped={protocol_version:'1',model_version:'awesome-fixture',alignment_ver
 response=await awesomeAlign(request(words),alignmentEnv,async(url,options)=>{
   assert.equal(url,alignmentOrigin+'/v1/align');
   assert.equal(options.headers.Authorization,'Bearer '+alignmentEnv.TRANSLATION_PRIMARY_API_KEY);
-  assert.equal(options.redirect,'error');
+  assert.equal(options.redirect,'manual');
   assert.deepEqual(JSON.parse(options.body),words);
   return Response.json(mapped);
 });

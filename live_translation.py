@@ -13,7 +13,7 @@ from flickdock_motion import Spring
 from live_translation_draft import LiveDraft
 from live_translation_editor import EditorSelection, focused_editor
 from native_ui_common import RoundedScrollBar, colors, font_css_stack, reduced_motion
-from platform_native import configure_passive_cocoa_panel, native_input_available, mouse_buttons_mask, raise_edge_target
+from platform_native import (CocoaNonActivatingHost, native_input_available, mouse_buttons_mask)
 from reference_widgets import PixelScrollTextEdit, ToolbarButton
 from sync_files import DiskWork
 from translation_alignment import SelectionAlignment
@@ -101,6 +101,8 @@ class LiveTranslationCard(QWidget):
         self.anchor = QPoint()
         self.drag_offset = QPoint()
         self.goal = QRect()
+        self._screen_frame = QRect()
+        self._cocoa_host = None
         self.target = 'en'
         self.drag_origin = None
         self.deferred_hide = False
@@ -277,12 +279,12 @@ class LiveTranslationCard(QWidget):
         self.deferred_hide = False
         self.refresh_theme()
         if not self.isVisible():
+            if self._cocoa_card and self._cocoa_host is None:
+                self._cocoa_host = CocoaNonActivatingHost(self)
             self.motion.jump({'y': 0. if reduced_motion() else 14., 'opacity': 0.})
-            if self._cocoa_card:
-                configure_passive_cocoa_panel(self, mouse_tracking=True)
             self.show()
-            if self._cocoa_card:
-                raise_edge_target(self)
+            if self._cocoa_host is not None:
+                self._cocoa_host.show()
                 self._hover_timer.start()
                 self._restore_hover()
             else:
@@ -312,11 +314,17 @@ class LiveTranslationCard(QWidget):
 
     def hideEvent(self, event):
         self._hover_timer.stop()
+        if self._cocoa_host is not None:self._cocoa_host.hide()
         super().hideEvent(event)
 
     def _frame(self, values):
         self._place(values['y'])
-        self.setWindowOpacity(max(0., min(1., values['opacity'])))
+        alpha=max(0.,min(1.,values['opacity']))
+        if self._cocoa_host is not None:self._cocoa_host.opacity(alpha)
+        else:self.setWindowOpacity(alpha)
+
+    def screen_frame(self):
+        return QRect(self._screen_frame) if self._cocoa_host is not None else self.geometry()
 
     def _place(self, offset):
         if self.goal.isEmpty():
@@ -326,7 +334,11 @@ class LiveTranslationCard(QWidget):
         # Keep the placement anchor across drag/focus updates and use the
         # unobstructed side picked for this editor.
         frame = fit_card(self.anchor_area, self.obstacle, self.size(), requested, gap=self._gap)
-        if not frame.isEmpty() and self.pos() != frame.topLeft():
+        if frame.isEmpty():return
+        if self._cocoa_host is not None:
+            self._screen_frame = frame
+            self._cocoa_host.place(frame)
+        elif self.pos() != frame.topLeft():
             self.move(frame.topLeft())
 
     def eventFilter(self, source, event):
@@ -334,7 +346,7 @@ class LiveTranslationCard(QWidget):
             QTimer.singleShot(0, self, self._restore_hover)
         if source is self.handle or source is self.surface or source is getattr(self, '_result_viewport', None):
             if event.type() == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
-                self.drag_origin = event.globalPosition().toPoint() - self.pos()
+                self.drag_origin = event.globalPosition().toPoint() - self.screen_frame().topLeft()
                 return True
             if self.drag_origin is not None and event.type() == QEvent.MouseMove:
                 requested = event.globalPosition().toPoint() - self.drag_origin

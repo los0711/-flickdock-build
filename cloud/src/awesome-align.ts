@@ -58,11 +58,12 @@ export async function awesomeAlign(request: Request,env: ServiceEnv,upstream: ty
     const provider=[primary,backup].find(p=>p&&isDirectTranslation(p.endpoint)&&usableProviderKey(p.key));
     if (!provider) return reply(503,'ALIGNMENT_PROVIDER_NOT_CONFIGURED');
     const endpoint=new URL('/v1/align',provider.endpoint);
+    const timeout=AbortSignal.timeout(8000);
     const response=await upstream(endpoint.href,{
-      method:'POST',redirect:'error',
+      method:'POST',redirect:'manual',
       headers:{Authorization:'Bearer '+provider.key,'Content-Type':'application/json','ngrok-skip-browser-warning':'1'},
       body:JSON.stringify({source_text,target_text,source_lang,target_lang}),
-      signal:AbortSignal.any([request.signal,AbortSignal.timeout(8000)]),
+      signal:request.signal?AbortSignal.any([request.signal,timeout]):timeout,
     });
     if (!response.ok) {
       const status=[413,422,429,503].includes(response.status)?response.status:502;

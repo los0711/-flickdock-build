@@ -12,7 +12,8 @@ from PySide6.QtWidgets import QApplication, QWidget
 
 from live_translation import FOOTER_HEIGHT, LiveEditorTranslation, LiveTranslationCard, fit_card
 from live_translation_draft import LiveDraft
-from live_translation_editor import EditorSelection, EditorState, _application_scope, _is_web_document, _windows_web_context
+from live_translation_editor import (EditorSelection, EditorState, _application_scope,
+    _is_mac_document_address, _is_web_document, _windows_web_context)
 from live_translation_motion import LiveTranslationMark, LiveTranslationNotice
 from native_ui_common import colors
 from translator_store import TranslatorStore
@@ -78,16 +79,25 @@ class LiveTranslationTests(unittest.TestCase):
 
     def test_global_translation_is_on_by_default_but_remembers_turning_it_off(self):
         from app_settings import SettingsStore
+        from flickdock import ShelfManager
         with tempfile.TemporaryDirectory() as directory:
             settings = SettingsStore(directory)
             self.assertTrue(settings.live_editor_translation_enabled)
+            started = []
+            manager = SimpleNamespace(settings=settings, _quitting=False,
+                _ensure_translator_dialog=lambda:started.append(True))
+            ShelfManager._start_default_editor_translation(manager)
+            self.assertEqual(started,[True])
             settings.update(live_editor_translation_enabled=False)
             self.assertFalse(SettingsStore(directory).live_editor_translation_enabled)
+            ShelfManager._start_default_editor_translation(manager)
+            self.assertEqual(started,[True])
 
     def test_document_apps_are_excluded_without_a_chat_allowlist(self):
         for platform, identifier in (
             ('win32', r'C:\Office\WINWORD.EXE'), ('win32', 'wps.exe'),
             ('darwin', 'com.apple.iWork.Pages'), ('darwin', 'com.apple.TextEdit'),
+            ('darwin', 'com.apple.Notes'), ('darwin', 'com.kingsoft.wpsoffice.writer'),
         ):
             self.assertEqual(_application_scope(platform, identifier), 'document')
         for platform, identifier in (
@@ -113,6 +123,12 @@ class LiveTranslationTests(unittest.TestCase):
             'https://office.sharepoint.com/sites/home', 'https://docs.google.com.example.org/',
         ):
             self.assertFalse(_is_web_document(address), address)
+
+    def test_cocoa_document_paths_exclude_open_files_without_excluding_chat(self):
+        self.assertTrue(_is_mac_document_address('file:///Users/test/meeting%20notes.DOCX'))
+        self.assertTrue(_is_mac_document_address('https://docs.google.com/document/d/example/edit'))
+        self.assertFalse(_is_mac_document_address('https://web.whatsapp.com/'))
+        self.assertFalse(_is_mac_document_address('https://example.test/draft.docx'))
 
     def test_windows_finds_document_ancestry_without_requiring_a_chat_label_or_url(self):
         class Automation:

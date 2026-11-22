@@ -7,7 +7,7 @@ from pathlib import Path
 import sys
 
 from PySide6.QtCore import QObject, Qt, Signal
-from PySide6.QtGui import QCursor, QGuiApplication
+from PySide6.QtGui import QCursor, QGuiApplication, QWindow
 
 
 def foreground_fullscreen(screen_rect):
@@ -162,6 +162,49 @@ def set_cocoa_panel_pointer(widget, enabled):
     except Exception as error:
         if not _recoverable_native_window_error(error):raise
         return False
+
+
+class CocoaNonActivatingHost:
+    """An AppKit panel initialized with nonactivation before embedding Qt."""
+    def __init__(self, widget):
+        import AppKit
+        import objc
+        self._appkit=AppKit
+        self.panel=AppKit.NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
+            AppKit.NSMakeRect(0,0,widget.width(),widget.height()),
+            AppKit.NSWindowStyleMaskBorderless | AppKit.NSWindowStyleMaskNonactivatingPanel,
+            AppKit.NSBackingStoreBuffered,False)
+        self.panel.setHidesOnDeactivate_(False)
+        self.panel.setBecomesKeyOnlyIfNeeded_(True)
+        self.panel.setOpaque_(False)
+        self.panel.setBackgroundColor_(AppKit.NSColor.clearColor())
+        self.panel.setHasShadow_(False)
+        self.panel.setAcceptsMouseMovedEvents_(True)
+        self.panel.setLevel_(AppKit.NSFloatingWindowLevel)
+        self.panel.setCollectionBehavior_(_fullscreen_collection_behavior(self.panel,AppKit))
+        self.parent=QWindow.fromWinId(objc.pyobjc_id(self.panel.contentView()))
+        if self.parent is None:raise RuntimeError('Could not embed the translation card in its AppKit panel')
+        widget.winId()
+        self.window=widget.windowHandle()
+        self.window.setParent(self.parent)
+        self.window.setPosition(0,0)
+
+    def place(self, geometry):
+        appkit=self._appkit
+        first=appkit.NSScreen.screens()[0].frame()
+        frame=appkit.NSMakeRect(geometry.x(),first.size.height-geometry.y()-geometry.height(),
+                                geometry.width(),geometry.height())
+        if frame!=self.panel.frame():self.panel.setFrame_display_(frame,False)
+        if self.window.size()!=geometry.size():self.window.resize(geometry.size())
+
+    def show(self):
+        self.panel.orderFrontRegardless()
+
+    def hide(self):
+        self.panel.orderOut_(None)
+
+    def opacity(self, alpha):
+        self.panel.setAlphaValue_(alpha)
 
 
 def _fullscreen_collection_behavior(window, appkit):
