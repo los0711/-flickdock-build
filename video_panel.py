@@ -241,6 +241,10 @@ class VideoSourceCard(QFrame):
             self.progress.setRange(0,1000);self.progress.setValue(round(row['progress']*1000))
             self.progress_percent.setText(f'{row["progress"]:.0%}')
             self.progress_percent.setAccessibleName(('转换进度 ' if row['status']=='converting' else '处理进度 ' if row['status']=='processing' else '下载进度 ')+self.progress_percent.text())
+        layout=(theme,detail,self.status.text(),busy and row['progress'] is not None)
+        changed=layout!=getattr(self,'_last_layout',None)
+        self._last_layout=layout
+        return changed
 
 class VideoSourceTabs(SelectionSurface):
     """Keep the video-source labels and their shared sliding pill in phase."""
@@ -363,6 +367,7 @@ class VideoSourceStack(QStackedWidget):
 class VideoResult(QFrame):
     def __init__(self,entry,controller,parent):
         super().__init__(parent);self.entry=entry;self.controller=controller;self.cards={};self.grids=[];self.columns=0
+        self._fit_timer=QTimer(self);self._fit_timer.setSingleShot(True);self._fit_timer.timeout.connect(self._fit_sources)
         self.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Fixed)
         layout=QVBoxLayout(self);layout.setContentsMargins(0,0,0,0);layout.setSpacing(12)
         summary=QHBoxLayout();summary.setSpacing(14);self.cover=CoverButton(entry,self);summary.addWidget(self.cover)
@@ -419,14 +424,17 @@ class VideoResult(QFrame):
         self._fit_sources()
 
     def refresh(self,theme):
-        self.cover.dark=theme=='dark';self.cover.update()
+        cover_state=(theme,self.entry['cover_state'],self.entry['cover'])
+        if getattr(self,'_last_cover_state',None)!=cover_state:
+            self._last_cover_state=cover_state
+            self.cover.dark=theme=='dark';self.cover.update()
         self.tabs_frame.set_selection_theme(theme)
-        for card in self.cards.values():card.refresh(theme)
-        for grid,_cards in self.grids:grid.invalidate()
-        self._fit_sources()
-        # Visibility changes on a status/progress row are delivered by Qt's
-        # layout queue; measure again once those changes have settled.
-        QTimer.singleShot(0,self,self._fit_sources)
+        changed=False
+        for card in self.cards.values():changed=card.refresh(theme) or changed
+        if changed and not self._fit_timer.isActive():
+            # Measure once after Qt applies any wrapped status row changes.
+            # Progress-only updates do not resize every source grid.
+            self._fit_timer.start(0)
 
 class VideoPreview(ReferenceModalDialog):
     def __init__(self,owner):
