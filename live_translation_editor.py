@@ -692,8 +692,8 @@ def _mac_editor(cancel, expected, insertion, sample, rejected=None):
                     return True
                 if selected_range and _same_draft(focused_editor(cancel),state):
                     ax.AXUIElementSetAttributeValue(editor, range_key, selected_range)
-                return False
-            if not settable(value_key) or ax.AXUIElementSetAttributeValue(editor, value_key, native):
+            if (not _same_draft(focused_editor(cancel),state) or not settable(value_key)
+                    or ax.AXUIElementSetAttributeValue(editor, value_key, native)):
                 return False
             caret = offsets(len(insertion.encode('utf-16-le')) // 2, 0)
             range_value = retain(ax.AXValueCreate(4, ctypes.byref(caret)))

@@ -83,10 +83,13 @@ def verify(report, folder):
     latencies = []
     failures = []
     updates = []
+    insert_calls=[]
 
     def probe(cancel, **options):
         start = monotonic()
         value = focused_editor(cancel, **options)
+        if 'insertion' in options:
+            insert_calls.append((bool(value),front_target()))
         if value is None and sys.platform == 'darwin' and not options and len(failures) < 4:
             from live_translation_editor import _mac_editor
             _mac_editor(cancel,None,None,False,rejected=failures.append)
@@ -210,10 +213,15 @@ def verify(report, folder):
         pointer(body)
         assert wait_for(lambda: observed(lambda: card.footer_clip.height() == FOOTER_HEIGHT))
         assert wait_for(lambda: observed(card.insert.isEnabled))
+        clicks=[]
+        card.insert.clicked.connect(lambda _checked=False:clicks.append(True))
         pointer(card.screen_point(card.insert,card.insert.rect().center()),click=True)
         report['inserted'] = bool(wait_for(lambda: observed(
             lambda: state().get('text') == 'Please confirm the shipping address.'), seconds=4))
-        assert report['inserted'] and front_target() == target and not translator.isVisible(), report
+        report['insert_preserves_focus']=front_target()==target and not translator.isVisible()
+        if not report['inserted']:
+            report.update(insert_clicks=len(clicks),insert_calls=insert_calls,
+                          fixture_active=state().get('active'),card_status=live._sample_message)
         if sys.platform == 'darwin':
             from AppKit import NSWorkspace
             path=folder/'FlickDock verification document.txt'
@@ -224,6 +232,7 @@ def verify(report, folder):
                 seconds=8), 'The actual TextEdit document did not come to the foreground'
             assert focused_editor(Event()) is None, 'TextEdit was eligible for automatic translation'
             report['native_document_excluded']=True
+        assert report['inserted'] and report['insert_preserves_focus'], report
     finally:
         live.stop()
         live.pool.waitForDone(2000)

@@ -220,6 +220,7 @@ class CocoaNonActivatingHost:
         if self._mouse_monitor is not None:
             self._appkit.NSEvent.removeMonitor_(self._mouse_monitor)
             self._mouse_monitor=None
+        if self.panel.isKeyWindow():self.panel.resignKeyWindow()
         self.panel.orderOut_(None)
 
     def on_external_click(self, callback):
