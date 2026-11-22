@@ -33,9 +33,13 @@ def _image_signature(data):
         print('IMAGE ID read size',flush=True)
         reader=QImageReader(buffer);size=reader.size()
         if not size.isValid() or size.width()*size.height()>MAX_IDENTITY_IMAGE_PIXELS:
+            del reader
             return ('image-encoded',key[1])
         print('IMAGE ID decode',flush=True)
         image=reader.read()
+        print('IMAGE ID release decoder',flush=True)
+        del reader
+        print('IMAGE ID released decoder',flush=True)
     else:image=data['image']
     print('IMAGE ID check image',flush=True)
     if image.isNull():return ('image-invalid',key)
