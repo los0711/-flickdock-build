@@ -23,7 +23,12 @@ class FixedTranslationService:
     def __init__(self):
         self.calls = []
 
-    def request(self, _method, _route, finish, *, data, **_options):
+    def request(self, _method, route, finish, *, data, **_options):
+        if route == '/v1/align':
+            empty=dict(protocol_version='1',offset_unit='unicode_codepoint',model_version='fixture',
+                       alignment_version='1', alignments=[],reverse_alignments=[])
+            QTimer.singleShot(50, lambda: finish(empty, None))
+            return object()
         self.calls.append(monotonic())
         reply = dict(operation=data['operation'], units=[
             dict(id=row['id'], text='Please confirm the shipping address.')
@@ -71,10 +76,14 @@ def verify(report, folder):
     store = TranslatorStore(folder, autoload=False)
     service = FixedTranslationService()
     latencies = []
+    failures = []
 
     def probe(cancel, **options):
         start = monotonic()
         value = focused_editor(cancel, **options)
+        if value is None and sys.platform == 'darwin' and not options and len(failures) < 4:
+            from live_translation_editor import _mac_editor
+            _mac_editor(cancel,None,None,False,rejected=failures.append)
         if value is not None and not options:
             latencies.append(round(1000 * (monotonic() - start), 1))
         return value
@@ -100,8 +109,14 @@ def verify(report, folder):
         assert (target if sys.platform == 'darwin' else target[1]) == child.pid
         initial = monotonic()
         command.write_text('card', encoding='utf-8')
+        assert wait_for(lambda: observed(lambda: state().get('text') == '请确认收货地址。'))
         live.start('en')
-        assert wait_for(lambda: observed(lambda: live.draft.ready and live.editor is not None))
+        result = wait_for(lambda: observed(lambda: live.draft.ready and live.editor is not None))
+        if not result:
+            report.update(focused=front_target()==target, success_probes=latencies, rejected=failures,
+                          editor_length=len(live.editor.text) if live.editor is not None else None,
+                          request_count=len(service.calls), draft_error=live.draft.error)
+        assert result, report
         report['first_request_ms'] = round((service.calls[0] - initial) * 1000)
         report['first_result_ms'] = round((monotonic() - initial) * 1000)
         card = live.card
@@ -130,6 +145,7 @@ def verify(report, folder):
         assert wait_for(lambda: observed(lambda: front_target() == target)), report
         pointer(body)
         assert wait_for(lambda: observed(lambda: card.footer_clip.height() == FOOTER_HEIGHT))
+        assert wait_for(lambda: observed(card.insert.isEnabled))
         pointer(card.insert.mapToGlobal(card.insert.rect().center()), click=True)
         report['inserted'] = bool(wait_for(lambda: observed(
             lambda: state().get('text') == 'Please confirm the shipping address.'), seconds=4))

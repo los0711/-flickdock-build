@@ -50,10 +50,12 @@ class UnitsApi(QObject):
 class Transport:
     def __init__(self):
         self.requests = []
+        self.alignment_requests = []
 
     def request(self, method, path, finished, *, data, **kwargs):
         ticket = object()
-        self.requests.append((ticket, data, finished))
+        pending = self.alignment_requests if path == '/v1/align' else self.requests
+        pending.append((ticket, data, finished))
         return ticket
 
     def cancel(self, ticket):

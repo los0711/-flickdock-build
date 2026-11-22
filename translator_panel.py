@@ -234,7 +234,9 @@ class TranslatorDialog(ReferenceModalDialog):
         self._caption_idle.timeout.connect(self._refresh_language_caption)
         self._speech_dots=0;self._speech_pulse=QTimer(self);self._speech_pulse.setInterval(380);self._speech_pulse.timeout.connect(self._speech_tick)
         from translation_alignment import SelectionAlignment
-        self.alignment=SelectionAlignment(self.session.document,TranslationApi(self._transport,self) if self._transport else None,self)
+        self.alignment=SelectionAlignment(self.session.document,
+            TranslationApi(self._transport,self) if self._transport else None,self,
+            document_api=TranslationApi(self._transport,self) if self._transport else None)
         self.alignment.presentation.connect(self._present_alignment);self._alignment_pair=None
         self._alignment_side=None;self._alignment_status=''
         self._favorite_key=None
@@ -941,6 +943,8 @@ class TranslatorDialog(ReferenceModalDialog):
             self._alignment_highlights=None
             self._alignment_pair=pair;self.alignment.cancel();self.source_editor.setExtraSelections([]);self.output_editor.setExtraSelections([])
             self._alignment_status=''
+        source_language=state.source if state.source!='auto' else (state.detected_code or 'auto')
+        self.alignment.prepare(state.source_text,state.result,source_language,state.target)
         target_scope=not source_scope and not state.source_unconfirmed
         for control in (self.undo_button,self.regenerate_button,self.replace_button,self.version_label):
             control.setVisible(target_scope and bool(revisions))
@@ -1056,6 +1060,8 @@ class TranslatorDialog(ReferenceModalDialog):
         if self._closing:return
         self._closing=True
         self.speech.close();self.history.set_open(False,animate=False)
+        self.alignment.prepare('','')
+        self.alignment.cancel()
         for popup in self._popups:popup.hide()
         for dialog in self._managers.values():dialog.hide()
         self.session.close()

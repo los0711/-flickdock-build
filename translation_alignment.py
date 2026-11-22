@@ -1,22 +1,81 @@
-"""Independent, cancellable on-demand phrase alignment; bounded memory only."""
+"""Precomputed word alignment with an optional legacy phrase fallback."""
 from collections import OrderedDict
 import re
 from PySide6.QtCore import QObject,QTimer,Qt,Signal
 from PySide6.QtWidgets import QApplication
 from translation_document import unique_quote
+import aligned_words
 
 
 class SelectionAlignment(QObject):
     highlight=Signal(str,object)
     presentation=Signal(str,object,object,str)
-    def __init__(self,document,api=None,parent=None):
+    def __init__(self,document,api=None,parent=None,*,document_api=None,fallback=True):
         super().__init__(parent);self.document=document;self.api=api;self.epoch=0;self.pending=None;self.cache=OrderedDict()
         self.queue=[];self.ranges=[];self.other='target'
         self.context={};self.status='';self._pointer_ended=False
         self.timer=QTimer(self);self.timer.setSingleShot(True);self.timer.timeout.connect(self._request)
         if api is not None:api.aligned.connect(self._done)
+        self.document_api=document_api
+        self.fallback=fallback
+        self._pair=None;self._pair_epoch=0;self._pair_failed=False
+        self._pair_bounds=[];self._pair_version=None;self._batch_version=None
+        self._forward=[];self._reverse=[];self._word_map=None
+        self._pair_cache=OrderedDict();self._selection=None
+        if document_api is not None:document_api.document_aligned.connect(self._word_map_arrived)
+
+    def prepare(self,source,target,source_lang='auto',target_lang='auto'):
+        if self.document_api is None:return
+        pair=(source,target,source_lang,target_lang) if (source.strip() and target.strip()
+            and source!=target and self.document.matches(source,target)) else None
+        if pair==self._pair:return
+        self._pair_epoch+=1
+        self.document_api.cancel()
+        self.cancel()
+        self._pair=pair;self._pair_failed=False;self._word_map=None
+        self._pair_bounds=[];self._forward=[];self._reverse=[];self._batch_version=None
+        if pair is None:return
+        key=pair,self._pair_version
+        if key in self._pair_cache:
+            self._pair_cache.move_to_end(key)
+            self._word_map=self._pair_cache[key]
+            return
+        self._pair_bounds=aligned_words.batches(source,target,self.document.spans)
+        if self._pair_bounds:self._request_word_map()
+        else:self._pair_failed=True
+
+    def _request_word_map(self):
+        source,target,source_lang,target_lang=self._pair
+        s0,s1,t0,t1=self._pair_bounds[0]
+        self.document_api.align_document(self._pair_epoch,source[s0:s1],target[t0:t1],source_lang,target_lang)
+
+    def _word_map_arrived(self,epoch,value,error):
+        if epoch!=self._pair_epoch or not self._pair_bounds:return
+        if not error:
+            try:
+                version,forward,reverse=aligned_words.parse(value,self._pair_bounds[0])
+                if self._batch_version not in (None,version):raise ValueError('Alignment model changed mid-document')
+            except ValueError:
+                error='对齐结果无效'
+        if error:
+            self._pair_failed=True
+            self._pair_bounds.clear();self._forward.clear();self._reverse.clear()
+        else:
+            self._batch_version=version
+            self._forward.extend(forward);self._reverse.extend(reverse)
+            self._pair_bounds.pop(0)
+            if self._pair_bounds:
+                self._request_word_map()
+                return
+            if version!=self._pair_version:self._pair_cache.clear()
+            self._pair_version=version
+            self._word_map=(tuple(self._forward),tuple(self._reverse))
+            self._pair_cache[self._pair,version]=self._word_map
+            while len(self._pair_cache)>6:self._pair_cache.popitem(last=False)
+        if self._selection is not None:self.select(*self._selection)
     def cancel(self):
         self.epoch+=1;self.pending=None;self.timer.stop()
+        self._selection=None
         self.queue.clear();self.ranges.clear()
         self.context.clear();self.status='';self._pointer_ended=False
         if self.api is not None:self.api.cancel()
@@ -31,6 +90,13 @@ class SelectionAlignment(QObject):
     def select(self,side,begin,end,source,target):
         self.cancel();self.other='target' if side=='source' else 'source'
         if begin==end or not source.strip() or not target.strip():self._publish();return
+        self._selection=side,begin,end,source,target
+        pair_active=self._pair is not None and self._pair[:2]==(source,target)
+        if pair_active and self._word_map is not None:
+            self.ranges=aligned_words.corresponding(self._word_map[side=='target'],begin,end)
+            self._publish()
+            return
+        allow_fallback=self.fallback and (self.document_api is None or pair_active and self._pair_failed)
         spans,sentence_mapped=self.document.selection_spans(source,target)
         selected=self.document.corresponding(side,begin,end,spans=spans)
         if not selected and not self.document.matches(source,target):self.status='等待当前文本翻译后对齐'
@@ -55,7 +121,7 @@ class SelectionAlignment(QObject):
                 self.ranges.extend((offset+a,offset+b) for a,b in self.cache[key])
             else:
                 if sentence_mapped:self.context[key]=(offset,other_end)
-                if self.api is not None and len(selection)<=1000:self.queue.append((key,offset,selection))
+                if allow_fallback and self.api is not None and len(selection)<=1000:self.queue.append((key,offset,selection))
                 elif not sentence_mapped:self.status='未找到对应词句'
         self._publish()
         if self.queue:self.timer.start(110)

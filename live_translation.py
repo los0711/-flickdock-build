@@ -404,7 +404,8 @@ class LiveEditorTranslation(QObject):
         self.rules = rules
         self.card = LiveTranslationCard(store)
         self.draft = LiveDraft(TranslationApi(transport, self), self)
-        self.alignment = SelectionAlignment(self.draft.document, TranslationApi(transport, self), self)
+        self.alignment = SelectionAlignment(self.draft.document, TranslationApi(transport, self), self,
+                                            document_api=TranslationApi(transport, self))
         self.alignment.presentation.connect(self.card.highlight)
         self.draft.changed.connect(self._render)
         self.card.target_changed.connect(self._choose_language)
@@ -464,6 +465,7 @@ class LiveEditorTranslation(QObject):
         self._sample_feedback.stop()
         self._sample_message = ''
         self.draft.reset()
+        self.alignment.prepare('', '')
         self.alignment.cancel()
         self.card.withdraw(immediate=True)
         self.stopped.emit()
@@ -659,8 +661,12 @@ class LiveEditorTranslation(QObject):
     def _render(self):
         observed = self.editor
         if not self._running or observed is None or not observed.text.strip() or not self.draft.text.strip():
+            self.alignment.prepare('', '')
             self.card.withdraw(immediate=True)
             return
+        self.alignment.document = self.draft.document
+        language = quick_content_language(observed.text) or 'auto'
+        self.alignment.prepare(observed.text, self.draft.result, language, self.draft.target)
         text = self.draft.result or self.draft.error
         if text != self.card.result.toPlainText():
             scroll = self.card.result.verticalScrollBar()

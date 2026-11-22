@@ -11,6 +11,7 @@ class TranslationApi(QObject):
     completed = Signal(int, str, str)
     units_ready = Signal(int, object, str)
     aligned = Signal(int, object, str)
+    document_aligned = Signal(int, object, str)
 
     def __init__(self, cloud_api, parent=None):
         super().__init__(parent)
@@ -91,6 +92,17 @@ class TranslationApi(QObject):
     def align(self,generation,source,target,selection,side,selection_start=0):
         self._advanced(generation,dict(operation='align',source_text=source,target_text=target,
             selection=selection,side=side,selection_start=selection_start),self.aligned)
+
+    def align_document(self, generation, source_text, target_text, source_lang, target_lang):
+        self.cancel();epoch=self.epoch;self.request='starting'
+        def done(value,error):
+            if epoch!=self.epoch:return
+            self.request=None
+            self.document_aligned.emit(generation,value,'' if error is None else '对齐服务暂不可用')
+        request=self.api.request('POST','/v1/align',done,
+            data=dict(source_text=source_text,target_text=target_text,source_lang=source_lang,target_lang=target_lang),
+            authenticated=False,timeout_ms=9000)
+        if self.request is not None:self.request=request
 
     def _advanced(self,generation,values,signal):
         self.cancel();epoch=self.epoch;self.request='starting'

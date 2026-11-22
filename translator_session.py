@@ -432,8 +432,9 @@ class TranslatorSession(QObject):
         self.source_text=record['source_text'];self.result=record['text'];self.original=record['original'] or record['text']
         self._manual_target=True;self._rule_target=False
         self.source=record['source'];self.target=record['target'];self.favorite=record['favorite'];self.history_id=record['id']
-        self.revisions=[];self.source_revisions=[];self.source_original=record['source_text'];self.phase='ready';self.error='';self._dirty=False;self._record_dirty=False;self.changed.emit()
+        self.revisions=[];self.source_revisions=[];self.source_original=record['source_text'];self.phase='ready';self.error='';self._dirty=False;self._record_dirty=False
         self.document.pair(self.source_text,self.result)
+        self.changed.emit()
 
     def forget_record(self,identifier=None):
         if identifier is None or identifier==self.history_id:
