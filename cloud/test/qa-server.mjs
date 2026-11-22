@@ -28,18 +28,28 @@ config.d1_databases[0].migrations_dir=join(root,'migrations');
 const configFile=join(state,'wrangler-test.json');
 await writeFile(configFile,JSON.stringify(config));
 const env={...process.env,WRANGLER_LOG_PATH:join(state,'logs'),WRANGLER_SEND_METRICS:'false',CLOUDFLARE_API_TOKEN:'',CLOUDFLARE_API_KEY:'',CLOUDFLARE_EMAIL:'',CLOUDFLARE_ACCOUNT_ID:''};
-const migrated=spawnSync(process.execPath,[wrangler,'--config',configFile,'d1','migrations','apply','DB','--local','--persist-to',state],{cwd:state,env,encoding:'utf8',timeout:60000,windowsHide:true});
-if(migrated.status!==0)throw Error(migrated.stderr+migrated.stdout);
+const migrated=spawnSync(process.execPath,[wrangler,'--config',configFile,'d1','migrations','apply','DB','--local','--persist-to',state],{cwd:state,env,encoding:'utf8',timeout:45000,windowsHide:true});
+if(migrated.status!==0)throw Error([migrated.error,migrated.stderr,migrated.stdout].filter(Boolean).join('\n'));
 const socket=net.createServer();await new Promise(resolve=>socket.listen(0,'127.0.0.1',resolve));
 const port=socket.address().port;await new Promise(resolve=>socket.close(resolve));
 const secret='qa-local-only-secret-longer-than-32-bytes';
 const server=spawn(process.execPath,[wrangler,'dev','--config',configFile,'--local','--ip','127.0.0.1','--port',String(port),'--persist-to',state,'--var','EMAIL_CODE_SECRET:'+secret,'--var','AUTH_PEPPER:'+secret],{cwd:state,env,windowsHide:true,stdio:['ignore','pipe','pipe']});
-let logs='';server.stdout.on('data',data=>logs+=data);server.stderr.on('data',data=>logs+=data);
+let logs='';
+const capture=data=>{logs=(logs+data).slice(-20000);};
+server.stdout.on('data',capture);
+server.stderr.on('data',capture);
 const origin='http://127.0.0.1:'+port;
-for(let attempt=0;attempt<120;attempt++){
-  if(server.exitCode!==null)throw Error(logs);
-  try{if((await fetch(origin+'/v1/health')).ok)break;}catch{}
-  if(attempt===119)throw Error('local Worker startup timed out: '+logs);
+const deadline=Date.now()+38000;
+while(true){
+  if(server.exitCode!==null||server.signalCode!==null)throw Error(logs);
+  try{
+    const response=await fetch(origin+'/v1/health',{signal:AbortSignal.timeout(750)});
+    if(response.ok){await response.body?.cancel();break;}
+  }catch{}
+  if(Date.now()>=deadline){
+    server.kill();
+    throw Error('local Worker startup timed out: '+logs);
+  }
   await new Promise(resolve=>setTimeout(resolve,250));
 }
 process.stdout.write(origin+'\n');
