@@ -1,5 +1,6 @@
 /** Sentence-only translation and on-demand quote alignment. Never log text. */
-type Env={DB:D1Database;DEEPSEEK_API_KEY?:string};
+import {ChatFailure, withTranslationFailover} from './chat-provider.ts';
+import type {ServiceConfig, ServiceEnv} from './service-config.ts';
 const reply=(data:Record<string,unknown>,status=200)=>Response.json({schema_version:1,...data},{status,headers:{'Cache-Control':'no-store'}});
 const valid=(s:unknown,n:number):s is string=>typeof s==='string'&&!!s.trim()&&[...s].length<=n&&!s.includes('\0');
 const WORD_PART=/[\p{Script=Latin}\p{N}_]/u;
@@ -129,7 +130,7 @@ export const TRANSLATION_LANGUAGES: Readonly<Record<string, string>> = {
   "yo": "约鲁巴语",
   "zu": "祖鲁语"
 };
-export async function translateUnits(value:any,env:Env,upstream:typeof fetch):Promise<Response>{
+export async function translateUnits(value:any,env:ServiceEnv,upstream:typeof fetch,providers:ServiceConfig,signal:AbortSignal):Promise<Response>{
   const bad=()=>reply({error:{code:'INVALID_REQUEST',message:'Invalid bounded translation operation'}},400);
   const align=value.operation==='align';
   const allowed=align?['operation','source_text','target_text','selection','side','selection_start','request_id']:['operation','units','target','source','glossary','request_id'];
@@ -180,34 +181,32 @@ export async function translateUnits(value:any,env:Env,upstream:typeof fetch):Pr
     .bind('translation-request:'+value.request_id,Date.now()+86400000).first();
   if(!reserved)return reply({error:{code:'TRANSLATION_REPEATED',message:'Explicit retry required'}},409);
   try{
-    const response=await upstream('https://api.deepseek.com/chat/completions',{method:'POST',redirect:'manual',signal:AbortSignal.timeout(90000),
-      headers:{Authorization:'Bearer '+env.DEEPSEEK_API_KEY,'Content-Type':'application/json'},
-      body:JSON.stringify({model:'deepseek-flash',thinking:{type:'disabled'},stream:false,max_tokens:align?1200:10000,
-        ...(plainUnit===undefined?{response_format:{type:'json_object'}}:{}),messages:[{role:'system',content:system},{role:'user',content:JSON.stringify(content)}]})});
-    if(!response.ok){await response.body?.cancel();throw new Error('Provider status');}
-    const reader=response.body!.getReader();const chunks:Uint8Array[]=[];let size=0;
-    try{while(true){const {done,value}=await reader.read();if(done)break;size+=value.length;if(size>512*1024){await reader.cancel();throw new Error('Response bound');}chunks.push(value);}}
-    finally{reader.releaseLock();}
-    const bytes=new Uint8Array(size);let offset=0;for(const c of chunks){bytes.set(c,offset);offset+=c.length;}
-    const envelope=JSON.parse(new TextDecoder().decode(bytes));const choice=envelope?.choices?.[0];
-    if(choice?.finish_reason!=='stop'||typeof choice?.message?.content!=='string')throw new Error('Incomplete');
-    const parsed=plainUnit===undefined?JSON.parse(choice.message.content):{units:[{id:plainUnit,text:choice.message.content}]};
-    const usage=providerUsage(envelope.usage);
-    if(align){
-      const other=value.side==='source'?value.target_text:value.source_text;
-      const matches=verifiedQuotes(parsed,other);
-      const single=matches.length===1&&other.indexOf(matches[0].quote)===other.lastIndexOf(matches[0].quote);
-      return reply({operation:'align',quote:single?matches[0].quote:'',certain:matches.length>0,matches,capabilities_version:3,...usage});
-    }
-    if(!Array.isArray(parsed.units)||parsed.units.length!==value.units.length)throw new Error('Missing units');
-    const expected=new Map(value.units.map((u:any)=>[u.id,u.text]));const seen=new Set();let total=0;
-    for(const row of parsed.units){
-      if(!row||!expected.has(row.id)||seen.has(row.id)||!valid(row.text,24000))throw new Error('Invalid unit');
-      for(const term of termsByUnit.get(row.id)??[])if(!containsGlossaryTerm(row.text,term))throw new Error('Protected term');
-      seen.add(row.id);total+=[...row.text].length;
-    }
-    if(total>24000)throw new Error('Output bound');
-    return reply({operation:'translate_units',units:parsed.units.map((r:any)=>({id:r.id,text:r.text.trim()})),capabilities_version:3,
-      ...usage});
+    return await withTranslationFailover(providers,{max_tokens:align?1200:10000,
+      direct:align?undefined:{source:value.source,target:value.target,text:plainUnit===undefined?value.units:value.units[0].text},
+      ...(plainUnit===undefined?{response_format:{type:'json_object'}}:{}),
+      messages:[{role:'system',content:system},{role:'user',content:JSON.stringify(content)}]},upstream,signal,result=>{
+      let parsed:any;
+      try{parsed=plainUnit===undefined?JSON.parse(result.content):{units:[{id:plainUnit,text:result.content}]};}
+      catch{throw new ChatFailure('invalid_json',200);}
+      const usage=providerUsage(result.usage);
+      if(align){
+        if(!parsed||typeof parsed!=='object'||typeof parsed.certain!=='boolean')
+          throw new ChatFailure('invalid_alignment',200);
+        const other=value.side==='source'?value.target_text:value.source_text;
+        const matches=verifiedQuotes(parsed,other);
+        const single=matches.length===1&&other.indexOf(matches[0].quote)===other.lastIndexOf(matches[0].quote);
+        return reply({operation:'align',quote:single?matches[0].quote:'',certain:matches.length>0,matches,capabilities_version:3,...usage});
+      }
+      if(!Array.isArray(parsed.units)||parsed.units.length!==value.units.length)throw new ChatFailure('missing_units',200);
+      const expected=new Map(value.units.map((u:any)=>[u.id,u.text]));const seen=new Set();let total=0;
+      for(const row of parsed.units){
+        if(!row||!expected.has(row.id)||seen.has(row.id)||!valid(row.text,24000))throw new ChatFailure('invalid_unit',200);
+        for(const term of termsByUnit.get(row.id)??[])if(!containsGlossaryTerm(row.text,term))throw new ChatFailure('protected_terms',200);
+        seen.add(row.id);total+=[...row.text].length;
+      }
+      if(total>24000)throw new ChatFailure('output_bound',200);
+      return reply({operation:'translate_units',units:parsed.units.map((r:any)=>({id:r.id,text:r.text.trim()})),capabilities_version:3,
+        ...usage});
+    });
   }catch{return reply({error:{code:'TRANSLATION_PROVIDER',message:'Translation operation did not complete'}},502);}
 }

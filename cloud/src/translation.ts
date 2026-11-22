@@ -1,11 +1,10 @@
 /** Public, bounded translation. Provider credentials never leave this worker. */
 import {containsGlossaryTerm, providerUsage, translateUnits, TRANSLATION_LANGUAGES as TARGETS, TRANSLATION_QUALITY} from './translation_units.ts';
-export interface TranslationEnv {
-  DB:D1Database; DEEPSEEK_API_KEY?:string;
-}
+import {activeServices, usableProviderKey, type ServiceEnv} from './service-config.ts';
+import {ChatFailure, withTranslationFailover} from './chat-provider.ts';
+export type TranslationEnv = ServiceEnv;
 const DAY_MS=86400000, MAX_TEXT_CHARS=16000;
-const MAX_RESPONSE_BYTES=512*1024, MAX_RESULT_CHARS=24000, UPSTREAM_TIMEOUT_MS=90000;
-const MODEL='deepseek-flash';
+const MAX_RESULT_CHARS=24000;
 export class TranslationError extends Error {
   status:number;code:string;details:Record<string,unknown>;
   constructor(status:number,code:string,message:string,details:Record<string,unknown>={}){super(message);this.status=status;this.code=code;this.details=details;}
@@ -24,12 +23,14 @@ async function boundedBytes(stream:ReadableStream<Uint8Array>|null,maximum:numbe
 }
 export async function translate(request:Request,env:TranslationEnv,upstream:typeof fetch=globalThis.fetch.bind(globalThis)):Promise<Response>{
   try{
-    if(!env.DEEPSEEK_API_KEY||! /^[\x21-\x7e]{8,512}$/.test(env.DEEPSEEK_API_KEY))fail(503,'TRANSLATION_UNAVAILABLE','Translation service is not configured');
+    const providers=await activeServices(env);
+    if(!usableProviderKey(providers.primary.key)&&!providers.backup)
+      fail(503,'TRANSLATION_UNAVAILABLE','Translation service is not configured');
     if(!request.headers.get('Content-Type')?.startsWith('application/json'))fail(415,'JSON_REQUIRED','Expected JSON');
     let value:any;
     try{value=JSON.parse(new TextDecoder('utf-8',{fatal:true,ignoreBOM:false}).decode(await boundedBytes(request.body,256*1024)));}
     catch(error){if(error instanceof TranslationError)throw error;fail(400,'INVALID_REQUEST','Invalid translation request');}
-    if(value&&typeof value==='object'&&!Array.isArray(value)&&['translate_units','align'].includes(value.operation))return translateUnits(value,env,upstream);
+    if(value&&typeof value==='object'&&!Array.isArray(value)&&['translate_units','align'].includes(value.operation))return translateUnits(value,env,upstream,providers,request.signal);
     if(!value||typeof value!=='object'||Array.isArray(value)||Object.keys(value).some(key=>!['text','target','request_id','operation','instruction','original','source','glossary','polish_scope'].includes(key)))fail(400,'INVALID_REQUEST','Unknown translation fields');
     const {text,target,request_id:id}=value;
     const operation=value.operation??'translate',source=value.source??'auto',glossary=value.glossary??[];
@@ -59,38 +60,21 @@ export async function translate(request:Request,env:TranslationEnv,upstream:type
     const reserved=await env.DB.prepare('INSERT INTO rates(key,n,expires_at) VALUES(?,1,?) ON CONFLICT(key) DO NOTHING RETURNING n')
       .bind('translation-request:'+id,Date.now()+DAY_MS).first();
     if(!reserved)fail(409,'TRANSLATION_REPEATED','Request already submitted; explicitly retry to start a new translation');
-    let response:Response;
-    let providerStage='connect',providerStatus=0;
     try{
-      response=await upstream('https://api.deepseek.com/chat/completions',{method:'POST',redirect:'manual',
-        signal:AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),headers:{Authorization:'Bearer '+env.DEEPSEEK_API_KEY,'Content-Type':'application/json'},
-        body:JSON.stringify({model:MODEL,thinking:{type:'disabled'},stream:false,max_tokens:8000,
-          messages})});
-      providerStatus=response.status;providerStage='decode';
-      if(!response.ok){
-        let providerCode='';
-        try{
-          const rejected:any=JSON.parse(new TextDecoder().decode(await boundedBytes(response.body,8192)));
-          const candidate=rejected?.error?.code??rejected?.error?.type;
-          if(typeof candidate==='string'&&/^[A-Za-z0-9_-]{1,64}$/.test(candidate))providerCode=candidate;
-        }catch{providerCode='unstructured_error';}
-        throw new TranslationError(502,'TRANSLATION_PROVIDER','Translation provider is temporarily unavailable',
-          {provider_status:response.status,...(providerCode?{provider_code:providerCode}:{})});
-      }
-      const document:any=JSON.parse(new TextDecoder('utf-8',{fatal:true,ignoreBOM:false}).decode(await boundedBytes(response.body,MAX_RESPONSE_BYTES)));
-      const choice=document?.choices?.[0],content=choice?.message?.content;
-      if(choice?.finish_reason!=='stop')fail(502,'TRANSLATION_INCOMPLETE','Translation did not complete');
-      if(typeof content!=='string'||!content.trim()||content.length>MAX_RESULT_CHARS||content.includes('\0'))fail(502,'TRANSLATION_PROVIDER','Invalid translation response');
-      if(terms.some(term=>!containsGlossaryTerm(content,term)))fail(502,'TRANSLATION_TERMS','Protected terms were not preserved');
-      return json({translation:content.trim(),target,operation,...(operation==='polish'?{polish_scope:scope}:{}),capabilities_version:2,...providerUsage(document.usage)});
+      return await withTranslationFailover(providers,{max_tokens:8000,messages,
+        direct:operation==='translate'?{source,target,text}:undefined},upstream,request.signal,result=>{
+        const {content,usage}=result;
+        if(content.length>MAX_RESULT_CHARS)throw new ChatFailure('invalid_response',200);
+        if(terms.some(term=>!containsGlossaryTerm(content,term)))throw new ChatFailure('protected_terms',200);
+        return json({translation:content.trim(),target,operation,...(operation==='polish'?{polish_scope:scope}:{}),
+          capabilities_version:2,...providerUsage(usage)});
+      });
     }catch(error){
-      if(error instanceof TranslationError)throw error;
-      const type=error instanceof Error&&/^[A-Za-z]{1,40}$/.test(error.name)?error.name:'ProviderError';
-      const message=error instanceof Error?error.message:'';
-      const reason=message.includes('Illegal invocation')?'invalid_fetch_receiver':message.includes('AbortSignal.timeout')?'timeout_api_unavailable':
-        message.includes('Network connection')?'network_connection_error':'upstream_request_error';
+      if(!(error instanceof ChatFailure))throw error;
+      if(error.kind==='incomplete')fail(502,'TRANSLATION_INCOMPLETE','Translation did not complete');
+      if(error.kind==='protected_terms')fail(502,'TRANSLATION_TERMS','Protected terms were not preserved');
       throw new TranslationError(502,'TRANSLATION_PROVIDER','Translation provider is temporarily unavailable',
-        {provider_stage:providerStage,provider_status:providerStatus,provider_error_type:type,provider_reason:reason});
+        {provider_status:error.status,provider_reason:error.kind});
     }
   }catch(error){
     if(error instanceof TranslationError)return json({error:{code:error.code,message:error.message,...error.details}},error.status);

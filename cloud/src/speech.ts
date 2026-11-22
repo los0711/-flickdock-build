@@ -1,7 +1,8 @@
 /** BreezeBlue proxy. The desktop never receives provider keys/private voices. */
-export interface SpeechEnv {DB:D1Database;BREEZE_API_KEY?:string;BREEZE_TTS_MODEL?:string;BREEZE_VOICE_ID?:string;}
+import {activeServices,usableProviderKey,type ServiceEnv,type SpeechProvider} from './service-config.ts';
+export type SpeechEnv=ServiceEnv;
 type Voice={voice_id:string;name:string;language_code:string;preview_url?:string};
-const ROOT='https://api.breeze.blue',MAX_REPLY=1792*1024;
+const MAX_REPLY=1792*1024;
 const LANGUAGES=new Set('af ar bg bn bs ca cs da de el en es et eu fa fi fr gl he hi hu id is it ja kn ko lt mr ms ne nl no pl pt ro ru sk sl sq sv sw ta te th tl tr uk ur vi zh'.split(' '));
 const caches=new WeakMap<object,Map<string,{at:number;value:Promise<Voice[]>}>>();
 class SpeechError extends Error {
@@ -34,16 +35,17 @@ function language(value:unknown){
   const code=value==='zh-Hant'?'zh':value==='nb'?'no':value==='fil'?'tl':value;
   if(!LANGUAGES.has(code))fail(400,'SPEECH_LANGUAGE','This speech language is not available');return code;
 }
-function key(env:SpeechEnv){
-  if(!env.BREEZE_API_KEY||!/^[\x21-\x7e]{8,512}$/.test(env.BREEZE_API_KEY))fail(503,'SPEECH_NOT_CONFIGURED','BreezeBlue speech service is not configured');
-  return env.BREEZE_API_KEY!;
+function key(config:SpeechProvider){
+  if(!usableProviderKey(config.key))fail(503,'SPEECH_NOT_CONFIGURED','BreezeBlue speech service is not configured');
+  return config.key;
 }
-async function voices(env:SpeechEnv,code:string,upstream:typeof fetch):Promise<Voice[]>{
+async function voices(env:SpeechEnv,config:SpeechProvider,code:string,upstream:typeof fetch,fresh=false):Promise<Voice[]>{
   let cache=caches.get(env);if(!cache){cache=new Map();caches.set(env,cache);}
-  const existing=cache.get(code);if(existing&&Date.now()-existing.at<300000)return existing.value;
+  const cacheKey=JSON.stringify([config.root,config.key,code]);
+  const existing=cache.get(cacheKey);if(!fresh&&existing&&Date.now()-existing.at<300000)return existing.value;
   const promise=(async()=>{
-    const response=await provider(upstream,ROOT+'/v1/voices?voice_type=default&page_size=50&language_code='+encodeURIComponent(code),
-      {headers:{'xi-api-key':key(env),Accept:'application/json'},redirect:'manual',signal:AbortSignal.timeout(15000)});
+    const response=await provider(upstream,config.root+'/v1/voices?voice_type=default&page_size=50&language_code='+encodeURIComponent(code),
+      {headers:{'xi-api-key':key(config),Accept:'application/json'},redirect:'manual',signal:AbortSignal.timeout(15000)});
     const value=await document(response,256*1024);
     if(!value||!Array.isArray(value.voices))fail(502,'SPEECH_INVALID_RESPONSE','Invalid voice catalog');
     const rows:Voice[]=[];
@@ -54,8 +56,9 @@ async function voices(env:SpeechEnv,code:string,upstream:typeof fetch):Promise<V
     }
     return rows;
   })();
-  if(cache.size>=64)cache.clear();cache.set(code,{at:Date.now(),value:promise});
-  try{return await promise;}catch(error){cache.delete(code);throw error;}
+  if(fresh)return promise;
+  if(cache.size>=64)cache.clear();cache.set(cacheKey,{at:Date.now(),value:promise});
+  try{return await promise;}catch(error){if(cache.get(cacheKey)?.value===promise)cache.delete(cacheKey);throw error;}
 }
 function pitchInstruction(code:string,pitch:number){
   if(Math.abs(pitch-1)<.025)return '';
@@ -65,15 +68,16 @@ function pitchInstruction(code:string,pitch:number){
 }
 export async function speech(request:Request,env:SpeechEnv,accountId:string,upstream:typeof fetch=globalThis.fetch.bind(globalThis)):Promise<Response>{
   try{
-    key(env);const url=new URL(request.url);
+    const {speech:config}=await activeServices(env);
+    key(config);const url=new URL(request.url);
     if(request.method==='GET'&&url.pathname==='/v1/speech/voices'){
       const code=language(url.searchParams.get('language'));
-      const catalog=await voices(env,code,upstream);
-      return json({provider:'BreezeBlue',voices:catalog.map(({preview_url,...row})=>({...row,has_preview:!!preview_url})),default_available:!!env.BREEZE_VOICE_ID||catalog.length>0,pitch_supported:['en','zh'].includes(code)});
+      const catalog=await voices(env,config,code,upstream);
+      return json({provider:'BreezeBlue',voices:catalog.map(({preview_url,...row})=>({...row,has_preview:!!preview_url})),default_available:!!defaultVoice(config,code)||catalog.length>0,pitch_supported:['en','zh'].includes(code)});
     }
     if(request.method==='GET'&&url.pathname==='/v1/speech/preview'){
       const code=language(url.searchParams.get('language')),id=url.searchParams.get('voice_id');
-      const row=(await voices(env,code,upstream)).find(row=>row.voice_id===id);
+      const row=(await voices(env,config,code,upstream)).find(row=>row.voice_id===id);
       if(!row?.preview_url)fail(404,'SPEECH_VOICE','This voice has no preview');
       const response=await provider(upstream,row.preview_url,{redirect:'manual',signal:AbortSignal.timeout(20000)});
       if(!response.ok){await response.body?.cancel();fail(502,'SPEECH_PROVIDER','Voice preview unavailable');}
@@ -94,36 +98,55 @@ export async function speech(request:Request,env:SpeechEnv,accountId:string,upst
        !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(id)||
        typeof speed!=='number'||!Number.isFinite(speed)||speed<.5||speed>2||typeof pitch!=='number'||!Number.isFinite(pitch)||pitch<.8||pitch>1.2)
       fail(400,'INVALID_REQUEST','Invalid speech input');
-    const catalog=await voices(env,code,upstream);
+    const catalog=await voices(env,config,code,upstream);
     const requested=value.voice_id;
     if(requested!==undefined&&(typeof requested!=='string'||requested.length>120))fail(400,'INVALID_REQUEST','Invalid voice');
-    const configured=env.BREEZE_VOICE_ID;
+    const configured=defaultVoice(config,code);
     const voice=requested||configured||catalog[0]?.voice_id;
     if(typeof voice!=='string'||!/^[A-Za-z0-9_-]{1,120}$/.test(voice)||
        voice!==configured&&!catalog.some(row=>row.voice_id===voice))fail(400,'SPEECH_VOICE','Choose an available speech voice');
     const reserved=await env.DB.prepare('INSERT INTO rates(key,n,expires_at) VALUES(?,1,?) ON CONFLICT(key) DO NOTHING RETURNING n')
       .bind('speech-request:'+accountId+':'+id,Date.now()+86400000).first();
     if(!reserved)fail(409,'SPEECH_REPEATED','Speech request already submitted');
-    const instruction=pitchInstruction(code,pitch);
-    const response=await provider(upstream,ROOT+'/v1/text-to-speech/'+encodeURIComponent(voice)+'/with-timestamps?output_format=mp3_24000_64&delivery=sync&enable_logging=false',
-      {method:'POST',redirect:'manual',headers:{'xi-api-key':key(env),'Content-Type':'application/json'},signal:AbortSignal.any([request.signal,AbortSignal.timeout(90000)]),
-       body:JSON.stringify({text,model_id:env.BREEZE_TTS_MODEL||'breeze-tts-2-multilingual',language_code:code,
-         voice_settings:{speed,...(instruction?{guidance_scale:4}:{})},...(instruction?{instructions:instruction}:{})})});
-    const result=await document(response,MAX_REPLY);
-    if(!result||typeof result.audio_base64!=='string'||!result.audio_base64.length||result.audio_base64.length>1500*1024||
-       !/^[A-Za-z0-9+/]+={0,2}$/.test(result.audio_base64)||result.content_type!=='audio/mpeg'||!Array.isArray(result.word_timestamps)||result.word_timestamps.length>2000)
-      fail(502,'SPEECH_INVALID_RESPONSE','Invalid generated audio');
-    const timing=[];
-    for(const row of result.word_timestamps){
-      if(!row||typeof row.word!=='string'||row.word.length>300||typeof row.start!=='number'||typeof row.end!=='number'||
-         !Number.isFinite(row.start)||!Number.isFinite(row.end)||row.start<0||row.end<row.start||row.end>600)
-        fail(502,'SPEECH_INVALID_RESPONSE','Invalid speech timing');
-      timing.push({word:row.word,start:row.start,end:row.end});
-    }
-    timing.sort((a,b)=>a.start-b.start);
-    return json({provider:'BreezeBlue',audio_base64:result.audio_base64,content_type:'audio/mpeg',word_timestamps:timing,voice_id:voice});
+    return json(await synthesize(config,code,voice,text,speed,pitch,upstream,
+      AbortSignal.any([request.signal,AbortSignal.timeout(90000)])));
   }catch(error){
     if(error instanceof SpeechError)return json({error:{code:error.code,message:error.message}},error.status);
     throw error;
   }
+}
+
+function defaultVoice(config:SpeechProvider,code:string):string {
+  return !config.language||config.language===code?config.voice:'';
+}
+
+async function synthesize(config:SpeechProvider,code:string,voice:string,text:string,speed:number,pitch:number,
+    upstream:typeof fetch,signal:AbortSignal){
+  const instruction=pitchInstruction(code,pitch);
+  const response=await provider(upstream,config.root+'/v1/text-to-speech/'+encodeURIComponent(voice)+'/with-timestamps?output_format=mp3_24000_64&delivery=sync&enable_logging=false',
+    {method:'POST',redirect:'manual',headers:{'xi-api-key':key(config),'Content-Type':'application/json'},signal,
+     body:JSON.stringify({text,model_id:config.model,language_code:code,
+       voice_settings:{speed,...(instruction?{guidance_scale:4}:{})},...(instruction?{instructions:instruction}:{})})});
+  const result=await document(response,MAX_REPLY);
+  if(!result||typeof result.audio_base64!=='string'||!result.audio_base64.length||result.audio_base64.length>1500*1024||
+     !/^[A-Za-z0-9+/]+={0,2}$/.test(result.audio_base64)||result.content_type!=='audio/mpeg'||!Array.isArray(result.word_timestamps)||result.word_timestamps.length>2000)
+    fail(502,'SPEECH_INVALID_RESPONSE','Invalid generated audio');
+  const timing=[];
+  for(const row of result.word_timestamps){
+    if(!row||typeof row.word!=='string'||row.word.length>300||typeof row.start!=='number'||typeof row.end!=='number'||
+       !Number.isFinite(row.start)||!Number.isFinite(row.end)||row.start<0||row.end<row.start||row.end>600)
+      fail(502,'SPEECH_INVALID_RESPONSE','Invalid speech timing');
+    timing.push({word:row.word,start:row.start,end:row.end});
+  }
+  timing.sort((a,b)=>a.start-b.start);
+  return {provider:'BreezeBlue',audio_base64:result.audio_base64,content_type:'audio/mpeg',word_timestamps:timing,voice_id:voice};
+}
+
+export async function testSpeechProvider(env:SpeechEnv,config:SpeechProvider,upstream:typeof fetch):Promise<void>{
+  key(config);
+  const code=language(config.language||'zh');
+  const catalog=await voices(env,config,code,upstream,true);
+  const voice=config.voice||catalog[0]?.voice_id;
+  if(!voice||!/^[A-Za-z0-9_-]{1,120}$/.test(voice))fail(502,'SPEECH_NO_VOICE','Voice is unavailable');
+  await synthesize(config,code,voice,code==='zh'?'你好。':'Hello.',1,1,upstream,AbortSignal.timeout(15_000));
 }
