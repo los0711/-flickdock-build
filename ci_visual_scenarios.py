@@ -145,6 +145,8 @@ def measure_scroll(binary, area, screen):
         report['scrollbar_value_changes'] = len(updates)
         report['scrollbar_span'] = bar.value()-before
         report['scrollbar_intervals_ms'] = [round((b[0]-a[0])*1000,3) for a,b in zip(updates,updates[1:])]
+        if len(updates)<18 or report['unique_frames_active']<8:
+            raise RuntimeError('The native scroll did not produce a sustained animated sequence')
         return report
     finally:
         bar.valueChanged.disconnect(moved)
@@ -180,6 +182,7 @@ def main():
     install_smooth_scrolling(app)
     report = dict(version=APP_VERSION, platform=app.platformName(), refresh_hz=screen.refreshRate(),
                   display=screen.geometry().getRect(), dpr=screen.devicePixelRatio(), physical_panel=False,
+                  source_sha=subprocess.check_output(['git','rev-parse','HEAD'],cwd=options.source,text=True).strip(),
                   runner_reduce_motion=native_ui_common.reduced_motion(), test_motion='enabled',
                   capture='DXGI Desktop Duplication' if sys.platform=='win32' else 'ScreenCaptureKit displayTime')
     with tempfile.TemporaryDirectory(prefix='flickdock-desktop-motion-') as folder, ExitStack() as cleanup:
