@@ -356,7 +356,7 @@ def _confirmed_replacement(cancel, expected, text, read_current):
 
 
 def _paste_replacement(cancel, expected, text, target, read_current, *,
-                       accept_unreported_selection=False, select_range=None):
+                       accept_unreported_selection=False, within_editor=False):
     from clipboard_history_native import paste_editor_text, select_editor_text
 
     def same_editor():
@@ -378,7 +378,7 @@ def _paste_replacement(cancel, expected, text, target, read_current, *,
 
     if cancel.is_set() or not same_editor():
         return False
-    if not (select_range is not None and select_range()) and not select_editor_text(target):
+    if not select_editor_text(target,within_editor=within_editor):
         return False
     deadline = monotonic() + .28
     while not all_selected():
@@ -637,8 +637,10 @@ def _mac_editor(cancel, expected, insertion, sample, rejected=None):
                 return bool(span and ax.AXUIElementSetAttributeValue(editor,range_key,span)==0)
 
             def paste_current():
-                return _paste_replacement(cancel,state,insertion,target,read_current,
-                                          accept_unreported_selection=True)
+                return (_paste_replacement(cancel,state,insertion,target,read_current,
+                                           accept_unreported_selection=True)
+                        or _paste_replacement(cancel,state,insertion,target,read_current,
+                                              accept_unreported_selection=True,within_editor=True))
 
             if web:
                 return paste_current()

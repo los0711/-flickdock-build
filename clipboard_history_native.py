@@ -639,7 +639,7 @@ def _wait_mac_paste_read(provider,board,sequence):
 def _paste_mac_payload(payload,target,cancel,*,image=False,files=False,verify_editor=None):
     import Quartz
     import objc
-    from AppKit import NSImage, NSPasteboard, NSPasteboardContentsCurrentHostOnly, NSPasteboardItem, NSPasteboardTypeString
+    from AppKit import NSImage, NSPasteboard, NSPasteboardContentsCurrentHostOnly, NSPasteboardItem
     from Foundation import NSData, NSURL
 
     # Restoring the user's clipboard requires reading it first. Gate that
@@ -683,23 +683,18 @@ def _paste_mac_payload(payload,target,cancel,*,image=False,files=False,verify_ed
         providers=[];items=[];received=Event()
         marker=uuid4().bytes
         native_marker=NSData.dataWithBytes_length_(marker,len(marker))
-        editor_paste=verify_editor is not None and not image and not files
         for entry in values if files else (formats,):
             item=NSPasteboardItem.alloc().init()
-            if editor_paste:
-                if not item.setString_forType_(payload,NSPasteboardTypeString):return MacPasteResult.UNAVAILABLE
-            else:
-                provider=_mac_paste_provider_type().alloc().init()
-                provider.formats=entry
-                provider.received=received
-                provider.error=None
-                provider.finished=False
-                if not item.setDataProvider_forTypes_(provider,list(entry)):return MacPasteResult.UNAVAILABLE
-                providers.append(provider)
+            provider=_mac_paste_provider_type().alloc().init()
+            provider.formats=entry
+            provider.received=received
+            provider.error=None
+            provider.finished=False
+            if not item.setDataProvider_forTypes_(provider,list(entry)):return MacPasteResult.UNAVAILABLE
             for privacy_type in ('org.nspasteboard.TransientType','org.nspasteboard.ConcealedType',_MAC_GENERATED):
                 if not item.setData_forType_(NSData.data(),privacy_type):return MacPasteResult.UNAVAILABLE
             if not item.setData_forType_(native_marker,_MAC_HISTORY_PASTE):return MacPasteResult.UNAVAILABLE
-            items.append(item)
+            items.append(item);providers.append(provider)
         down=Quartz.CGEventCreateKeyboardEvent(None,9,True)  # kVK_ANSI_V
         up=Quartz.CGEventCreateKeyboardEvent(None,9,False)
         if down is None or up is None:return MacPasteResult.UNAVAILABLE
@@ -720,15 +715,7 @@ def _paste_mac_payload(payload,target,cancel,*,image=False,files=False,verify_ed
             if front_target()!=target:return MacPasteResult.FOCUS
             for event in (down,up):
                 Quartz.CGEventSetFlags(event,Quartz.kCGEventFlagMaskCommand)
-                if editor_paste:
-                    Quartz.CGEventPost(Quartz.kCGSessionEventTap,event)
-                else:
-                    Quartz.CGEventPostToPid(target,event)
-            if editor_paste:
-                # Chromium's rich editor can inspect the clipboard in a
-                # separate process. Keep eager plain text available for that read.
-                time.sleep(.35)
-                return MacPasteResult.INSERTED
+                Quartz.CGEventPostToPid(target,event)
             if not _wait_mac_paste_read(providers[0],board,sequence):
                 if board.changeCount()!=sequence:return MacPasteResult.CLIPBOARD_CHANGED
                 return MacPasteResult.DESTINATION_DID_NOT_READ
@@ -798,18 +785,23 @@ def _insert_mac_history(payload,target,*,cancel=None,image=False,files=False,ver
         _IMAGE_PASTE_LOCK.release()
 
 
-def select_editor_text(target):
+def select_editor_text(target,*,within_editor=False):
     """Send the normal Select All command to the foreground editor."""
     if target is None or front_target()!=target:return False
     if sys.platform=='win32':
         return _send_windows_editor_shortcut(_windows(),target,0x41)
     if sys.platform=='darwin':
         import Quartz
-        events=[Quartz.CGEventCreateKeyboardEvent(None,0,pressed) for pressed in (True,False)]  # ANSI A
-        if any(event is None for event in events) or front_target()!=target:return False
-        for event in events:
-            Quartz.CGEventSetFlags(event,Quartz.kCGEventFlagMaskCommand)
-            Quartz.CGEventPost(Quartz.kCGSessionEventTap,event)
+        command=Quartz.kCGEventFlagMaskCommand
+        # Keep the selection inside rich editors whose Select All menu action
+        # is delegated to the containing page rather than to the text field.
+        strokes=((125,command),(126,command|Quartz.kCGEventFlagMaskShift)) if within_editor else ((0,command),)
+        for key,flags in strokes:
+            events=[Quartz.CGEventCreateKeyboardEvent(None,key,pressed) for pressed in (True,False)]
+            if any(event is None for event in events) or front_target()!=target:return False
+            for event in events:
+                Quartz.CGEventSetFlags(event,flags)
+                Quartz.CGEventPostToPid(target,event)
         return True
     return False
 
