@@ -33,6 +33,7 @@ EMBEDDED = '<div id="embedded" contenteditable="true" role="textbox" aria-label=
 def fixture(folder):
     from PySide6.QtCore import QPoint, Qt, QTimer
     from PySide6.QtGui import QAccessible
+    from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication
     from PySide6.QtWebEngineWidgets import QWebEngineView
 
@@ -82,12 +83,7 @@ def fixture(folder):
                                                            Quartz.kCGMouseButtonLeft)
                     Quartz.CGEventPost(Quartz.kCGHIDEventTap,event)
             else:
-                import ctypes
-                point=button_target.mapToGlobal(local)
-                user=ctypes.windll.user32
-                user.SetCursorPos(point.x(),point.y())
-                user.mouse_event(2,0,0,0,0)
-                user.mouse_event(4,0,0,0,0)
+                QTest.mouseClick(button_target,Qt.LeftButton,pos=local)
             clicked = record['field']
         record['active'] = view.isActiveWindow()
         temporary = folder / 'state.tmp'

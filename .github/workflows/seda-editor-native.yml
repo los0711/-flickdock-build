@@ -31,7 +31,9 @@ jobs:
         shell: pwsh
         run: |
           $electron=Join-Path $env:RUNNER_TEMP 'flickdock-electron-qa/node_modules/electron/dist/electron.exe'
-          python ci_seda_web_editor.py $electron seda-editor.json
+          $hostExe=Join-Path (Split-Path $electron) 'Seda.exe'
+          Copy-Item -LiteralPath $electron -Destination $hostExe
+          python ci_seda_web_editor.py $hostExe seda-editor.json
       - name: Regress ordinary Chromium editors
         if: always()
         run: python ci_live_translation_web.py chromium-editor.json

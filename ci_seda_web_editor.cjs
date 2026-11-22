@@ -22,6 +22,8 @@ app.whenReady().then(async () => {
       const field = document.getElementById('field');
       field.dataset.inputs = '0';
       field.addEventListener('input', () => field.dataset.inputs = Number(field.dataset.inputs) + 1);
+      if (${JSON.stringify(editor === 'telegram')})
+        field.addEventListener('paste', (event) => event.preventDefault());
       field.addEventListener('keydown', (event) => {
         if (event.ctrlKey && event.code === ${JSON.stringify(editor === 'whatsapp' ? 'KeyA' : 'KeyV')})
           event.preventDefault();

@@ -130,6 +130,8 @@ def _windows_application_scope(pid, _period):
         size = wintypes.DWORD(1024)
         image = ctypes.create_unicode_buffer(size.value)
         if kernel.QueryFullProcessImageNameW(process, 0, image, ctypes.byref(size)):
+            if basename(image.value).casefold() == 'seda.exe':
+                return 'seda'
             return _application_scope('win32', image.value)
         return 'editor'
     finally:
@@ -338,38 +340,40 @@ def _windows_editor(cancel, expected, insertion, sample, at_pointer, rejected=No
                 return False
             web = web or (com.string(focused,40) or '').casefold() in ('chrome','mozilla')
             def read_current():
-                if document is not None:
-                    latest=com.object(pattern,7)
-                    if latest is not None:
-                        return com.string(latest,12,_INT(max(MAX_TEXT_CHARS,len(insertion.encode('utf-16-le'))//2)+1))
-                    return None
-                return com.string(value,4) if value is not None else None
-
-            def read_web_editor():
-                current = read_current()
-                if current is not None and current.rstrip('\r\n\u2028\u2029') == insertion.rstrip('\r\n\u2028\u2029'):
-                    return insertion
                 if value is not None:
-                    accessible_value = com.string(value,4)
-                    if accessible_value == insertion:
-                        return accessible_value
-                return current
+                    return com.string(value,4)
+                latest=com.object(pattern,7)
+                return com.string(latest,12,_INT(len(insertion)+3)) if latest is not None else None
 
-            if web:
+            if scope == 'seda' and web:
+                def read_seda_draft():
+                    latest = com.object(pattern,7) if pattern is not None else None
+                    if latest is None:
+                        return read_current()
+                    capacity = max(MAX_TEXT_CHARS, len(insertion.encode('utf-16-le')) // 2) + 1
+                    current = com.string(latest,12,_INT(capacity))
+                    # Each Chromium paragraph may contribute a terminal
+                    # layout character absent from the editable DOM value.
+                    if current is not None and current.rstrip() == insertion.rstrip():
+                        return insertion
+                    return current
+
                 # Embedded Chromium hosts can intercept Ctrl+A or select
                 # across the page. The focused editor exposes its own range.
                 if document is not None:
-                    select_range=lambda:_method(document,16,_INT)(document)>=0
-                    if _paste_replacement(cancel,state,insertion,target,read_web_editor,
-                                          select_scope=select_range,allow_unicode=True):
+                    def select_range():
+                        return _method(document,16,_INT)(document) >= 0
+
+                    if _paste_replacement(cancel,state,insertion,target,read_seda_draft,
+                                          select_scope=select_range,allow_unicode=True,
+                                          ignore_trailing_whitespace=True):
                         return True
-                if _same_draft(focused_editor(cancel),state) and value is not None:
-                    if _method(value,3,_INT,ctypes.c_wchar_p)(value,insertion)>=0:
-                        if _confirmed_replacement(cancel,state,insertion,read_web_editor):
-                            return True
-                return _paste_replacement(cancel,state,insertion,target,read_web_editor,
-                                          within_editor=True,accept_unreported_selection=True,
-                                          allow_unicode=True)
+                return _paste_replacement(cancel,state,insertion,target,read_seda_draft,
+                                          within_editor=True,allow_unicode=True,
+                                          ignore_trailing_whitespace=True)
+            if web:
+                return _paste_replacement(cancel,state,insertion,target,read_current,
+                                          accept_unreported_selection=True)
             if value is not None and _method(value, 3, _INT, ctypes.c_wchar_p)(value, insertion) >= 0:
                 if _confirmed_replacement(cancel,state,insertion,read_current):
                     return True
@@ -418,21 +422,27 @@ def _confirmed_replacement(cancel, expected, text, read_current):
 
 def _paste_replacement(cancel, expected, text, target, read_current, *,
                        accept_unreported_selection=False, within_editor=False,
-                       select_scope=None, allow_unicode=False):
+                       select_scope=None, allow_unicode=False, ignore_trailing_whitespace=False):
     from clipboard_history_native import paste_editor_text, select_editor_text, type_windows_editor_text
 
     def same_editor():
         return _same_draft(focused_editor(cancel),expected)
 
+    def selection_covers_draft(current):
+        end = len(expected.text)
+        if current.selection == (0,end):
+            return True
+        return ignore_trailing_whitespace and current.selection == (0,len(expected.text.rstrip()))
+
     def all_selected():
         current = focused_editor(cancel)
-        return _same_draft(current,expected) and current.selection == (0,len(expected.text))
+        return _same_draft(current,expected) and selection_covers_draft(current)
 
     def still_safe():
         current = focused_editor(cancel)
         if not _same_draft(current,expected):
             return False
-        if current.selection == (0,len(expected.text)):
+        if selection_covers_draft(current):
             return True
         # Some web providers report the caret after a successful Select All.
         return (accept_unreported_selection and (current.selection is None
@@ -523,7 +533,7 @@ def _windows_selection(com, pattern, document, text):
     if selected is None:
         return None
     chosen = com.string(selected,12,_INT(MAX_TEXT_CHARS+1))
-    if text and chosen and chosen.rstrip('\r\n\u2028\u2029') == text.rstrip('\r\n\u2028\u2029'):
+    if text and chosen == text:
         return 0,len(text)
     prefix = com.object(document,3)
     if prefix is None:
