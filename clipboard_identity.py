@@ -19,27 +19,36 @@ _fragment=re.compile(r'<!--\s*StartFragment\s*-->(.*?)<!--\s*EndFragment\s*-->',
 
 
 def _image_signature(data):
+    print('IMAGE ID entry',flush=True)
     if 'raw' in data:
+        print('IMAGE ID hash raw',flush=True)
         raw=data['raw'];key=('encoded',hashlib.sha256(raw).digest())
     else:key=('native',data['image'].cacheKey())
     with _lock:
         cached=_images.get(key)
         if cached is not None:_images.move_to_end(key);return cached
     if 'raw' in data:
+        print('IMAGE ID create reader',flush=True)
         buffer=QBuffer();buffer.setData(raw);buffer.open(QIODevice.ReadOnly)
+        print('IMAGE ID read size',flush=True)
         reader=QImageReader(buffer);size=reader.size()
         if not size.isValid() or size.width()*size.height()>MAX_IDENTITY_IMAGE_PIXELS:
             return ('image-encoded',key[1])
+        print('IMAGE ID decode',flush=True)
         image=reader.read()
     else:image=data['image']
+    print('IMAGE ID check image',flush=True)
     if image.isNull():return ('image-invalid',key)
     # Windows may render the same bitmap as DIB, PNG or premultiplied pixels.
     # Compare visible pixels in one representation; transport keeps originals.
+    print('IMAGE ID convert pixels',flush=True)
     canonical=image.convertToFormat(QImage.Format_RGBA8888_Premultiplied)
+    print('IMAGE ID hash pixels',flush=True)
     value=('image',canonical.width(),canonical.height(),hashlib.sha256(canonical.constBits()).digest())
     with _lock:
         _images[key]=value;_images.move_to_end(key)
         while len(_images)>IMAGE_IDENTITY_CACHE_ENTRIES:_images.popitem(last=False)
+    print('IMAGE ID done',flush=True)
     return value
 
 
