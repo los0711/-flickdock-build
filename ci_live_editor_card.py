@@ -136,7 +136,8 @@ def verify(report, folder):
         bounds = QRect(*live.editor.bounds)
         report['editor_probe_ms'] = latencies
         pointer(bounds.center())
-        assert wait_for(lambda: observed(lambda: card.motion.values['y'] == 0 and card.footer_clip.isHidden()))
+        assert wait_for(lambda: observed(lambda: card.motion.values['y'] == 0
+            and card.motion.values['opacity'] == 1 and card.footer_clip.isHidden()))
         frame = card.screen_frame()
         assert not frame.intersects(bounds)
         body = card.surface.mapToGlobal(QPoint(35, card.surface.height() // 2))
@@ -150,11 +151,23 @@ def verify(report, folder):
                           extent=card.footer_clip.height(), footer_open=card._footer_open,
                           cocoa=card._cocoa_card, visible=card.isVisible(), probe_rejections=failures, updates=updates)
         if sys.platform == 'darwin' and card._cocoa_host is not None:
+            import Quartz
             native=card._cocoa_host.panel
             panel_frame=native.frame()
             report.update(pointer_accepted=not native.ignoresMouseEvents(), native_visible=native.isVisible(),
                           native_frame=(panel_frame.origin.x,panel_frame.origin.y,panel_frame.size.width,panel_frame.size.height),
                           native_level=native.level(),native_alpha=native.alphaValue())
+            point=body.toTuple()
+            windows=Quartz.CGWindowListCopyWindowInfo(Quartz.kCGWindowListOptionOnScreenOnly,Quartz.kCGNullWindowID)
+            covering=[]
+            for value in windows:
+                bounds=value.get(Quartz.kCGWindowBounds,{})
+                if bounds.get('X',0)<=point[0]<bounds.get('X',0)+bounds.get('Width',0) and (
+                        bounds.get('Y',0)<=point[1]<bounds.get('Y',0)+bounds.get('Height',0)):
+                    covering.append((value.get(Quartz.kCGWindowNumber),value.get(Quartz.kCGWindowOwnerName),
+                                     value.get(Quartz.kCGWindowOwnerPID),value.get(Quartz.kCGWindowLayer)))
+            report.update(hits=covering,panel_number=native.windowNumber(),body=point)
+            subprocess.run(['/usr/sbin/screencapture','-x','native-card.png'],check=False,timeout=6)
         pointer(body, click=True)
         wait_for(lambda: observed(lambda: False), seconds=.25)
         report['body_preserves_focus'] = front_target() == target and not translator.isVisible()

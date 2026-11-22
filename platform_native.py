@@ -175,6 +175,7 @@ class CocoaNonActivatingHost:
             AppKit.NSWindowStyleMaskBorderless | AppKit.NSWindowStyleMaskNonactivatingPanel,
             AppKit.NSBackingStoreBuffered,False)
         self.panel.setHidesOnDeactivate_(False)
+        self.panel.setFloatingPanel_(True)
         self.panel.setBecomesKeyOnlyIfNeeded_(True)
         self.panel.setOpaque_(False)
         self.panel.setBackgroundColor_(AppKit.NSColor.clearColor())

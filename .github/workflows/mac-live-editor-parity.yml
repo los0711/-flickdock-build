@@ -39,5 +39,7 @@ jobs:
         if: always()
         with:
           name: native-card-${{ runner.os }}
-          path: native-card.json
+          path: |
+            native-card.json
+            native-card.png
           retention-days: 3
