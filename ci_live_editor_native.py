@@ -64,6 +64,14 @@ def fixture(folder):
                 field.setFixedHeight(300)
                 window.resize(530, 340)
                 field.setText(LARGE_DRAFT)
+            if command == 'card':
+                window.raise_()
+                window.activateWindow()
+                if sys.platform == 'darwin':
+                    NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+                field.setFocus()
+                field.setText('请确认收货地址。')
+                field.setCursorPosition(len(field.text()))
             if command == 'exit':
                 app.quit()
                 return

@@ -1,0 +1,43 @@
+name: Verify Windows and Mac live editor parity
+
+on:
+  push:
+    branches: [ci-flickdock-mac-live-parity-1840]
+
+permissions:
+  contents: read
+
+jobs:
+  floating-card:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2025, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    env:
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+      - name: Install isolated desktop fixture dependencies
+        run: python -m pip install 'PySide6==6.12.0' 'cryptography==50.0.2' 'keyring==25.7.0'
+      - name: Install the Mac Accessibility and input bridge
+        if: runner.os == 'macOS'
+        run: python -m pip install 'pyobjc-framework-Quartz>=11,<13'
+      - name: Check startup and the translation controller
+        env:
+          QT_QPA_PLATFORM: 'offscreen'
+        run: python -m unittest -q test_live_translation_card
+      - name: Exercise real mouse input over an inactive translation card
+        run: python ci_live_editor_card.py native-card.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: native-card-${{ runner.os }}
+          path: native-card.json
+          retention-days: 3
