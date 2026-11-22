@@ -9,7 +9,7 @@ import time
 
 from PySide6.QtCore import QEasingCurve, QPoint, QPointF, QRect, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (QAbstractTextDocumentLayout,QColor,QCursor,QFont,QFontMetrics,QFontMetricsF,QPainter,
-    QPainterPath,QPalette,QPixmap,QRegion,QTextDocument,QTextOption)
+    QPainterPath,QPalette,QPixmap,QRegion,QTextDocument,QTextLayout,QTextOption)
 from PySide6.QtWidgets import QWidget
 
 from flickdock_icons import glyph_pixmap
@@ -588,6 +588,36 @@ class ClipboardHistoryPanel(QWidget):
         else:self._captions.move_to_end(key)
         painter.drawText(rect,Qt.AlignVCenter|align,value)
 
+    def _title_lines(self,text,width):
+        width=max(1,math.floor(width))
+        key=(text,width)
+        cached=self._captions.get(key)
+        if cached is not None:
+            self._captions.move_to_end(key)
+            return cached
+        text='\u2028'.join(line.strip() for line in text.splitlines() if line.strip())
+        encoded=text.encode('utf-16-le')
+        font=self._font(13,True)
+        layout=QTextLayout(text,font)
+        options=QTextOption();options.setWrapMode(QTextOption.WrapAtWordBoundaryOrAnywhere)
+        layout.setTextOption(options);layout.beginLayout()
+        lines=[];end=0
+        for _ in range(2):
+            line=layout.createLine()
+            if not line.isValid():break
+            line.setLineWidth(width)
+            # QTextLayout gives offsets in UTF-16 code units.
+            start=line.textStart()*2
+            end=start+line.textLength()*2
+            lines.append(encoded[start:end].decode('utf-16-le').strip())
+        layout.endLayout()
+        if lines and encoded[end:].decode('utf-16-le').strip():
+            lines[-1]=QFontMetrics(font).elidedText(lines[-1]+'…',Qt.ElideRight,width)
+        result=tuple(lines)
+        self._captions[key]=result
+        if len(self._captions)>480:self._captions.popitem(last=False)
+        return result
+
     def _glyph(self,painter,key,rect,color):
         size=round(min(rect.width(),rect.height()))
         dpr=self.devicePixelRatioF()
@@ -717,11 +747,18 @@ class ClipboardHistoryPanel(QWidget):
                 self._glyph(painter,glyph,thumb.adjusted(10,10,-10,-10),muted.name())
             else:
                 self._draw_thumbnail(painter,thumb,image,RADIUS_CONTROL_PX)
-        pin=QRectF(rect.right()-55,rect.y()+(ROW-23)/2,23,23)
-        remove=QRectF(rect.right()-29,pin.y(),23,23)
-        title=QRectF(title_x,rect.y()+(ROW-34)/2,pin.left()-title_x-4,18)
-        meta=QRectF(title.x(),title.bottom(),title.width(),16)
-        self._caption(painter,row['title'],title,ink,size=13,bold=True)
+        action_size,action_gap=23,2
+        pin=QRectF(rect.right()-31,rect.top()+(ROW-2*action_size-action_gap)/2,action_size,action_size)
+        remove=pin.translated(0,action_size+action_gap)
+        title_width=pin.left()-title_x-6
+        preview=(row.get('excerpt') or row['title']) if row['kind']=='text' else row['title']
+        title_lines=self._title_lines(preview,title_width)
+        line_height,meta_height=17,16
+        top=rect.y()+(ROW-len(title_lines)*line_height-meta_height)/2
+        for item in title_lines:
+            self._caption(painter,item,QRectF(title_x,top,title_width,line_height),ink,size=13,bold=True)
+            top+=line_height
+        meta=QRectF(title_x,top,title_width,meta_height)
         label={'text':'文字','link':'链接','image':'图片','file':'文件引用'}[row['kind']]
         stamp=time.strftime('%m-%d %H:%M',time.localtime(row['updated']))
         self._caption(painter,label+' · '+stamp,meta,muted,size=10)
