@@ -354,7 +354,8 @@ def _windows_editor(cancel, expected, insertion, sample, at_pointer, rejected=No
                                           select_scope=select_range,allow_unicode=True):
                         return True
                 return _paste_replacement(cancel,state,insertion,target,read_current,
-                                          accept_unreported_selection=True)
+                                          within_editor=True,accept_unreported_selection=True,
+                                          allow_unicode=True)
             if value is not None and _method(value, 3, _INT, ctypes.c_wchar_p)(value, insertion) >= 0:
                 if _confirmed_replacement(cancel,state,insertion,read_current):
                     return True

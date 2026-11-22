@@ -43,6 +43,14 @@ def verify(folder, electron, editor):
             _windows_editor(stop,None,None,False,False,rejected=problems.append)
             return dict(accessible=False,focus=sample().get('focused'),problems=problems)
         flags=[]
+        observations=[]
+        actual_reader=focused_editor
+        def read(*args,**options):
+            current=actual_reader(*args,**options)
+            if len(observations)<24:
+                observations.append((current.selection, len(current.text))
+                                    if current is not None else None)
+            return current
         selector=native.select_editor_text
         paste=native.paste_editor_text
         typed=getattr(native,'type_windows_editor_text',None)
@@ -54,6 +62,7 @@ def verify(folder, electron, editor):
             return run
         from contextlib import ExitStack
         with ExitStack() as stack:
+            stack.enter_context(patch('live_translation_editor.focused_editor',side_effect=read))
             stack.enter_context(patch.object(native,'select_editor_text',event('keyboard_selection',selector)))
             stack.enter_context(patch.object(native,'paste_editor_text',event('paste',paste)))
             if typed is not None:stack.enter_context(patch.object(native,'type_windows_editor_text',event('unicode',typed)))
@@ -64,7 +73,8 @@ def verify(folder, electron, editor):
                     actually_replaced=observed.get('text')==TARGET,input_events=observed.get('inputs'),
                     original_preserved=observed.get('text')==SOURCE,
                     adjacent_preserved=observed.get('other')=='Other input must remain unchanged',
-                    clipboard_preserved=observed.get('clipboard')==CLIPBOARD, events=flags)
+                    clipboard_preserved=observed.get('clipboard')==CLIPBOARD, events=flags,
+                    **({} if accepted else {'selection_reads':observations}))
     finally:
         (folder/'exit').touch()
         try:child.wait(timeout=8)

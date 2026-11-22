@@ -22,6 +22,10 @@ app.whenReady().then(async () => {
       const field = document.getElementById('field');
       field.dataset.inputs = '0';
       field.addEventListener('input', () => field.dataset.inputs = Number(field.dataset.inputs) + 1);
+      field.addEventListener('keydown', (event) => {
+        if (event.ctrlKey && event.code === ${JSON.stringify(editor === 'whatsapp' ? 'KeyA' : 'KeyV')})
+          event.preventDefault();
+      });
     </script>`);
   const window = new BrowserWindow({
     width: 660, height: 420, x: 120, y: 130, autoHideMenuBar: true,

@@ -512,11 +512,18 @@ def _send_windows_paste(user,target):
     return _send_windows_editor_shortcut(user,target,0x56)
 
 
-def _send_windows_editor_shortcut(user,target,key):
+def _send_windows_editor_shortcut(user,target,key,*,range_start=None):
     if front_target()!=target or any(user.GetAsyncKeyState(key)&0x8000 for key in (0x10,0x11,0x12,0x5B,0x5C)):
         return False
-    events=(_Input*4)(*(_Input(1,_InputValue(keyboard=_Keyboard(key,0,flags,0,0)))
-                       for key,flags in ((0x11,0),(key,0),(key,2),(0x11,2))))
+    strokes=[(0x11,0)]
+    if range_start is not None:
+        strokes.extend(((range_start,0),(range_start,2),(0x10,0)))
+    strokes.extend(((key,0),(key,2)))
+    if range_start is not None:
+        strokes.append((0x10,2))
+    strokes.append((0x11,2))
+    events=(_Input*len(strokes))(*(_Input(1,_InputValue(keyboard=_Keyboard(key,0,flags,0,0)))
+                                  for key,flags in strokes))
     user.SendInput.argtypes=(wintypes.UINT,ctypes.POINTER(_Input),ctypes.c_int)
     return user.SendInput(len(events),events,ctypes.sizeof(_Input))==len(events)
 
@@ -805,7 +812,12 @@ def select_editor_text(target,*,within_editor=False):
     """Send the normal Select All command to the foreground editor."""
     if target is None or front_target()!=target:return False
     if sys.platform=='win32':
-        return _send_windows_editor_shortcut(_windows(),target,0x41)
+        user=_windows()
+        if within_editor:
+            # Ctrl+End and Ctrl+Shift+Home are confined to the active editor
+            # in Chromium, even when the host handles Ctrl+A itself.
+            return _send_windows_editor_shortcut(user,target,0x24,range_start=0x23)
+        return _send_windows_editor_shortcut(user,target,0x41)
     if sys.platform=='darwin':
         import Quartz
         command=Quartz.kCGEventFlagMaskCommand
