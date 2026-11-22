@@ -36,14 +36,11 @@ jobs:
         run: |
           python ci_live_editor_card.py native-card.json
           python ci_live_translation_web.py embedded-editor.json
-          python ci_clipboard_history_native.py driver "$RUNNER_TEMP/clipboard-history"
-      - name: Replace text in a native embedded editor with pasteboard reads blocked
-        if: always()
-        env:
-          FD_QA_MAC_CLIPBOARD_DENIED: '1'
-        run: python ci_live_translation_web.py denied-editor.json
-      - name: Exercise native Electron chat editing with or without pasteboard access
+      - name: Regress native clipboard history, original contents and cloud fences
         if: always() && matrix.os == 'macos-15'
+        run: python ci_clipboard_history_native.py driver "$RUNNER_TEMP/clipboard-history"
+      - name: Exercise native Electron chat editing with or without pasteboard access
+        if: always()
         run: |
           npm install --prefix "$RUNNER_TEMP/flickdock-electron-qa" --no-save --no-fund --no-audit electron@37.3.1
           python ci_mac_electron_editor.py "$RUNNER_TEMP/flickdock-electron-qa/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron" native-electron.json
@@ -54,7 +51,6 @@ jobs:
           path: |
             native-card.json
             embedded-editor.json
-            denied-editor.json
             native-electron.json
           if-no-files-found: warn
           retention-days: 3

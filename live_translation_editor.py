@@ -756,19 +756,19 @@ def _mac_editor(cancel, expected, insertion, sample, rejected=None):
 
             blocker=mac_history_paste_blocker()
             if blocker is None:
-                # Use the focused range before a page's Select All command.
-                if _paste_replacement(cancel,state,insertion,target,read_current,
-                                      select_scope=select_range,verify_selection=full_selection):
-                    return True
-                if _paste_replacement(cancel,state,insertion,target,read_current,
-                                      accept_unreported_selection=True,within_editor=web):
+                if web and _paste_replacement(cancel,state,insertion,target,read_current,
+                                               select_scope=select_range,verify_selection=full_selection):
                     return True
                 if not web and _paste_replacement(cancel,state,insertion,target,read_current,
-                                                   accept_unreported_selection=True,within_editor=True):
+                                                   accept_unreported_selection=True):
+                    return True
+                if _paste_replacement(cancel,state,insertion,target,read_current,within_editor=True,
+                                      accept_unreported_selection=not web):
                     return True
             if not _same_draft(focused_editor(cancel),state):return False
             def type_into_selection():
-                for select_text in (select_range,lambda:select_editor_text(target,within_editor=True)):
+                select_scoped=lambda:select_editor_text(target,within_editor=True)
+                for select_text in ((select_range,select_scoped) if web else (select_scoped,select_range)):
                     if not full_selection() and select_text():
                         deadline=monotonic()+.25
                         while not full_selection() and monotonic()<deadline and not cancel.wait(.02):
@@ -801,5 +801,7 @@ def _mac_editor(cancel, expected, insertion, sample, rejected=None):
             range_value = retain(ax.AXValueCreate(4, ctypes.byref(caret)))
             if range_value:
                 ax.AXUIElementSetAttributeValue(editor, range_key, range_value)
-            return _confirmed_replacement(cancel,state,insertion,read_current)
+            if _confirmed_replacement(cancel,state,insertion,read_current):
+                return True
+            return MacPasteResult.CLIPBOARD_PERMISSION if blocker=='clipboard' else False
         return state
