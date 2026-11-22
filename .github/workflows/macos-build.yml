@@ -154,7 +154,7 @@ jobs:
       - name: Verify QuickTime output and hardware acceleration
         run: |
           python - <<'PY'
-          import hashlib,io,urllib.request,zipfile
+          import hashlib,io,shutil,urllib.request,zipfile
           from pathlib import Path
           url='https://files.pythonhosted.org/packages/40/5c/f3d8a657d362cc93b81aab8feda487317da5b5d31c0e1fdfd5e986e55d17/imageio_ffmpeg-0.6.0-py3-none-macosx_11_0_arm64.whl'
           with urllib.request.urlopen(url,timeout=90) as response: archive=response.read(21113892)
@@ -162,6 +162,11 @@ jobs:
           with zipfile.ZipFile(io.BytesIO(archive)) as bundle: binary=bundle.read('imageio_ffmpeg/binaries/ffmpeg-macos-aarch64-v7.1')
           assert len(binary)==49368728 and hashlib.sha256(binary).hexdigest()=='6d175a4743ca50256e89a8cdd731100f9cee33bd79aeea46894d209410dc6617'
           path=Path('assets/video-tools/ffmpeg');path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(binary);path.chmod(0o755)
+          # The builder needs the same verified binary and checks the digest
+          # again. Reuse the runner's preflight instead of fetching it twice.
+          cache=Path.home()/'Library/Application Support/FlickDock/video-runtime'/'6d175a4743ca50256e89a8cdd731100f9cee33bd79aeea46894d209410dc6617'
+          cache.mkdir(parents=True,exist_ok=True)
+          shutil.copy2(path,cache/'ffmpeg')
           PY
           FLICKDOCK_TEST_FFMPEG="$PWD/assets/video-tools/ffmpeg" python -m unittest test_video_compatibility -v
           python ci_mac_video_compat.py
