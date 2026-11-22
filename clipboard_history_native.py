@@ -639,7 +639,7 @@ def _wait_mac_paste_read(provider,board,sequence):
 def _paste_mac_payload(payload,target,cancel,*,image=False,files=False,verify_editor=None):
     import Quartz
     import objc
-    from AppKit import NSImage, NSPasteboard, NSPasteboardContentsCurrentHostOnly, NSPasteboardItem
+    from AppKit import NSImage, NSPasteboard, NSPasteboardContentsCurrentHostOnly, NSPasteboardItem, NSPasteboardTypeString
     from Foundation import NSData, NSURL
 
     # Restoring the user's clipboard requires reading it first. Gate that
@@ -683,18 +683,23 @@ def _paste_mac_payload(payload,target,cancel,*,image=False,files=False,verify_ed
         providers=[];items=[];received=Event()
         marker=uuid4().bytes
         native_marker=NSData.dataWithBytes_length_(marker,len(marker))
+        editor_paste=verify_editor is not None and not image and not files
         for entry in values if files else (formats,):
             item=NSPasteboardItem.alloc().init()
-            provider=_mac_paste_provider_type().alloc().init()
-            provider.formats=entry
-            provider.received=received
-            provider.error=None
-            provider.finished=False
-            if not item.setDataProvider_forTypes_(provider,list(entry)):return MacPasteResult.UNAVAILABLE
+            if editor_paste:
+                if not item.setString_forType_(payload,NSPasteboardTypeString):return MacPasteResult.UNAVAILABLE
+            else:
+                provider=_mac_paste_provider_type().alloc().init()
+                provider.formats=entry
+                provider.received=received
+                provider.error=None
+                provider.finished=False
+                if not item.setDataProvider_forTypes_(provider,list(entry)):return MacPasteResult.UNAVAILABLE
+                providers.append(provider)
             for privacy_type in ('org.nspasteboard.TransientType','org.nspasteboard.ConcealedType',_MAC_GENERATED):
                 if not item.setData_forType_(NSData.data(),privacy_type):return MacPasteResult.UNAVAILABLE
             if not item.setData_forType_(native_marker,_MAC_HISTORY_PASTE):return MacPasteResult.UNAVAILABLE
-            items.append(item);providers.append(provider)
+            items.append(item)
         down=Quartz.CGEventCreateKeyboardEvent(None,9,True)  # kVK_ANSI_V
         up=Quartz.CGEventCreateKeyboardEvent(None,9,False)
         if down is None or up is None:return MacPasteResult.UNAVAILABLE
@@ -712,9 +717,18 @@ def _paste_mac_payload(payload,target,cancel,*,image=False,files=False,verify_ed
             if front_target()!=target:return MacPasteResult.FOCUS
             if verify_editor is not None and not verify_editor():return MacPasteResult.FOCUS
             if board.changeCount()!=sequence:return MacPasteResult.CLIPBOARD_CHANGED
+            if front_target()!=target:return MacPasteResult.FOCUS
             for event in (down,up):
                 Quartz.CGEventSetFlags(event,Quartz.kCGEventFlagMaskCommand)
-                Quartz.CGEventPostToPid(target,event)
+                if editor_paste:
+                    Quartz.CGEventPost(Quartz.kCGSessionEventTap,event)
+                else:
+                    Quartz.CGEventPostToPid(target,event)
+            if editor_paste:
+                # Chromium's rich editor can inspect the clipboard in a
+                # separate process. Keep eager plain text available for that read.
+                time.sleep(.35)
+                return MacPasteResult.INSERTED
             if not _wait_mac_paste_read(providers[0],board,sequence):
                 if board.changeCount()!=sequence:return MacPasteResult.CLIPBOARD_CHANGED
                 return MacPasteResult.DESTINATION_DID_NOT_READ
@@ -795,7 +809,7 @@ def select_editor_text(target):
         if any(event is None for event in events) or front_target()!=target:return False
         for event in events:
             Quartz.CGEventSetFlags(event,Quartz.kCGEventFlagMaskCommand)
-            Quartz.CGEventPostToPid(target,event)
+            Quartz.CGEventPost(Quartz.kCGSessionEventTap,event)
         return True
     return False
 

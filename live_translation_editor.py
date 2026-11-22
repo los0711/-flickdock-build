@@ -638,7 +638,7 @@ def _mac_editor(cancel, expected, insertion, sample, rejected=None):
 
             def paste_current():
                 return _paste_replacement(cancel,state,insertion,target,read_current,
-                                          accept_unreported_selection=True,select_range=select_range)
+                                          accept_unreported_selection=True)
 
             if web:
                 return paste_current()

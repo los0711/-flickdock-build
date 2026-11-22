@@ -1,6 +1,7 @@
 """Install a higher-version fixture, reproduce the skip and verify the replacement PKG."""
 from __future__ import annotations
 
+import argparse
 import json
 import os
 from pathlib import Path
@@ -67,7 +68,7 @@ def newer_fixture(folder):
     return app
 
 
-def verify(legacy, retained, output):
+def verify(legacy, retained, output, *, candidate=None):
     if sys.platform != 'darwin' or os.environ.get('GITHUB_ACTIONS') != 'true':
         raise RuntimeError('This installation check requires a disposable macOS runner.')
     assert not APP.exists() and not processes(), 'Refusing to overwrite an existing application'
@@ -75,8 +76,9 @@ def verify(legacy, retained, output):
     scratch = output.parent
     assert app_version(retained) == APP_VERSION
     expected_hash = _checksum(retained / 'Contents/MacOS/FlickDock')
-    staged = output / f'FlickDock-{APP_VERSION}-macOS-arm64-cover.pkg'
-    _create_pkg(retained, staged, APP_VERSION)
+    staged = candidate or output / f'FlickDock-{APP_VERSION}-macOS-arm64-cover.pkg'
+    if candidate is None:
+        _create_pkg(retained, staged, APP_VERSION)
     expanded = scratch / 'verified-cover'
     command('/usr/sbin/pkgutil', '--expand-full', staged, expanded)
     assert _checksum(expanded / 'Payload/FlickDock.app/Contents/MacOS/FlickDock') == expected_hash
@@ -127,4 +129,11 @@ def verify(legacy, retained, output):
 
 
 if __name__ == '__main__':
-    verify(*(Path(value).resolve() for value in sys.argv[1:]))
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('legacy',type=Path)
+    parser.add_argument('retained',type=Path)
+    parser.add_argument('output',type=Path)
+    parser.add_argument('--candidate',type=Path)
+    options = parser.parse_args()
+    verify(options.legacy.resolve(),options.retained.resolve(),options.output.resolve(),
+           candidate=options.candidate.resolve() if options.candidate else None)
