@@ -8,8 +8,8 @@ import tempfile
 import time
 from types import SimpleNamespace
 
-from PySide6.QtCore import QMimeData,QUrl,Qt
-from PySide6.QtGui import QColor,QImage
+from PySide6.QtCore import QMimeData,QPoint,QPointF,QUrl,Qt
+from PySide6.QtGui import QColor,QCursor,QImage
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
@@ -88,11 +88,15 @@ def run(root,credentials):
         prior=len(successful_pastes)
         history._create_panel()
         panel=history.panel
+        activated=[]
+        record_activation=activated.append
+        panel.activated.connect(record_activation)
         try:
             wait(lambda:(target_dir/'pid').exists(),8)
             pid=int((target_dir/'pid').read_text())
             wait(lambda:current_process()==pid,8)
             panel.setGeometry(515,110,332,640);panel.show()
+            if side=='win':QCursor.setPos(panel.mapToGlobal(QPoint(140,34)))
             QTest.qWait(120)
             assert current_process()==pid, 'clipboard history took focus'
             panel.show_all()
@@ -100,8 +104,14 @@ def run(root,credentials):
             panel.repaint()
             card=next(rect for part,identity,rect in panel._hits if part=='card' and identity==key)
             point=(panel._paint_origin()+card.center()*panel._panel_scale).toPoint()
+            if side=='win':
+                QCursor.setPos(panel.mapToGlobal(point))
+                QTest.qWait(130)
+            assert panel._hit(QPointF(point))==('card',key), (point,panel._painted)
             QTest.mouseClick(panel,Qt.LeftButton,Qt.NoModifier,point)
-            wait(lambda:len(successful_pastes)==prior+1 and history._insert_job is None,8)
+            assert activated==[key], ('history card did not activate',len(activated),panel.expanded)
+            wait(lambda:bool(panel._feedback) or (len(successful_pastes)==prior+1 and history._insert_job is None),8)
+            assert len(successful_pastes)==prior+1, (panel._feedback,current_process()==pid)
             if kind=='image':
                 assert json.loads((target_dir/'image-incoming.json').read_bytes())['color']==fixture
             else:
@@ -110,6 +120,7 @@ def run(root,credentials):
             assert board.text()==original
             assert (client._seen,len(mutations),history.total)==before
         finally:
+            panel.activated.disconnect(record_activation)
             panel.hide()
             target.terminate();target.wait(timeout=5)
 
