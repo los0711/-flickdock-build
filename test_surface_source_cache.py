@@ -35,6 +35,7 @@ class SourceCacheTests(unittest.TestCase):
             self.preview.name.setText('Changed only the selected file label')
             self.paint()
             source.assert_not_called()
+        self.assertTrue(effect._source_cache.isNull())
         image=self.shelf.grab().toImage()
         ratio=image.devicePixelRatio()
         right=self.shelf.card.geometry().topRight()
