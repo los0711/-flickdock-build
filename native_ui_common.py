@@ -514,8 +514,11 @@ def prepare_combo_popup(popup, view, colors, *, margin, highlight_insets=None):
         # Cocoa's popup tracking. Composite into the existing popup instead.
         popup.setProperty('flickdockInlineDropdown',True)
     rounded_popup(popup)
-    popup.setObjectName('flickdockComboPopup')
     fill=colors['popup_surface']
+    signature=(view,fill,colors['input_border'],margin,highlight_insets)
+    if getattr(popup,'_combo_presentation_style',None)==signature:return
+    popup._combo_presentation_style=signature
+    popup.setObjectName('flickdockComboPopup')
     popup.setProperty('dropdownTheme','light' if qss_color(fill).lightness()>128 else 'dark')
     view.setProperty('scrollBackdropColor',fill)
     from dropdown_motion import install_item_highlight
