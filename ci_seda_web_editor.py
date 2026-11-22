@@ -58,16 +58,24 @@ def click_insert(folder, sample):
             return {'card_ready':True,'hover_opens':False}
         clicks=[]
         card.insert.clicked.connect(lambda _checked=False:clicks.append(True))
-        button=card.screen_point(card.insert,card.insert.rect().center())
-        pointer(button)
-        wait_for(lambda:observed(lambda:False),interval=.14)
-        pointer(button,click=True)
+        for _ in range(2):
+            button=card.screen_point(card.insert,card.insert.rect().center())
+            pointer(button)
+            wait_for(lambda:observed(lambda:False),interval=.12)
+            user=ctypes.windll.user32
+            user.mouse_event(2,0,0,0,0)
+            wait_for(lambda:observed(lambda:False),interval=.08)
+            user.mouse_event(4,0,0,0,0)
+            if wait_for(lambda:observed(lambda:bool(clicks)),interval=.35):
+                break
         applied=wait_for(lambda:observed(lambda:sample().get('text')==TARGET
             and sample().get('clipboard')==CLIPBOARD and not live._submitting),interval=6)
         return {'card_ready':True,'hover_opens':True,'click_replaced':bool(applied),
                 'click_received':bool(clicks),'focus_retained':front_target()==target,
                 'input_events':sample().get('inputs'),
-                'adjacent_preserved':sample().get('other')=='Other input must remain unchanged'}
+                'adjacent_preserved':sample().get('other')=='Other input must remain unchanged',
+                **({} if clicks else {'point':button.toTuple(),'card_frame':card.screen_frame().getRect(),
+                    'status':live._sample_message,'entered':card.insert.underMouse()})}
     finally:
         live.stop()
         live.pool.waitForDone(4000)
