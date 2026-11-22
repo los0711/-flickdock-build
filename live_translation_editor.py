@@ -422,7 +422,8 @@ def _confirmed_replacement(cancel, expected, text, read_current):
 
 def _paste_replacement(cancel, expected, text, target, read_current, *,
                        accept_unreported_selection=False, within_editor=False,
-                       select_scope=None, allow_unicode=False, ignore_trailing_whitespace=False):
+                       select_scope=None, allow_unicode=False, ignore_trailing_whitespace=False,
+                       verify_selection=None):
     from clipboard_history_native import paste_editor_text, select_editor_text, type_windows_editor_text
 
     def same_editor():
@@ -435,10 +436,12 @@ def _paste_replacement(cancel, expected, text, target, read_current, *,
         return ignore_trailing_whitespace and current.selection == (0,len(expected.text.rstrip()))
 
     def all_selected():
+        if verify_selection is not None:return verify_selection()
         current = focused_editor(cancel)
         return _same_draft(current,expected) and selection_covers_draft(current)
 
     def still_safe():
+        if verify_selection is not None:return verify_selection()
         current = focused_editor(cancel)
         if not _same_draft(current,expected):
             return False
@@ -560,6 +563,9 @@ def _mac_editor_api():
     ax.AXUIElementGetPid.argtypes = [_POINTER, ctypes.POINTER(_INT)]
     ax.AXUIElementIsAttributeSettable.argtypes = [_POINTER, _POINTER, ctypes.POINTER(ctypes.c_ubyte)]
     ax.AXUIElementSetAttributeValue.argtypes = [_POINTER, _POINTER, _POINTER]
+    ax.AXUIElementCopyParameterizedAttributeValue.argtypes = [_POINTER,_POINTER,_POINTER,
+                                                               ctypes.POINTER(_POINTER)]
+    ax.AXUIElementCopyParameterizedAttributeValue.restype = _INT
     ax.AXValueCreate.argtypes = [_INT, _POINTER]
     ax.AXValueCreate.restype = _POINTER
     cf.CFHash.argtypes = [_POINTER]
@@ -610,6 +616,12 @@ def _mac_editor(cancel, expected, insertion, sample, rejected=None):
         def attr(element, name):
             result = _POINTER()
             if ax.AXUIElementCopyAttributeValue(element, key(name), ctypes.byref(result)) == 0:
+                return retain(result.value)
+            return None
+
+        def parameterized(element,name,parameter):
+            result=_POINTER()
+            if ax.AXUIElementCopyParameterizedAttributeValue(element,key(name),parameter,ctypes.byref(result))==0:
                 return retain(result.value)
             return None
 
@@ -719,7 +731,17 @@ def _mac_editor(cancel, expected, insertion, sample, rejected=None):
                 return read_string(attr(editor,b'AXValue'))
 
             range_key = key(b'AXSelectedTextRange')
+            marker_key=key(b'AXSelectedTextMarkerRange')
+            def marker_text(marker):
+                return read_string(parameterized(editor,b'AXStringForTextMarkerRange',marker)) if marker else None
+
             def select_range():
+                if web and settable(marker_key):
+                    marker=parameterized(editor,b'AXTextMarkerRangeForUIElement',editor)
+                    selected_text=marker_text(marker)
+                    if (selected_text and selected_text.rstrip()==text.rstrip()
+                            and ax.AXUIElementSetAttributeValue(editor,marker_key,marker)==0):
+                        return True
                 entire = offsets(0,len(text.encode('utf-16-le'))//2)
                 span = retain(ax.AXValueCreate(4,ctypes.byref(entire))) if settable(range_key) else None
                 return bool(span and ax.AXUIElementSetAttributeValue(editor,range_key,span)==0)
@@ -729,12 +751,14 @@ def _mac_editor(cancel, expected, insertion, sample, rejected=None):
                 if not _same_draft(current,state) or secure_input():return False
                 if current.selection==(0,len(text)):return True
                 chosen=read_string(attr(editor,b'AXSelectedText'))
+                if not chosen and web:chosen=marker_text(attr(editor,b'AXSelectedTextMarkerRange'))
                 return bool(chosen and chosen.rstrip()==text.rstrip())
 
             blocker=mac_history_paste_blocker()
             if blocker is None:
                 # Use the focused range before a page's Select All command.
-                if _paste_replacement(cancel,state,insertion,target,read_current,select_scope=select_range):
+                if _paste_replacement(cancel,state,insertion,target,read_current,
+                                      select_scope=select_range,verify_selection=full_selection):
                     return True
                 if _paste_replacement(cancel,state,insertion,target,read_current,
                                       accept_unreported_selection=True,within_editor=web):
