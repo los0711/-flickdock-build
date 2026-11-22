@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ctypes
+from functools import cache
 import os
 from pathlib import Path
 import sys
@@ -164,13 +165,23 @@ def set_cocoa_panel_pointer(widget, enabled):
         return False
 
 
+@cache
+def _cocoa_keyboard_panel():
+    from AppKit import NSPanel
+    class FlickDockKeyboardPanel(NSPanel):
+        def canBecomeKeyWindow(self):return True
+        def canBecomeMainWindow(self):return False
+    return FlickDockKeyboardPanel
+
+
 class CocoaNonActivatingHost:
     """An AppKit panel initialized with nonactivation before embedding Qt."""
-    def __init__(self, widget):
+    def __init__(self, widget, *, keyboard=False):
         import AppKit
         import objc
         self._appkit=AppKit
-        self.panel=AppKit.NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
+        panel_type=_cocoa_keyboard_panel() if keyboard else AppKit.NSPanel
+        self.panel=panel_type.alloc().initWithContentRect_styleMask_backing_defer_(
             AppKit.NSMakeRect(0,0,widget.width(),widget.height()),
             AppKit.NSWindowStyleMaskBorderless | AppKit.NSWindowStyleMaskNonactivatingPanel,
             AppKit.NSBackingStoreBuffered,False)
@@ -190,6 +201,7 @@ class CocoaNonActivatingHost:
         self.window=widget.windowHandle()
         self.window.setParent(self.parent)
         self.window.setPosition(0,0)
+        self._mouse_monitor=None
 
     def place(self, geometry):
         appkit=self._appkit
@@ -199,11 +211,21 @@ class CocoaNonActivatingHost:
         if frame!=self.panel.frame():self.panel.setFrame_display_(frame,False)
         if self.window.size()!=geometry.size():self.window.resize(geometry.size())
 
-    def show(self):
+    def show(self, *, above=None, keyboard=False):
+        if above is not None:self.panel.setLevel_(above.panel.level()+1)
         self.panel.orderFrontRegardless()
+        if keyboard:self.panel.makeKeyWindow()
 
     def hide(self):
+        if self._mouse_monitor is not None:
+            self._appkit.NSEvent.removeMonitor_(self._mouse_monitor)
+            self._mouse_monitor=None
         self.panel.orderOut_(None)
+
+    def on_external_click(self, callback):
+        appkit=self._appkit
+        events=appkit.NSEventMaskLeftMouseDown|appkit.NSEventMaskRightMouseDown|appkit.NSEventMaskOtherMouseDown
+        self._mouse_monitor=appkit.NSEvent.addGlobalMonitorForEventsMatchingMask_handler_(events,lambda _:callback())
 
     def accept_pointer(self, inside):
         if bool(self.panel.ignoresMouseEvents())==inside:

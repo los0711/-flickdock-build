@@ -187,12 +187,22 @@ def verify(report, folder):
         assert wait_for(lambda: observed(card.popup.isVisible)), 'Target language menu did not open'
         report['menu_preserves_focus'] = front_target() == target and not translator.isVisible()
         assert not translator.isVisible(), report
+        menu=card.popup._passive_frame if card.popup._passive_host is not None else card.popup.geometry()
+        anchor=QRect(card.screen_point(card.language,QPoint()),card.language.size())
+        report['menu_position']=menu.getRect()
+        assert card.anchor_area.contains(menu) and not menu.intersects(bounds) and not menu.intersects(anchor), report
+        assert menu.left()<=anchor.right() and menu.right()>=anchor.left(), report
+        if sys.platform=='darwin':
+            assert card.popup._passive_host.panel.level()>card._cocoa_host.panel.level(), report
         choices=card.popup.list
         option=next(choices.item(index) for index in range(choices.count()) if choices.item(index).data(Qt.UserRole)=='ja')
         choices.scrollToItem(option)
         observed(lambda: True)
         option_rect=choices.visualItemRect(option)
-        pointer(choices.viewport().mapToGlobal(QPoint(option_rect.left()+45,option_rect.center().y())),click=True)
+        local=QPoint(option_rect.left()+45,option_rect.center().y())
+        point=(menu.topLeft()+choices.viewport().mapTo(card.popup,local) if card.popup._passive_host is not None
+               else choices.viewport().mapToGlobal(local))
+        pointer(point,click=True)
         assert wait_for(lambda: observed(lambda: not card.popup.isVisible() and live.draft.target=='ja')), report
         pointer(bounds.center())
         assert wait_for(lambda: observed(card.footer_clip.isHidden))

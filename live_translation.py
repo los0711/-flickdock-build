@@ -159,7 +159,8 @@ class LiveTranslationCard(QWidget):
         self.insert.setFixedHeight(32)
         self.insert.setFocusPolicy(Qt.NoFocus)
         footer.addWidget(self.insert)
-        self.popup = LanguagePopup(store, self)
+        self.popup = LanguagePopup(store, None if self._cocoa_card else self)
+        if self._cocoa_card:self.destroyed.connect(self.popup.deleteLater)
         self.popup.installEventFilter(self)
         self.popup.setWindowFlag(Qt.WindowStaysOnTopHint, True)
         if self._cocoa_card:
@@ -378,11 +379,16 @@ class LiveTranslationCard(QWidget):
                 self.popup.list.setFixedHeight(list_height)
                 self.popup.adjustSize()
                 anchor_rect = QRect(self.screen_point(self.language,QPoint()),self.language.size())
-                anchor = anchor_rect.bottomLeft()+QPoint(-8,1)
-                preferred = anchor - QPoint(0, self.popup.height())
-                frame = fit_card(self.anchor_area, self.obstacle, self.popup.size(), preferred, gap=self._gap)
-                if not frame.isEmpty():
-                    self.popup.popup_below(self.language, position=frame.topLeft(), passive=self._cocoa_card,
+                x=anchor_rect.left()-8
+                candidates=[]
+                for y in (anchor_rect.top()-self.popup.height()-4,anchor_rect.bottom()+5):
+                    preferred=QPoint(x,y)
+                    frame=fit_card(self.anchor_area,self.obstacle,self.popup.size(),preferred,gap=self._gap)
+                    if not frame.isEmpty() and not frame.intersects(anchor_rect):
+                        candidates.append(((frame.topLeft()-preferred).manhattanLength(),frame))
+                if candidates:
+                    _,frame=min(candidates,key=lambda item:item[0])
+                    self.popup.popup_below(self.language, position=frame.topLeft(), passive_parent=self._cocoa_host,
                                            anchor_rect=anchor_rect if self._cocoa_card else None)
                     self.popup.search.setFocus()
                     break

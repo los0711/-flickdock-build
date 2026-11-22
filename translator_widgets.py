@@ -774,10 +774,13 @@ class TranslatorPopup(QFrame):
         self.body=QVBoxLayout(self.surface);self.body.setContentsMargins(12,12,12,12);self.body.setSpacing(10)
         self._anchor=None
         self._anchor_screen_rect=None
+        self._passive_host=None
+        self._passive_frame=QRect()
     def paintEvent(self,event):
         p=QPainter(self);p.setCompositionMode(QPainter.CompositionMode_Source);p.fillRect(self.rect(),Qt.transparent);p.setCompositionMode(QPainter.CompositionMode_SourceOver)
         paint_surface_shadow(p,QRectF(self.surface.geometry()),self._shadow,12,QPoint(0,1),QColor(0,0,0,32),radius=RADIUS_PANEL_PX);p.end()
     def hideEvent(self,event):
+        if self._passive_host is not None:self._passive_host.hide()
         QApplication.instance().removeEventFilter(self)
         self.closed_at=time.monotonic();super().hideEvent(event)
 
@@ -788,22 +791,29 @@ class TranslatorPopup(QFrame):
                 position=event.globalPosition().toPoint()
                 hit=self._anchor_screen_rect.contains(position) if self._anchor_screen_rect is not None else anchor.rect().contains(anchor.mapFromGlobal(position))
                 if hit:self.setAttribute(Qt.WA_NoMouseReplay,True);self.hide();return True
+                if self._passive_host is not None and not self._passive_frame.contains(position):
+                    self.hide()
         return False
 
-    def popup_below(self,anchor,*,position=None,passive=False,anchor_rect=None):
+    def popup_below(self,anchor,*,position=None,passive_parent=None,anchor_rect=None):
         self._dropdown_anchor=anchor
         self._anchor_screen_rect=anchor_rect
         self._anchor=weakref.ref(anchor);QApplication.instance().installEventFilter(self)
         self.setAttribute(Qt.WA_NoMouseReplay,True)
         self.adjustSize()
         if position is not None:
-            self.move(position)
-            if passive:
-                from platform_native import configure_passive_cocoa_panel, raise_edge_target
-                configure_passive_cocoa_panel(self)
+            if passive_parent is not None:
+                from platform_native import CocoaNonActivatingHost
+                if self._passive_host is None:
+                    self.setWindowFlags(Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+                    self._passive_host=CocoaNonActivatingHost(self,keyboard=True)
+                self._passive_frame=QRect(position,self.size())
+                self._passive_host.place(self._passive_frame)
                 self.show()
-                raise_edge_target(self,above=anchor.window())
+                self._passive_host.show(above=passive_parent,keyboard=True)
+                self._passive_host.on_external_click(self.hide)
             else:
+                self.move(position)
                 self.show();self.raise_()
             return
         point=anchor.mapToGlobal(QPoint(0,anchor.height()+4))-QPoint(8,0)
