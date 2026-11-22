@@ -308,7 +308,7 @@ def _windows_editor(cancel, expected, insertion, sample, at_pointer):
                 return com.string(latest,12,_INT(len(insertion)+3)) if latest is not None else None
 
             if web:
-                return _paste_replacement(cancel,state,insertion,target,read_current,web=True)
+                return _paste_replacement(cancel,state,insertion,target,read_current,accept_unreported_selection=True)
             if value is not None and _method(value, 3, _INT, ctypes.c_wchar_p)(value, insertion) >= 0:
                 if _confirmed_replacement(cancel,state,insertion,read_current):
                     return True
@@ -355,7 +355,8 @@ def _confirmed_replacement(cancel, expected, text, read_current):
     return False
 
 
-def _paste_replacement(cancel, expected, text, target, read_current, *, web=False, select_range=None):
+def _paste_replacement(cancel, expected, text, target, read_current, *,
+                       accept_unreported_selection=False, select_range=None):
     from clipboard_history_native import paste_editor_text, select_editor_text
 
     def same_editor():
@@ -365,6 +366,16 @@ def _paste_replacement(cancel, expected, text, target, read_current, *, web=Fals
         current = focused_editor(cancel)
         return _same_draft(current,expected) and current.selection == (0,len(expected.text))
 
+    def still_safe():
+        current = focused_editor(cancel)
+        if not _same_draft(current,expected):
+            return False
+        if current.selection == (0,len(expected.text)):
+            return True
+        # Some web providers report the caret after a successful Select All.
+        return (accept_unreported_selection and (current.selection is None
+                or current.selection[0]==current.selection[1]))
+
     if cancel.is_set() or not same_editor():
         return False
     if not (select_range is not None and select_range()) and not select_editor_text(target):
@@ -372,12 +383,10 @@ def _paste_replacement(cancel, expected, text, target, read_current, *, web=Fals
     deadline = monotonic() + .28
     while not all_selected():
         if monotonic() >= deadline or cancel.wait(.02):
-            if not web or not same_editor():
+            if not still_safe():
                 return False
-            # Chromium can select the entire DOM edit field while exposing a
-            # collapsed accessibility selection for its contenteditable span.
             break
-    paste_editor_text(text,target,cancel,same_editor if web else all_selected)
+    paste_editor_text(text,target,cancel,still_safe)
     return _confirmed_replacement(cancel,expected,text,read_current)
 
 
@@ -627,8 +636,12 @@ def _mac_editor(cancel, expected, insertion, sample, rejected=None):
                 span = retain(ax.AXValueCreate(4,ctypes.byref(entire))) if settable(range_key) else None
                 return bool(span and ax.AXUIElementSetAttributeValue(editor,range_key,span)==0)
 
+            def paste_current():
+                return _paste_replacement(cancel,state,insertion,target,read_current,
+                                          accept_unreported_selection=True,select_range=select_range)
+
             if web:
-                return _paste_replacement(cancel,state,insertion,target,read_current,web=True,select_range=select_range)
+                return paste_current()
             native = key(insertion.encode('utf8'))
             if not native:
                 return False
@@ -638,13 +651,12 @@ def _mac_editor(cancel, expected, insertion, sample, rejected=None):
                     return True
                 if selected_range and _same_draft(focused_editor(cancel),state):
                     ax.AXUIElementSetAttributeValue(editor, range_key, selected_range)
-                return _paste_replacement(cancel,state,insertion,target,read_current)
+                return paste_current()
             if not settable(value_key) or ax.AXUIElementSetAttributeValue(editor, value_key, native):
-                return _paste_replacement(cancel,state,insertion,target,read_current)
+                return paste_current()
             caret = offsets(len(insertion.encode('utf-16-le')) // 2, 0)
             range_value = retain(ax.AXValueCreate(4, ctypes.byref(caret)))
             if range_value:
                 ax.AXUIElementSetAttributeValue(editor, range_key, range_value)
-            return (_confirmed_replacement(cancel,state,insertion,read_current)
-                    or _paste_replacement(cancel,state,insertion,target,read_current))
+            return _confirmed_replacement(cancel,state,insertion,read_current) or paste_current()
         return state
