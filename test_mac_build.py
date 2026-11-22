@@ -51,13 +51,15 @@ class MacBuildTests(unittest.TestCase):
         import plistlib
         recorded=[]
         with tempfile.TemporaryDirectory() as directory:
-            folder=Path(directory);app=folder/'FlickDock.app';app.mkdir();(app/'payload').write_bytes(b'fixture')
+            folder=Path(directory);app=folder/'FlickDock.app';binary=app/'Contents/MacOS/FlickDock'
+            binary.parent.mkdir(parents=True);binary.write_bytes(b'fixture')
             def inspect(command,**options):
                 recorded.append([str(value) for value in command])
                 if command[0]=='/usr/bin/pkgbuild':
                     component=Path(command[command.index('--component-plist')+1])
                     values=plistlib.loads(component.read_bytes())[0]
                     self.assertFalse(values['BundleIsRelocatable']);self.assertTrue(values['BundleHasStrictIdentifier'])
+                    self.assertFalse(values['BundleIsVersionChecked'])
                     self.assertEqual(values['BundleOverwriteAction'],'upgrade')
                     script=Path(command[command.index('--scripts')+1])/'preinstall'
                     self.assertIn('runningApplicationsWithBundleIdentifier',script.read_text(encoding='utf8'))
@@ -67,6 +69,8 @@ class MacBuildTests(unittest.TestCase):
                     source=postinstall.read_text(encoding='utf8')
                     self.assertIn('CFBundleIdentifier',source)
                     self.assertIn('com.flickdock.app',source)
+                    self.assertIn('1.8.17',source)
+                    self.assertIn(build_macos._checksum(binary),source)
                     self.assertIn('/usr/bin/open -n "$app"',source)
                     self.assertIn('/bin/launchctl asuser',source)
             with patch.object(build_macos,'run',side_effect=inspect):build_macos._create_pkg(app,folder/'new.pkg','1.8.17')
@@ -79,20 +83,29 @@ class MacBuildTests(unittest.TestCase):
             root=Path(directory);app=root/'volume/Applications/FlickDock.app/Contents'
             (app/'MacOS').mkdir(parents=True);(app/'MacOS/FlickDock').write_text('#!/bin/sh\n',encoding='utf8')
             (app/'MacOS/FlickDock').chmod(0o755);(app/'Info.plist').write_text('fixture',encoding='utf8')
-            scripts={'/usr/libexec/PlistBuddy':'echo "${FIXTURE_ID}"',
+            scripts={'/usr/libexec/PlistBuddy':'''case "$2" in
+  'Print :CFBundleIdentifier') echo "$FIXTURE_ID";;
+  'Print :CFBundleShortVersionString') echo "$FIXTURE_VERSION";;
+esac''',
+                     '/usr/bin/shasum':'echo "$FIXTURE_HASH  $3"',
                      '/usr/bin/stat':'echo fixtureuser','/usr/bin/id':'echo 501',
                      '/bin/launchctl':'printf "%s\\n" "$@" > "$FIXTURE_CALL"; exit "${FIXTURE_EXIT:-0}"'}
-            source=build_macos.PKG_POSTINSTALL
+            source=build_macos._pkg_postinstall(app.parent,'1.8.40')
             for index,(command,body) in enumerate(scripts.items()):
                 fake=root/f'command{index}';fake.write_text('#!/bin/sh\n'+body+'\n',encoding='utf8');fake.chmod(0o755)
                 source=source.replace(command,shlex.quote(str(fake)))
             script=root/'postinstall';script.write_text(source,encoding='utf8')
-            call=root/'call';env=dict(os.environ,FIXTURE_ID='com.flickdock.app',FIXTURE_CALL=str(call))
+            call=root/'call';env=dict(os.environ,FIXTURE_ID='com.flickdock.app',FIXTURE_CALL=str(call),
+                                     FIXTURE_VERSION='1.8.40',FIXTURE_HASH=build_macos._checksum(app/'MacOS/FlickDock'))
             def invoke():return subprocess.run(['/bin/sh',str(script),'unused','unused',str(root/'volume')],env=env,capture_output=True,text=True)
             self.assertEqual(invoke().returncode,0)
             self.assertEqual(call.read_text().splitlines(),['asuser','501','/usr/bin/sudo','-u','fixtureuser','/usr/bin/open','-n',str(app.parent)])
             call.unlink();env['FIXTURE_ID']='other.app';self.assertNotEqual(invoke().returncode,0);self.assertFalse(call.exists())
-            env['FIXTURE_ID']='com.flickdock.app';env['FIXTURE_EXIT']='1';self.assertNotEqual(invoke().returncode,0)
+            env['FIXTURE_ID']='com.flickdock.app';env['FIXTURE_VERSION']='1.8.46'
+            self.assertNotEqual(invoke().returncode,0);self.assertFalse(call.exists())
+            env['FIXTURE_VERSION']='1.8.40';correct_hash=env['FIXTURE_HASH'];env['FIXTURE_HASH']='different'
+            self.assertNotEqual(invoke().returncode,0);self.assertFalse(call.exists())
+            env['FIXTURE_HASH']=correct_hash;env['FIXTURE_EXIT']='1';self.assertNotEqual(invoke().returncode,0)
 
     def test_disk_image_launch_uses_installed_copy_and_only_ejects_an_image_mount(self):
         import plistlib

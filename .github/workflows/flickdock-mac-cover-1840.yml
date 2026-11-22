@@ -1,0 +1,50 @@
+name: Repackage and verify Mac downgrade installation
+
+on:
+  push:
+    branches: [ci-flickdock-mac-cover-1840]
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  installer:
+    runs-on: macos-15
+    timeout-minutes: 15
+    env:
+      PYTHONUTF8: '1'
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          architecture: arm64
+      - name: Check version and payload validation before launch
+        run: |
+          python -m pip install 'PySide6==6.12.0' 'cryptography==50.0.2' 'keyring==25.7.0'
+          python -m unittest test_mac_build test_mac_install -q
+      - name: Retain the original installer and verify its payload
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          gh run download 45014804976 -R "$GITHUB_REPOSITORY" \
+            -n 'FlickDock-macOS-incomplete-arm64-2d20943203dc269dfda3aa3cc1a01ee6a2af9928' -D "$RUNNER_TEMP/previous"
+          cd "$RUNNER_TEMP/previous"
+          echo '74a55c51198caf98d0b1ee0d0529c4c1887ce37d1a00bcd094a0d4aece938e59  FlickDock-1.8.40-macOS-arm64.pkg' | shasum -a 256 -c -
+          pkgutil --expand-full FlickDock-1.8.40-macOS-arm64.pkg expanded
+          codesign --verify --deep --strict expanded/Payload/FlickDock.app
+      - name: Reproduce the original skip and test the corrected installer
+        run: |
+          python ci_mac_pkg_overwrite.py "$RUNNER_TEMP/previous/FlickDock-1.8.40-macOS-arm64.pkg" \
+            "$RUNNER_TEMP/previous/expanded/Payload/FlickDock.app" "$RUNNER_TEMP/delivery"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: FlickDock-1840-arm64-cover-${{ github.sha }}
+          path: ${{ runner.temp }}/delivery/
+          retention-days: 3
+          if-no-files-found: error
