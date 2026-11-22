@@ -240,7 +240,9 @@ class MotionShadow(QGraphicsDropShadowEffect):
         bounds = self.sourceBoundingRect(Qt.CoordinateSystem.LogicalCoordinates)
         snapshot=self._surface_snapshot
         active=snapshot is not None and snapshot.active
-        direct=(not active and self.sx==self.sy==1 and self.dx==self.dy==0
+        cached_motion=(self._cache_while is not None and (not active or snapshot.mix>=1)
+                       and self._cache_while())
+        direct=(not active and not cached_motion and self.sx==self.sy==1 and self.dx==self.dy==0
                 and self._live_at_rest is not None and self._live_at_rest())
         # QWidget drawSource() can restore its own painter state and bypass
         # the caller's scale/clip. In motion, keep using the same clipped
@@ -259,7 +261,7 @@ class MotionShadow(QGraphicsDropShadowEffect):
             source=snapshot.target
         else:
             ratio=self.parent().devicePixelRatioF()
-            if self._cache_while is None or not self._cache_while():self.invalidate_source()
+            if not cached_motion:self.invalidate_source()
             if self._source_cache.isNull() or self._source_bounds!=bounds or self._source_dpr!=ratio:
                 self._source_cache=self.sourcePixmap(Qt.CoordinateSystem.LogicalCoordinates,self._source_offset,
                                                      QGraphicsEffect.PixmapPadMode.NoPad)
