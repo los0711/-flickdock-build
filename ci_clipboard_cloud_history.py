@@ -1,5 +1,4 @@
 """Check incoming history and local-only paste on two isolated hosted desktops."""
-from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 from pathlib import Path
@@ -9,7 +8,7 @@ import tempfile
 import time
 from types import SimpleNamespace
 
-from PySide6.QtCore import QMimeData,QUrl
+from PySide6.QtCore import QMimeData,QUrl,Qt
 from PySide6.QtGui import QColor,QImage
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
@@ -17,7 +16,6 @@ from PySide6.QtWidgets import QApplication
 from account_service import AccountService
 from ci_clipboard_history_native import __file__ as target_program,current_process
 from ci_shelf_direct_live import MemorySessions
-from clipboard_history_native import insert_image
 from clipboard_history_runtime import ClipboardHistory
 from clipboard_history_store import ClipboardHistoryStore
 from clipboard_sync import ClipboardSync
@@ -38,7 +36,9 @@ def run(root,credentials):
     events=CloudEvents(account)
     scheduler=SyncScheduler(app,connected=False)
     client=ClipboardSync(account,events,root/'profile',scheduler=scheduler)
-    history=ClipboardHistory(SimpleNamespace(app=app,clipboard_sync=client),root/'profile')
+    successful_pastes=[]
+    shelf=SimpleNamespace(hide_animated=lambda **_:successful_pastes.append(True))
+    history=ClipboardHistory(SimpleNamespace(app=app,clipboard_sync=client,shelf=shelf),root/'profile')
     report={'ok':False,'side':side,'phase':'login','received':[]}
     mutations=[]
     original_request=account.api.request
@@ -74,32 +74,43 @@ def run(root,credentials):
             if row['kind']!=kind:continue
             if kind in ('text','file') and row['title']!=fixture:continue
             value=history.store.execute('payload',row['id'])[1]
-            if kind=='text' and value['text']==fixture and 'font-weight' in value['html']:return value
-            if kind=='link' and value['text']==fixture:return value
-            if kind=='image' and QImage.fromData(value).pixelColor(2,2).name()==fixture:return value
-            if kind=='file' and Path(value[0]).read_bytes()==b'verified original file bytes':return value
+            if kind=='text' and value['text']==fixture and 'font-weight' in value['html']:return row['id']
+            if kind=='link' and value['text']==fixture:return row['id']
+            if kind=='image' and QImage.fromData(value).pixelColor(2,2).name()==fixture:return row['id']
+            if kind=='file' and Path(value[0]).read_bytes()==b'verified original file bytes':return row['id']
         return None
 
-    def paste_received_image(data,fixture):
-        target_dir=root/'native-paste-target';target_dir.mkdir()
+    def paste_from_history(key,kind,fixture,original):
+        target_dir=root/f'native-paste-target-{kind}';target_dir.mkdir()
         target=subprocess.Popen([sys.executable,target_program,'target',str(target_dir)],
                                 env=dict(os.environ,FD_CLIPBOARD_QA_KEEP_PASTEBOARD='1'))
         before=client._seen,len(mutations),history.total
+        prior=len(successful_pastes)
+        history._create_panel()
+        panel=history.panel
         try:
             wait(lambda:(target_dir/'pid').exists(),8)
             pid=int((target_dir/'pid').read_text())
             wait(lambda:current_process()==pid,8)
-            with ThreadPoolExecutor(max_workers=1) as workers:
-                result=workers.submit(insert_image,data,pid)
-                wait(lambda:result.done() and (target_dir/'image-incoming.json').exists(),8)
-                assert result.result()
-            assert json.loads((target_dir/'image-incoming.json').read_bytes())['color']==fixture
-            original=board.mimeData().imageData()
-            if hasattr(original,'toImage'):original=original.toImage()
-            assert original.pixelColor(2,2).name()==fixture
-            QTest.qWait(800)
+            panel.setGeometry(515,110,332,640);panel.show()
+            QTest.qWait(120)
+            assert current_process()==pid, 'clipboard history took focus'
+            panel.show_all()
+            wait(lambda:panel._stack_progress==1.,2)
+            panel.repaint()
+            card=next(rect for part,identity,rect in panel._hits if part=='card' and identity==key)
+            point=(panel._paint_origin()+card.center()*panel._panel_scale).toPoint()
+            QTest.mouseClick(panel,Qt.LeftButton,Qt.NoModifier,point)
+            wait(lambda:len(successful_pastes)==prior+1 and history._insert_job is None,8)
+            if kind=='image':
+                assert json.loads((target_dir/'image-incoming.json').read_bytes())['color']==fixture
+            else:
+                assert any(json.loads(item.read_bytes())['text']==fixture for item in target_dir.glob('observed-*.json'))
+            QTest.qWait(1200)
+            assert board.text()==original
             assert (client._seen,len(mutations),history.total)==before
         finally:
+            panel.hide()
             target.terminate();target.wait(timeout=5)
 
     run_id=os.environ['GITHUB_RUN_ID']
@@ -107,6 +118,7 @@ def run(root,credentials):
            ('mac','link','https://example.test/mac-clipboard/'+run_id),('win','text','Windows normal rich text '+run_id),
            ('mac','image','#9768a1'),('win','file',f'Windows cloud attachment 中文 {run_id}.txt'),
            ('mac','text','Mac verified the Windows attachment '+run_id))
+    pastes={}
     try:
         history.set_enabled(True)
         account.login(credentials['username'],credentials['password'])
@@ -121,11 +133,15 @@ def run(root,credentials):
             else:
                 wait(lambda:saved(kind,fixture) is not None)
                 report['received'].append(kind)
-                if side=='mac' and kind=='image':
-                    print('Pasting image from saved history',flush=True)
-                    paste_received_image(saved(kind,fixture),fixture)
-                    report['native_paste_retained_original_with_no_upload']=True
+                if kind in ('text','image'):
+                    pastes.setdefault(kind,(saved(kind,fixture),fixture))
+                if kind=='text' and set(pastes)=={'text','image'} and len(successful_pastes)==0:
+                    for paste_kind,(key,preview) in pastes.items():
+                        print('Clicking a saved history card',side,paste_kind,flush=True)
+                        paste_from_history(key,paste_kind,preview,fixture)
+                    report['history_pastes_preserved_original_with_no_upload']=len(successful_pastes)
 
+        assert len(successful_pastes)==2
         expected=sum(side==sender for sender,_,_ in moves)
         assert len(mutations)==expected,(len(mutations),expected)
         wait(lambda:history.total==len(moves) and not history.jobs)
