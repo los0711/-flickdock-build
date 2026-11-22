@@ -3,11 +3,39 @@
 #include <d3d11.h>
 #include <dxgi1_2.h>
 #include <wrl/client.h>
+#include <array>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 
 using Microsoft::WRL::ComPtr;
+
+struct CaptureSlot {
+    ComPtr<ID3D11Texture2D> texture;
+    DXGI_OUTDUPL_FRAME_INFO frame{};
+};
+
+static HRESULT emit(ID3D11DeviceContext* context, const CaptureSlot& slot, unsigned width,
+                    unsigned height, double clockFrequency, bool wait) {
+    D3D11_MAPPED_SUBRESOURCE map{};
+    const HRESULT result = context->Map(slot.texture.Get(), 0, D3D11_MAP_READ,
+                                        wait ? 0 : D3D11_MAP_FLAG_DO_NOT_WAIT, &map);
+    if (FAILED(result)) return result;
+    const auto* pixels = static_cast<const uint8_t*>(map.pData);
+    uint64_t hash = 1469598103934665603ULL;
+    for (unsigned row = 0; row < height; ++row) {
+        const auto* line = pixels + row * map.RowPitch;
+        for (unsigned column = 0; column < width * 4; ++column) {
+            hash ^= line[column];
+            hash *= 1099511628211ULL;
+        }
+    }
+    context->Unmap(slot.texture.Get(), 0);
+    std::printf("%.9f %016llx %u\n", double(slot.frame.LastPresentTime.QuadPart) / clockFrequency,
+                static_cast<unsigned long long>(hash), slot.frame.AccumulatedFrames);
+    std::fflush(stdout);
+    return S_OK;
+}
 
 int main(int argc, char** argv) {
     if (argc != 6) return 2;
@@ -45,8 +73,10 @@ int main(int argc, char** argv) {
     desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
     desc.Usage = D3D11_USAGE_STAGING;
     desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-    ComPtr<ID3D11Texture2D> staging;
-    if (FAILED(hr = device->CreateTexture2D(&desc, nullptr, &staging))) return 5;
+    std::array<CaptureSlot, 4> pending;
+    for (CaptureSlot& slot : pending)
+        if (FAILED(hr = device->CreateTexture2D(&desc, nullptr, &slot.texture))) return 5;
+    size_t readIndex = 0, writeIndex = 0;
 
     LARGE_INTEGER frequency{}, start{}, now{};
     QueryPerformanceFrequency(&frequency);
@@ -60,31 +90,37 @@ int main(int argc, char** argv) {
         hr = duplication->AcquireNextFrame(60, &frame, &surface);
         if (SUCCEEDED(hr)) {
             if (frame.LastPresentTime.QuadPart) {
+                if (writeIndex - readIndex == pending.size()) {
+                    if (FAILED(emit(context.Get(), pending[readIndex % pending.size()], width, height,
+                                    static_cast<double>(frequency.QuadPart), true))) return 7;
+                    ++readIndex;
+                }
                 ComPtr<ID3D11Texture2D> texture;
                 if (FAILED(hr = surface.As(&texture))) return 6;
-                context->CopySubresourceRegion(staging.Get(), 0, 0, 0, 0, texture.Get(), 0, &crop);
-                D3D11_MAPPED_SUBRESOURCE map{};
-                if (FAILED(hr = context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &map))) return 7;
-                const auto* pixels = static_cast<const uint8_t*>(map.pData);
-                uint64_t hash = 1469598103934665603ULL;
-                for (unsigned row=0; row<height; ++row) {
-                    const auto* line = pixels + row * map.RowPitch;
-                    for (unsigned column=0; column<width*4; ++column) {
-                        hash ^= line[column];
-                        hash *= 1099511628211ULL;
-                    }
-                }
-                context->Unmap(staging.Get(), 0);
-                std::printf("%.9f %016llx %u\n", double(frame.LastPresentTime.QuadPart) / frequency.QuadPart,
-                            static_cast<unsigned long long>(hash), frame.AccumulatedFrames);
-                std::fflush(stdout);
+                CaptureSlot& slot = pending[writeIndex % pending.size()];
+                slot.frame = frame;
+                context->CopySubresourceRegion(slot.texture.Get(), 0, 0, 0, 0, texture.Get(), 0, &crop);
+                context->Flush();
+                ++writeIndex;
             }
             duplication->ReleaseFrame();
         } else if (hr != DXGI_ERROR_WAIT_TIMEOUT) {
             std::fprintf(stderr, "AcquireNextFrame: 0x%08lx\n", hr);
             return 8;
         }
+        while (readIndex < writeIndex) {
+            hr = emit(context.Get(), pending[readIndex % pending.size()], width, height,
+                      static_cast<double>(frequency.QuadPart), false);
+            if (hr == DXGI_ERROR_WAS_STILL_DRAWING) break;
+            if (FAILED(hr)) return 9;
+            ++readIndex;
+        }
         QueryPerformanceCounter(&now);
     } while (double(now.QuadPart - start.QuadPart) / frequency.QuadPart < seconds);
+    while (readIndex < writeIndex) {
+        if (FAILED(emit(context.Get(), pending[readIndex % pending.size()], width, height,
+                        static_cast<double>(frequency.QuadPart), true))) return 10;
+        ++readIndex;
+    }
     return 0;
 }

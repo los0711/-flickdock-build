@@ -1,7 +1,7 @@
 name: Visual presentation proof
 on:
   push:
-    branches: [ci-visual-throughput-1848]
+    branches: [ci-visual-throughput-1848-dxgi]
 
 permissions:
   contents: read
@@ -11,7 +11,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-2025, macos-15]
+        os: [windows-2025]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 8
     steps:
@@ -57,11 +57,3 @@ jobs:
           QT_QPA_PLATFORM: offscreen
           PYTHONUTF8: '1'
         run: python -m unittest test_display_frames test_scroll_motion_v1837 test_surface_source_cache test_text_preview_v1838 test_translator_v1844.NativeFixTests.test_long_source_and_result_scroll_by_pixels_and_keep_the_selection -q
-  windows-installer:
-    needs: calibration
-    uses: ./.github/workflows/release-windows.yml
-  macos-installer:
-    needs: calibration
-    uses: ./.github/workflows/macos-build.yml
-    with:
-      test_build: true
