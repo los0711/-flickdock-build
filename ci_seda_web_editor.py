@@ -58,7 +58,7 @@ def verify(folder, electron, editor):
             stack.enter_context(patch.object(native,'paste_editor_text',event('paste',paste)))
             if typed is not None:stack.enter_context(patch.object(native,'type_windows_editor_text',event('unicode',typed)))
             accepted=focused_editor(stop,expected=state,insertion=TARGET)
-        wait_for(lambda:sample().get('text')==TARGET,interval=3)
+        wait_for(lambda:sample().get('text')==TARGET and sample().get('clipboard')==CLIPBOARD,interval=3)
         observed=sample()
         return dict(accessible=True,original_matches=state.text.strip()==SOURCE, accepted=bool(accepted),
                     actually_replaced=observed.get('text')==TARGET,input_events=observed.get('inputs'),

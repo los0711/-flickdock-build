@@ -354,7 +354,7 @@ def _windows_editor(cancel, expected, insertion, sample, at_pointer, rejected=No
                                           select_scope=select_range,allow_unicode=True):
                         return True
                 return _paste_replacement(cancel,state,insertion,target,read_current,
-                                          accept_unreported_selection=document is None)
+                                          accept_unreported_selection=True)
             if value is not None and _method(value, 3, _INT, ctypes.c_wchar_p)(value, insertion) >= 0:
                 if _confirmed_replacement(cancel,state,insertion,read_current):
                     return True
@@ -508,7 +508,7 @@ def _windows_selection(com, pattern, document, text):
     if selected is None:
         return None
     chosen = com.string(selected,12,_INT(MAX_TEXT_CHARS+1))
-    if text and chosen == text:
+    if text and chosen and chosen.rstrip('\r\n') == text.rstrip('\r\n'):
         return 0,len(text)
     prefix = com.object(document,3)
     if prefix is None:
