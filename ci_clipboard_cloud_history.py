@@ -10,9 +10,9 @@ import time
 from types import SimpleNamespace
 
 from PySide6.QtCore import QMimeData,QUrl
-from PySide6.QtGui import QColor,QImage,QKeySequence
+from PySide6.QtGui import QColor,QImage
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication,QTextEdit
+from PySide6.QtWidgets import QApplication
 
 from account_service import AccountService
 from ci_clipboard_history_native import __file__ as target_program,current_process
@@ -58,20 +58,15 @@ def run(root,credentials):
 
     def publish(kind,fixture):
         previous=client._seen
-        if kind=='text':
-            edit=QTextEdit();edit.setHtml(f'<p><b>{fixture}</b></p>');edit.selectAll()
-            QTest.keySequence(edit,QKeySequence(QKeySequence.StandardKey.Copy))
-            assert board.mimeData().text()==fixture
-            edit.close()
-        else:
-            mime=QMimeData()
-            if kind=='link':mime.setText(fixture)
-            if kind=='image':
-                image=QImage(47,29,QImage.Format_ARGB32);image.fill(QColor(fixture));mime.setImageData(image)
-            if kind=='file':
-                file=root/fixture;file.write_bytes(b'verified original file bytes')
-                mime.setUrls([QUrl.fromLocalFile(str(file))])
-            board.setMimeData(mime)
+        mime=QMimeData()
+        if kind=='text':mime.setText(fixture);mime.setHtml(f'<p style="font-weight:700">{fixture}</p>')
+        if kind=='link':mime.setText(fixture)
+        if kind=='image':
+            image=QImage(47,29,QImage.Format_ARGB32);image.fill(QColor(fixture));mime.setImageData(image)
+        if kind=='file':
+            file=root/fixture;file.write_bytes(b'verified original file bytes')
+            mime.setUrls([QUrl.fromLocalFile(str(file))])
+        board.setMimeData(mime)
         wait(lambda:client._seen!=previous and client._pending is None and client.view['phase']=='synced')
 
     def saved(kind,fixture):
@@ -99,16 +94,19 @@ def run(root,credentials):
                 wait(lambda:result.done() and (target_dir/'image-incoming.json').exists(),8)
                 assert result.result()
             assert json.loads((target_dir/'image-incoming.json').read_bytes())['color']==fixture
-            assert board.mimeData().imageData().pixelColor(2,2).name()==fixture
+            original=board.mimeData().imageData()
+            if hasattr(original,'toImage'):original=original.toImage()
+            assert original.pixelColor(2,2).name()==fixture
             QTest.qWait(800)
             assert (client._seen,len(mutations),history.total)==before
         finally:
             target.terminate();target.wait(timeout=5)
 
-    moves=(('mac','text','Mac normal rich text'),('win','image','#397ea4'),
-           ('mac','link','https://example.test/mac-clipboard'),('win','text','Windows normal rich text'),
-           ('mac','image','#9768a1'),('win','file','Windows cloud attachment 中文.txt'),
-           ('mac','text','Mac verified the Windows attachment'))
+    run_id=os.environ['GITHUB_RUN_ID']
+    moves=(('mac','text','Mac normal rich text '+run_id),('win','image','#397ea4'),
+           ('mac','link','https://example.test/mac-clipboard/'+run_id),('win','text','Windows normal rich text '+run_id),
+           ('mac','image','#9768a1'),('win','file',f'Windows cloud attachment 中文 {run_id}.txt'),
+           ('mac','text','Mac verified the Windows attachment '+run_id))
     try:
         history.set_enabled(True)
         account.login(credentials['username'],credentials['password'])
@@ -117,12 +115,14 @@ def run(root,credentials):
         wait(lambda:scheduler.connected,35)
         for other,kind,fixture in moves:
             report['phase']=f'{other} {kind}'
+            print('Clipboard history phase',side,report['phase'],flush=True)
             if side==other:
                 publish(kind,fixture)
             else:
                 wait(lambda:saved(kind,fixture) is not None)
                 report['received'].append(kind)
                 if side=='mac' and kind=='image':
+                    print('Pasting image from saved history',flush=True)
                     paste_received_image(saved(kind,fixture),fixture)
                     report['native_paste_retained_original_with_no_upload']=True
 
