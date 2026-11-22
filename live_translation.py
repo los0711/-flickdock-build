@@ -267,7 +267,7 @@ class LiveEditorTranslation(QObject):
         super().__init__(parent)
         self.probe = probe
         self.rules = rules
-        self.card = LiveTranslationCard(store, parent)
+        self.card = LiveTranslationCard(store)
         self.draft = LiveDraft(TranslationApi(transport, self), self)
         self.alignment = SelectionAlignment(self.draft.document, TranslationApi(transport, self), self)
         self.alignment.presentation.connect(self.card.highlight)

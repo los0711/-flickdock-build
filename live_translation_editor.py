@@ -243,6 +243,10 @@ def _windows_selection(com, pattern, document, text):
 def _mac_editor_api():
     from translation_focus import _mac_api
     ax, cf = _mac_api()
+    carbon = ctypes.CDLL('/System/Library/Frameworks/Carbon.framework/Carbon')
+    secure_input = carbon.IsSecureEventInputEnabled
+    secure_input.argtypes = []
+    secure_input.restype = ctypes.c_ubyte
     ax.AXUIElementCreateApplication.argtypes = [_INT]
     ax.AXUIElementCreateApplication.restype = _POINTER
     ax.AXUIElementGetPid.argtypes = [_POINTER, ctypes.POINTER(_INT)]
@@ -259,19 +263,21 @@ def _mac_editor_api():
     cf.CFStringGetLength.restype = ctypes.c_long
     cf.CFStringGetCString.argtypes = [_POINTER, _POINTER, ctypes.c_long, ctypes.c_uint32]
     cf.CFStringGetCString.restype = ctypes.c_bool
-    return ax, cf
+    return ax, cf, secure_input
 
 
 def _mac_editor(cancel, expected, insertion, sample, rejected=None):
     from clipboard_history_native import front_target
     target = front_target()
-    ax, cf = _mac_editor_api()
+    ax, cf, secure_input = _mac_editor_api()
 
     def reject(reason):
         if rejected is not None:
             rejected(reason)
         return None
 
+    if secure_input():
+        return reject('protected input is active')
     if not target or not ax.AXIsProcessTrusted():
         return reject('no external foreground application or Accessibility grant')
     with ExitStack() as stack:
@@ -318,11 +324,13 @@ def _mac_editor(cancel, expected, insertion, sample, rejected=None):
             return reject('AX focus belongs to another process')
         role = read_string(attr(editor, b'AXRole'))
         subrole = read_string(attr(editor, b'AXSubrole'))
-        if subrole == 'AXSecureTextField':
+        if subrole == 'AXSecureTextField' or secure_input():
             return None
         if sample:
             selected = read_string(attr(editor, b'AXSelectedText')) or ''
-            if len(selected) <= 1000 and front_target() == target and not cancel.is_set():
+            if selected and all(char in '•●* ' for char in selected):
+                return None
+            if len(selected) <= 1000 and front_target() == target and not cancel.is_set() and not secure_input():
                 return EditorSelection((target, cf.CFHash(editor)), selected)
             return None
         if role not in ('AXTextArea', 'AXTextField'):
@@ -337,7 +345,9 @@ def _mac_editor(cancel, expected, insertion, sample, rejected=None):
         if not selection_writable and not settable(value_key):
             return reject('neither AXSelectedText nor AXValue is writable')
         text = read_string(attr(editor, b'AXValue'))
-        if text is None or len(text) > MAX_TEXT_CHARS or cancel.is_set():
+        if text and all(char in '•●* ' for char in text):
+            return None
+        if text is None or len(text) > MAX_TEXT_CHARS or cancel.is_set() or secure_input():
             return reject('AX field value unavailable')
         coordinates = ctypes.c_double * 2
         xy, wh = coordinates(), coordinates()

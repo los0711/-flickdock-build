@@ -40,6 +40,7 @@ class TranslatorDialog(ReferenceModalDialog):
         self._compact_footer=None;self._notice='';self._notice_role='secondary';self._shown_notice_role='red'
         self._was_polishing=False
         self.live_editor_translation=None
+        self._live_activation_notice=None
         self._last_polish_revision={}
         self._polish_arrival=PolishArrival(self)
         self._popups=[];self._managers={}
@@ -602,6 +603,8 @@ class TranslatorDialog(ReferenceModalDialog):
         if self._layout_ready:self._update_compact_footer()
         super().resizeEvent(event)
         if hasattr(self,'history') and self.history.isVisible():self.history.reposition()
+        if getattr(self,'_live_activation_notice',None) is not None and self._live_activation_notice.isVisible():
+            self._live_activation_notice.setGeometry(self.surface.rect())
 
     def _update_compact_footer(self):
         compact=self.width()<COMPACT_FOOTER_WIDTH
@@ -649,8 +652,8 @@ class TranslatorDialog(ReferenceModalDialog):
         if hasattr(self,'session') and not self._pinning:self.session.suspend(False)
         self.refresh()
     def hideEvent(self,event):
-        if not self._pinning and (not event.spontaneous() or not self.isMinimized()):
-            self._toggle_editor_translation(False)
+        if getattr(self,'_live_activation_notice',None) is not None:
+            self._live_activation_notice.hide()
         if hasattr(self,'_polish_arrival'):self._polish_arrival.stop()
         if hasattr(self,'session') and not self._pinning:self.session.suspend()
         if hasattr(self,'speech'):self.speech.stop()
@@ -688,20 +691,30 @@ class TranslatorDialog(ReferenceModalDialog):
                 self._transport, self.store, self, rules=lambda:getattr(self.manager.settings,'translation_rules',{}))
         if live is None:
             return
+        was_running = live.running
         if enabled:
             live.start(self.session.target)
         else:
             live.stop()
+            if self._live_activation_notice is not None:
+                self._live_activation_notice.hide()
         controller=getattr(self.manager,'translation',None)
         if controller is not None:
             controller.suspend_invitation(live.running)
         if live.running and (notice:=getattr(self.manager,'clipboard_notice',None)) is not None:
             notice.supersede()
+        if live.running and not was_running and self.isVisible():
+            if self._live_activation_notice is None:
+                from live_translation_motion import LiveTranslationNotice
+                self._live_activation_notice = LiveTranslationNotice(self.surface)
+            self._live_activation_notice.present()
+        overview = getattr(self.manager.shelf,'popup',None)
+        if overview is not None:
+            overview.sync_live_translation_mark()
         self.auto_clipboard_button.setProperty('referenceVariant','primary' if live.running else 'secondary')
         self.auto_clipboard_button.update()
 
     def closeEvent(self,event):
-        self._toggle_editor_translation(False)
         if hasattr(self,'session'):self.session.suspend()
         if hasattr(self,'speech'):self.speech.stop()
         if hasattr(self,'alignment'):self.alignment.cancel()

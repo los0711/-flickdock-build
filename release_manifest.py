@@ -33,6 +33,7 @@ HASH_RE=re.compile(r'[0-9a-f]{64}\Z')
 RUNTIME_SOURCES=(
     'translation_document.py','translation_alignment.py','speech_export.py',
     'live_translation.py', 'live_translation_draft.py', 'live_translation_editor.py',
+    'live_translation_motion.py', 'assets/motion/zap.json', 'assets/motion/navigation.json',
     'notice_cluster.py','crash_diagnostics.py','text_preview.py','qt_lifetime.py','theme_accent.py','settings_live.py',
     'magnetic_settings.py','magnetic_editor.py','edge_native_icons.py','monitor_diagram.py','accent_presets.py','verify_magnetic.py',
     'translation_languages.py', 'translation_api.py', 'translation_controller.py', 'translation_notice.py', 'translation_focus.py', 'settings_navigation.py',

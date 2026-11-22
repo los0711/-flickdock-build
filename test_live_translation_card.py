@@ -5,11 +5,12 @@ import unittest
 from unittest.mock import patch
 
 from PySide6.QtCore import QObject, QPoint, QRect, QSize, Signal
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QWidget
 
 from live_translation import LiveEditorTranslation, fit_card
 from live_translation_draft import LiveDraft
 from live_translation_editor import EditorSelection, EditorState
+from live_translation_motion import LiveTranslationMark, LiveTranslationNotice
 from translator_store import TranslatorStore
 
 
@@ -151,6 +152,26 @@ class LiveTranslationTests(unittest.TestCase):
                 live.pool.waitForDone(1000)
                 live.card.close()
                 store.close()
+
+    def test_lottie_notice_is_one_shot_and_mark_loops_while_visible(self):
+        parent = QWidget()
+        parent.resize(600, 540)
+        parent.show()
+        notice = LiveTranslationNotice(parent)
+        marker = LiveTranslationMark(parent)
+        with patch('live_translation_motion.reduced_motion', return_value=False):
+            notice.present()
+            self.assertTrue(notice.isVisible())
+            self.assertTrue(wait_for(self.app, lambda: not notice.isVisible(), limit=2.2))
+            self.assertFalse(notice.pulse.isActive())
+            marker.set_running(True)
+            self.assertEqual(marker.repeat.interval(), 3000)
+            self.assertTrue(marker.repeat.isActive())
+            first = marker.started
+            self.assertTrue(wait_for(self.app, lambda: marker.started is not None and marker.started != first, limit=3.4))
+            marker.set_running(False)
+            self.assertFalse(marker.repeat.isActive() or marker.pulse.isActive())
+        parent.close()
 
     def test_popup_after_typing_clears_and_inserts_without_a_clipboard_call(self):
         bounds = (60, 150, 570, 110)

@@ -190,9 +190,14 @@ def run(argv,load_font):
                 data,finish=live_transport.requests[-1]
                 assert data['target']=='ja' and data['units'][0]['text']=='输入测试。'
                 view.close()
-                assert not live.running and not live.card.isVisible() and not view.auto_clipboard_button.isChecked()
+                assert live.running and view.auto_clipboard_button.isChecked()
+                assert not view._live_activation_notice.isVisible()
                 finish(dict(operation='translate_units',units=[dict(id='0',text='テスト。')]),None);settle()
-                assert not live.card.isVisible() and not live.draft.result and not clipboard.observing
+                assert live.draft.result=='テスト。' and not clipboard.observing
+                view.show()
+                assert view.auto_clipboard_button.isChecked() and not view._live_activation_notice.isVisible()
+                view.auto_clipboard_button.click()
+                assert not live.running and not live.card.isVisible()
             report['live_editor_translation']=True
             # Exercise the real bundled fastText binary/model, not only the
             # deterministic detector used by the UI fixture above.

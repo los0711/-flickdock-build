@@ -134,7 +134,7 @@ class RuleAndLanguageTests(unittest.TestCase):
         self.fixture.setUp()
         self.addCleanup(self.fixture.tearDown)
 
-    def test_editor_button_owns_automatic_scope_and_close_cancels_pending(self):
+    def test_editor_button_owns_automatic_scope_across_dialog_close_until_disabled(self):
         from translator_panel import TranslatorDialog
         from test_translator_v1843 import FakeApi
         view=self.fixture.view
@@ -181,15 +181,17 @@ class RuleAndLanguageTests(unittest.TestCase):
             self.assertEqual(request['target'],'ja')
             self.assertEqual([row['text'] for row in request['units']],['正在输入。'])
             dialog.close()
-            self.assertFalse(live.running or dialog.auto_clipboard_button.isChecked())
+            self.assertTrue(live.running and dialog.auto_clipboard_button.isChecked())
+            self.assertFalse(dialog._live_activation_notice.isVisible())
             with patch('PySide6.QtWidgets.QApplication.clipboard') as clipboard:
-                done(dict(operation='translate_units',units=[dict(id='0',text='古い応答。')]),None)
+                done(dict(operation='translate_units',units=[dict(id='0',text='入力しています。')]),None)
             clipboard.assert_not_called()
-            self.assertFalse(live.card.isVisible() or live.draft.result)
+            self.assertEqual(live.draft.result,'入力しています。')
             dialog.show()
-            self.assertFalse(dialog.auto_clipboard_button.isChecked())
-            dialog.auto_clipboard_button.click();dialog.auto_clipboard_button.click()
-            self.assertFalse(live.running)
+            self.assertTrue(dialog.auto_clipboard_button.isChecked())
+            self.assertFalse(dialog._live_activation_notice.isVisible())
+            dialog.auto_clipboard_button.click()
+            self.assertFalse(live.running or live.card.isVisible())
         finally:
             dialog.shutdown();dialog.deleteLater();controller.close()
             controller.pool.waitForDone(2000);APP.processEvents()

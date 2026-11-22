@@ -661,7 +661,27 @@ class ContentsPopup(QFrame):
             transition.request(show_preview,280 if self.width()<980 else 340,animate=False)
         else:self.preview.setVisible(show_preview)
 
+    def sync_live_translation_mark(self):
+        dialog = getattr(self.shelf.manager,'translator_dialog',None)
+        live = getattr(dialog,'live_editor_translation',None)
+        control = self.translator_nav
+        running = bool(live and live.running)
+        mark = getattr(control,'live_translation_mark',None)
+        if running and mark is None:
+            from live_translation_motion import LiveTranslationMark
+            mark = control.live_translation_mark = LiveTranslationMark(control)
+        if mark is None:
+            return
+        control.setAccessibleDescription('自动翻译运行中' if running else '')
+        count = self.nav_counts.get('all')
+        count_width = max(20,min(60,count.fontMetrics().horizontalAdvance(count.text())+12)) if count is not None else 20
+        x = control.width() - 12 - count_width // 2 - mark.width() // 2
+        mark.move(x, (control.height() - mark.height()) // 2)
+        expanded = self._sidebar_collapse.open and self.sidebar.width() >= 124 and getattr(control,'_sidebar_label_alpha',1.) >= .85
+        mark.set_running(running and expanded)
+
     def _position_nav_counts(self):
+        self.sync_live_translation_mark()
         for key,badge in self.nav_counts.items():
             control=self.scope_buttons[key]
             width=max(20,min(60,badge.fontMetrics().horizontalAdvance(badge.text())+12))
