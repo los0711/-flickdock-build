@@ -13,6 +13,7 @@ import tempfile
 import threading
 import time
 from types import SimpleNamespace
+from unittest.mock import patch
 
 if os.environ.get('GITHUB_ACTIONS') != 'true':
     raise SystemExit('Requires a disposable CI desktop')
@@ -131,6 +132,24 @@ def observe_scroll(area, duration, *, interval=85):
     QTimer.singleShot(duration, timer.deleteLater)
 
 
+def measure_scroll(binary, area, screen):
+    updates = []
+    def moved(value):
+        updates.append((time.perf_counter(),value))
+    bar = area.verticalScrollBar()
+    bar.valueChanged.connect(moved)
+    try:
+        before = bar.value()
+        report = measure(binary,band(area.viewport(),68,76),screen,
+                         lambda:observe_scroll(area,1100),1.3,action_slice=(.12,1.12))
+        report['scrollbar_value_changes'] = len(updates)
+        report['scrollbar_span'] = bar.value()-before
+        report['scrollbar_intervals_ms'] = [round((b[0]-a[0])*1000,3) for a,b in zip(updates,updates[1:])]
+        return report
+    finally:
+        bar.valueChanged.disconnect(moved)
+
+
 def band(widget, x, y, width=88, height=160):
     rect = widget.rect().intersected(QRect(x,y,width,height))
     rect.moveTopLeft(widget.mapToGlobal(rect.topLeft()))
@@ -151,6 +170,7 @@ def main():
     from shelf_ui_common import load_font
     load_font(app)
     import flickdock
+    import native_ui_common
     from app_settings import SettingsStore
     from settings_navigation import install_smooth_scrolling
     from translator_panel import TranslatorDialog
@@ -160,8 +180,12 @@ def main():
     install_smooth_scrolling(app)
     report = dict(version=APP_VERSION, platform=app.platformName(), refresh_hz=screen.refreshRate(),
                   display=screen.geometry().getRect(), dpr=screen.devicePixelRatio(), physical_panel=False,
+                  runner_reduce_motion=native_ui_common.reduced_motion(), test_motion='enabled',
                   capture='DXGI Desktop Duplication' if sys.platform=='win32' else 'ScreenCaptureKit displayTime')
     with tempfile.TemporaryDirectory(prefix='flickdock-desktop-motion-') as folder, ExitStack() as cleanup:
+        # A disposable desktop may come configured to reduce all motion.
+        # Exercise the production motion-enabled branch on both revisions.
+        cleanup.enter_context(patch.object(native_ui_common,'reduced_motion',return_value=False))
         base = Path(folder)
         flickdock.BASE = base / 'profile'
         flickdock.STATE_FILE = flickdock.BASE / 'shelves.json'
@@ -197,8 +221,7 @@ def main():
         wait_for(lambda:popup.isVisible() and not shelf.content_transition_active()
                  and not shelf.presentation._timer.isActive(), 'Overview did not settle')
         print('Measuring scrolling the overview',flush=True)
-        report['overview_scroll'] = measure(options.capture, band(popup.scroll.viewport(),68,76), screen,
-            lambda:observe_scroll(popup.scroll,1100), 1.3, action_slice=(.12,1.12))
+        report['overview_scroll'] = measure_scroll(options.capture,popup.scroll,screen)
         popup.scroll.verticalScrollBar().setValue(0)
         visible = popup.visible_refs()
         popup.select_item(visible[0])
@@ -212,6 +235,10 @@ def main():
                                          screen, next_file, .62, action_slice=(0,.32))
         if popup.preview.current_path != visible[13]:
             raise RuntimeError('The preview did not preserve the newest selection')
+        print('Measuring long text in the file preview',flush=True)
+        wait_for(lambda:popup.preview.text.isVisible() and popup.preview.text.verticalScrollBar().maximum()>0,
+                 'The selected file did not produce a scrollable text preview')
+        report['preview_text_scroll'] = measure_scroll(options.capture,popup.preview.text,screen)
         shelf.hide_immediately()
         settings = SettingsStore(base / 'translator')
         store = TranslatorStore(base / 'translator', autoload=False)
@@ -226,11 +253,11 @@ def main():
         editor.verticalScrollBar().setValue(0)
         pump(420)
         print('Measuring a long document in the translator',flush=True)
-        report['long_text_scroll'] = measure(options.capture,band(editor.viewport(),28,68),screen,
-            lambda:observe_scroll(editor,1100),1.3,action_slice=(.12,1.12))
+        report['long_text_scroll'] = measure_scroll(options.capture,editor,screen)
         options.out.write_text(json.dumps(report,indent=2), encoding='utf-8')
-        print(json.dumps({k:{field:case[field] for field in ('input_to_visible_ms','unique_frames_active',
-               'interval_p95_ms','backlogged_capture_frames')} for k,case in report.items() if isinstance(case,dict)}))
+        print(json.dumps({k:{field:case.get(field) for field in ('input_to_visible_ms','unique_frames_active',
+               'interval_p95_ms','backlogged_capture_frames','scrollbar_value_changes')}
+               for k,case in report.items() if isinstance(case,dict)}))
     faulthandler.cancel_dump_traceback_later()
 
 
