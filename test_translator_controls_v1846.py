@@ -142,7 +142,11 @@ class PanelTests(unittest.TestCase):
 
     def test_live_translation_keeps_the_result_editor_still_during_repeated_edits(self):
         view = self.fixture.view
-        view.store.update_preferences(live=True,debounce_ms=200)
+        view.session.set_language('source','en')
+        view.session.set_language('target','zh')
+        view.session.set_delay(200)
+        view.session.set_live(True)
+        settle(timeout=.02)
         stable_geometry = view.output_editor.geometry()
         for source, translation in (('Hello again.','再次问好。'),('Hello again, team.','大家好。')):
             previous = view.output_editor.toPlainText()

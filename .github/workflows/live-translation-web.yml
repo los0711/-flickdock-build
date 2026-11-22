@@ -29,6 +29,12 @@ jobs:
       - name: Install the Mac accessibility bridge
         if: runner.os == 'macOS'
         run: python -m pip install 'pyobjc-framework-Quartz>=11,<13'
+      - name: Verify the translator result stays in place during live typing
+        env:
+          QT_QPA_PLATFORM: 'offscreen'
+        run: python -m unittest -q test_translator_controls_v1846.PanelTests.test_live_translation_keeps_the_result_editor_still_during_repeated_edits
+      - name: Verify ordinary native editors and protected controls
+        run: python ci_live_editor_native.py native-editor.json
       - name: Verify native insertion into web inputs
         run: python ci_live_translation_web.py embedded-editor.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

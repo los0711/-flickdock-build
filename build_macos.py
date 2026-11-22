@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import platform
 import plistlib
+import shlex
 import shutil
 import subprocess
 import sys
@@ -150,6 +151,11 @@ identity=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents
 if [ "$identity" != 'com.flickdock.app' ]; then
     echo '应用身份不匹配，未自动启动。' >&2; exit 1
 fi
+installed_version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")
+installed_hash=$(/usr/bin/shasum -a 256 "$app/Contents/MacOS/FlickDock")
+if [ "$installed_version" != @APP_VERSION@ ] || [ "${installed_hash%% *}" != @APP_HASH@ ]; then
+    echo 'FlickDock 未替换为安装包中的版本，原应用未重新启动。' >&2; exit 1
+fi
 console_user=$(/usr/bin/stat -f %Su /dev/console)
 case "$console_user" in root|loginwindow|'') echo '应用已安装，请登录后打开 FlickDock。' >&2; exit 1;; esac
 console_uid=$(/usr/bin/id -u "$console_user")
@@ -159,6 +165,11 @@ fi
 '''
 
 
+def _pkg_postinstall(app, version):
+    binary = app / 'Contents/MacOS/FlickDock'
+    return PKG_POSTINSTALL.replace('@APP_VERSION@', shlex.quote(version)).replace('@APP_HASH@', _checksum(binary))
+
+
 def _create_pkg(app,installer,version):
     with tempfile.TemporaryDirectory(prefix='flickdock-pkg-') as directory:
         folder=Path(directory);payload=folder/'payload';payload.mkdir()
@@ -166,10 +177,10 @@ def _create_pkg(app,installer,version):
         components=folder/'components.plist'
         components.write_bytes(plistlib.dumps([dict(RootRelativeBundlePath=app.name,
             BundleIsRelocatable=False,BundleHasStrictIdentifier=True,
-            BundleIsVersionChecked=True,BundleOverwriteAction='upgrade')]))
+            BundleIsVersionChecked=False,BundleOverwriteAction='upgrade')]))
         scripts=folder/'scripts';scripts.mkdir();preinstall=scripts/'preinstall';postinstall=scripts/'postinstall'
         preinstall.write_text(PKG_PREINSTALL,encoding='utf8');preinstall.chmod(0o755)
-        postinstall.write_text(PKG_POSTINSTALL,encoding='utf8');postinstall.chmod(0o755)
+        postinstall.write_text(_pkg_postinstall(app,version),encoding='utf8');postinstall.chmod(0o755)
         for script in (preinstall,postinstall):run(['/bin/sh','-n',script])
         run(['/usr/bin/pkgbuild','--root',payload,'--component-plist',components,
              '--install-location', '/Applications','--scripts',scripts,

@@ -209,13 +209,30 @@ def verify(output):
     try:
         with tempfile.TemporaryDirectory(prefix='flickdock-embedded-web-') as location:
             for field in FIELDS:
-                report['fields'][field] = verify_field(Path(location)/field,field)
+                folder = Path(location)/field
+                if sys.platform == 'darwin':
+                    # NSWorkspace can cache the departed fixture in a
+                    # command-line process without a running AppKit loop.
+                    result = subprocess.check_output([sys.executable,__file__,'--verify-field',str(folder),field],
+                                                     text=True,timeout=35)
+                    report['fields'][field] = json.loads(result.splitlines()[-1])
+                else:
+                    report['fields'][field] = verify_field(folder,field)
     finally:
         output.write_text(json.dumps(report,indent=2),encoding='utf-8')
         print(json.dumps(report),flush=True)
+    for field, row in report['fields'].items():
+        assert row.get('clipboard_preserved'), (field,row)
+        if field in ('protected','read-only'):
+            assert row.get('blocked'), (field,row)
+        else:
+            assert all(row.get(key) for key in ('read','stale_rejected','request_accepted','updated','input_event')), (field,row)
 
 
 if __name__ == '__main__':
     if sys.argv[1] == '--fixture':
         raise SystemExit(fixture(Path(sys.argv[2])))
-    verify(Path(sys.argv[1]))
+    if sys.argv[1] == '--verify-field':
+        print(json.dumps(verify_field(Path(sys.argv[2]),sys.argv[3])),flush=True)
+    else:
+        verify(Path(sys.argv[1]))
