@@ -1,0 +1,85 @@
+name: Recheck consecutive real Finder drops with verified file coordinates
+
+on:
+  push:
+    branches: [ci-live-editor-mac-finder-repro-1840]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  finder:
+    runs-on: macos-15
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - name: Extract and verify the exact Mac installer
+        run: |
+          set -eu
+          package_folder="$RUNNER_TEMP/retained"
+          gh run download 45014804976 --repo "$GITHUB_C:/Users/Roooger/Documents/Codex/2026-11-14/0a0a0a/work/live-editor-translation-1840/../live-editor-mac-finder-repro-1840SITORY" \
+            --name 'FlickDock-macOS-incomplete-arm64-2d20943203dc269dfda3aa3cc1a01ee6a2af9928' --dir "$package_folder"
+          installer="$package_folder/FlickDock-1.8.40-macOS-arm64.pkg"
+          echo "74a55c51198caf98d0b1ee0d0529c4c1887ce37d1a00bcd094a0d4aece938e59  $installer" | shasum -a 256 -c -
+          pkgutil --expand-full "$installer" "$package_folder/expanded"
+          codesign --verify --deep --strict "$package_folder/expanded/Payload/FlickDock.app"
+      - name: Record actual Finder source and verify sequential release paths
+        run: |
+          set -eu
+          binary="$RUNNER_TEMP/retained/expanded/Payload/FlickDock.app/Contents/MacOS/FlickDock"
+          stage="$RUNNER_TEMP/finder-investigation"
+          mkdir "$stage"
+          swiftc ci_finder_element.swift -o "$stage/finder-element"
+          cat > "$stage/monitor.swift" <<'SWIFT'
+          import AppKit
+          import CoreGraphics
+
+          let board = NSPasteboard(name: .drag)
+          let deadline = Date().addingTimeInterval(80)
+          var previous = ""
+          while Date() < deadline {
+              let down = CGEventSource.buttonState(.combinedSessionState, button: .left)
+              let items = board.pasteboardItems ?? []
+              let fixture = items.contains {
+                  ($0.string(forType: .fileURL) ?? "").contains("FlickDock-") &&
+                  ($0.string(forType: .fileURL) ?? "").contains("-Fixture.txt")
+              }
+              let current = "\(board.changeCount), \(down), \(fixture)"
+              if current != previous {
+                  print("\(Date().timeIntervalSince1970), \(current)")
+                  fflush(stdout)
+              }
+              previous = current
+              Thread.sleep(forTimeInterval: 0.035)
+          }
+          SWIFT
+          swiftc "$stage/monitor.swift" -o "$stage/monitor"
+          "$stage/monitor" > "$stage/pasteboard-states.log" &
+          monitor=$!
+          trap 'kill "$monitor" 2>/dev/null || true' EXIT
+          status=0
+          for trial in 1 2; do
+            mkdir -p "$stage/trial-$trial/profile"
+            touch "$stage/trial-$trial/finder-coordinates.log"
+            HOME="$stage/trial-$trial/profile" QT_QPA_PLATFORM=cocoa \
+              FLICKDOCK_FINDER_AX="$stage/finder-element" FLICKDOCK_FINDER_DIAGNOSTIC="$stage/trial-$trial/finder-coordinates.log" \
+              "$binary" --verify-finder-magnetic "$stage/trial-$trial/result.json" || status=1
+            cat "$stage/trial-$trial/finder-coordinates.log"
+          done
+          exit "$status"
+      - name: Retain Finder regression reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: finder-native-repro-arm64
+          path: |
+            ${{ runner.temp }}/finder-investigation/trial-*/result.json
+            ${{ runner.temp }}/finder-investigation/trial-*/finder-coordinates.log
+            ${{ runner.temp }}/finder-investigation/pasteboard-states.log
+          if-no-files-found: warn
+          retention-days: 3
