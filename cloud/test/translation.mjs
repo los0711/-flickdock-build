@@ -37,7 +37,7 @@ const mapped={protocol_version:'1',model_version:'awesome-fixture',alignment_ver
   offset_unit:'unicode_codepoint',alignments:[{source:[2,6],target:[[2,4]]}],
   reverse_alignments:[{target:[2,4],source:[[2,6]]}]};
 response=await awesomeAlign(request(words),alignmentEnv,async(url,options)=>{
-  assert.equal(url.href,alignmentOrigin+'/v1/align');
+  assert.equal(url,alignmentOrigin+'/v1/align');
   assert.equal(options.headers.Authorization,'Bearer '+alignmentEnv.TRANSLATION_PRIMARY_API_KEY);
   assert.equal(options.redirect,'error');
   assert.deepEqual(JSON.parse(options.body),words);

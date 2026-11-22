@@ -33,7 +33,7 @@ async function boundedJson(body: ReadableStream<Uint8Array> | null, limit: numbe
   }
 }
 
-export async function awesomeAlign(request: Request,env: ServiceEnv,upstream: typeof fetch=fetch) {
+export async function awesomeAlign(request: Request,env: ServiceEnv,upstream: typeof fetch=globalThis.fetch.bind(globalThis)) {
   if (!request.headers.get('Content-Type')?.startsWith('application/json')) return reply(415,'JSON_REQUIRED');
   let input;
   try {
@@ -56,9 +56,9 @@ export async function awesomeAlign(request: Request,env: ServiceEnv,upstream: ty
   try {
     const {primary,backup}=await activeServices(env);
     const provider=[primary,backup].find(p=>p&&isDirectTranslation(p.endpoint)&&usableProviderKey(p.key));
-    if (!provider) return reply(503,'ALIGNMENT_UNAVAILABLE');
+    if (!provider) return reply(503,'ALIGNMENT_PROVIDER_NOT_CONFIGURED');
     const endpoint=new URL('/v1/align',provider.endpoint);
-    const response=await upstream(endpoint,{
+    const response=await upstream(endpoint.href,{
       method:'POST',redirect:'error',
       headers:{Authorization:'Bearer '+provider.key,'Content-Type':'application/json','ngrok-skip-browser-warning':'1'},
       body:JSON.stringify({source_text,target_text,source_lang,target_lang}),

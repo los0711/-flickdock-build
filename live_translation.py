@@ -13,7 +13,7 @@ from flickdock_motion import Spring
 from live_translation_draft import LiveDraft
 from live_translation_editor import EditorSelection, focused_editor
 from native_ui_common import RoundedScrollBar, colors, font_css_stack, reduced_motion
-from platform_native import configure_passive_cocoa_panel, native_input_available, mouse_buttons_mask
+from platform_native import configure_passive_cocoa_panel, native_input_available, mouse_buttons_mask, raise_edge_target
 from reference_widgets import PixelScrollTextEdit, ToolbarButton
 from sync_files import DiskWork
 from translation_alignment import SelectionAlignment
@@ -160,6 +160,9 @@ class LiveTranslationCard(QWidget):
         self.popup = LanguagePopup(store, self)
         self.popup.installEventFilter(self)
         self.popup.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+        if self._cocoa_card:
+            self.popup.setAttribute(Qt.WA_ShowWithoutActivating)
+            self.popup.setAttribute(Qt.WA_MacAlwaysShowToolWindow)
         self.language.clicked.connect(self._choose_target)
         self.sample.clicked.connect(self.sample_requested)
         self.insert.clicked.connect(self.insert_requested)
@@ -278,10 +281,12 @@ class LiveTranslationCard(QWidget):
             if self._cocoa_card:
                 configure_passive_cocoa_panel(self, mouse_tracking=True)
             self.show()
-            self.raise_()
             if self._cocoa_card:
+                raise_edge_target(self)
                 self._hover_timer.start()
                 self._restore_hover()
+            else:
+                self.raise_()
         if appearing:
             self.motion.animate_physical({'y': 0., 'opacity': 1.}, *CARD_REBOUND_SPRING)
         self._place(self.motion.values['y'])
@@ -357,7 +362,7 @@ class LiveTranslationCard(QWidget):
                 preferred = anchor - QPoint(0, self.popup.height())
                 frame = fit_card(self.anchor_area, self.obstacle, self.popup.size(), preferred, gap=self._gap)
                 if not frame.isEmpty():
-                    self.popup.popup_below(self.language, position=frame.topLeft())
+                    self.popup.popup_below(self.language, position=frame.topLeft(), passive=self._cocoa_card)
                     self.popup.search.setFocus()
                     break
 

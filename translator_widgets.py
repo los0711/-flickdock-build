@@ -787,13 +787,20 @@ class TranslatorPopup(QFrame):
                 self.setAttribute(Qt.WA_NoMouseReplay,True);self.hide();return True
         return False
 
-    def popup_below(self,anchor,*,position=None):
+    def popup_below(self,anchor,*,position=None,passive=False):
         self._dropdown_anchor=anchor
         self._anchor=weakref.ref(anchor);QApplication.instance().installEventFilter(self)
         self.setAttribute(Qt.WA_NoMouseReplay,True)
         self.adjustSize()
         if position is not None:
-            self.move(position);self.show();self.raise_()
+            self.move(position)
+            if passive:
+                from platform_native import configure_passive_cocoa_panel, raise_edge_target
+                configure_passive_cocoa_panel(self)
+                self.show()
+                raise_edge_target(self,above=anchor.window())
+            else:
+                self.show();self.raise_()
             return
         point=anchor.mapToGlobal(QPoint(0,anchor.height()+4))-QPoint(8,0)
         screen=screen_for_widget(anchor)
