@@ -791,6 +791,18 @@ class ClipboardTests(unittest.TestCase):
         new=dict(mono=mono,at=None,floor=client._observed_clock)
         self.assertEqual(client._copy_timestamp(new),30001)
 
+    def test_received_encoded_image_verifies_native_bytes_without_reading_a_bitmap(self):
+        from clipboard_history_store import encode_png
+        from clipboard_identity import signature
+        receiver=self.clients[1]
+        image=QImage(7,5,QImage.Format_ARGB32);image.fill(QColor('#89a3db'))
+        raw=encode_png(image);value=('image',dict(image=image,raw=raw,mime='image/png'))
+        with patch.object(receiver,'_snapshot',side_effect=[None,AssertionError('read after write')]) as read:
+            self.assertTrue(receiver._apply(value,None,identity=str(uuid4())))
+        read.assert_called_once_with()
+        self.assertEqual(bytes(self.clips[1].mimeData().data('image/png')),raw)
+        self.assertEqual(receiver._last_local_signature,signature(value))
+
     def test_native_write_retry_reuses_verified_file_without_downloading_again(self):
         receiver=self.clients[1];source=self.base/'write-busy.bin';source.write_bytes(b'original fixture bytes')
         with patch.object(self.clips[1],'setMimeData',return_value=None):

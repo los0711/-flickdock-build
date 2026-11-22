@@ -467,7 +467,11 @@ class ClipboardSync(QObject):
                     if not self.closed and hasattr(self,'cache') and sequence is not None:self._capture_virtual(descriptor,key)
                     return None
             value=None
-            if self._is_native and sys.platform=='darwin' and native_input_available():
+            # Cloud images already have their verified encoded bytes in the
+            # Qt-owned MIME. Reading Cocoa's synthesized TIFF immediately after
+            # publication can crash inside Qt's native image conversion.
+            own_cloud_clipboard=mac_clipboard and mime is not None and mime.hasFormat(SYNC_MARKER)
+            if mac_clipboard and not own_cloud_clipboard and native_input_available():
                 from AppKit import NSPasteboard
                 value=mac_clipboard_image(NSPasteboard.generalPasteboard())
             if value is None and mime is None:
@@ -1736,11 +1740,16 @@ class ClipboardSync(QObject):
         self._applying=True
         try:
             self.clipboard.setMimeData(mime)
-            actual=signature(self._snapshot())
             if kind=='image' and data.get('raw') and data.get('mime'):
                 native=self.clipboard.mimeData()
                 matches=native is not None and bytes(native.data(data['mime']))==data['raw']
-            else:matches=actual==signature(value)
+                # The read-back bytes are sufficient proof and already have
+                # a worker-computed fingerprint. Do not synthesize a bitmap.
+                actual=signature(value) if matches else None
+                self._snapshot_available=matches
+            else:
+                actual=signature(self._snapshot())
+                matches=actual==signature(value)
             if not matches:
                 native=self.clipboard.mimeData()
                 if native is not None and bytes(native.data(SYNC_MARKER))==(identity or self._seen).encode('ascii'):
