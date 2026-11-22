@@ -73,8 +73,14 @@ def click_insert(folder, sample):
             user.mouse_event(4,0,0,0,0)
             if wait_for(lambda:observed(lambda:bool(clicks)),interval=.35):
                 break
-        applied=wait_for(lambda:observed(lambda:sample().get('text')==TARGET
-            and sample().get('clipboard')==CLIPBOARD and not live._submitting),interval=6)
+        def applied_to_editor():
+            contents=sample()
+            # A rich Chromium paragraph represents a pasted trailing space
+            # as NBSP. The card retains the original draft's spacing.
+            return (requested.rstrip(' ')==TARGET
+                    and contents.get('text','').replace('\u00a0',' ')==requested
+                    and contents.get('clipboard')==CLIPBOARD and not live._submitting)
+        applied=wait_for(lambda:observed(applied_to_editor),interval=6)
         from ctypes.wintypes import HWND, POINT, DWORD
         user.WindowFromPoint.argtypes=(POINT,)
         user.WindowFromPoint.restype=HWND
