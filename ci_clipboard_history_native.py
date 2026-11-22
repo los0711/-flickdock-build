@@ -113,7 +113,7 @@ def target(root):
     if sys.platform=='darwin':
         import AppKit
         AppKit.NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
-    app.clipboard().setText(SENTINEL)
+    if os.environ.get('FD_CLIPBOARD_QA_KEEP_PASTEBOARD')!='1':app.clipboard().setText(SENTINEL)
     (root/'pid').write_text(str(os.getpid()))
     observations=0
     def record():
