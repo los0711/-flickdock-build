@@ -328,7 +328,7 @@ def _mac_editor(cancel, expected, insertion, sample, rejected=None):
             return None
         if sample:
             selected = read_string(attr(editor, b'AXSelectedText')) or ''
-            if selected and all(char in '•●* ' for char in selected):
+            if not selected.strip() or all(char in '•●* ' for char in selected):
                 return None
             if len(selected) <= 1000 and front_target() == target and not cancel.is_set() and not secure_input():
                 return EditorSelection((target, cf.CFHash(editor)), selected)

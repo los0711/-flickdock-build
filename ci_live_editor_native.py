@@ -47,6 +47,7 @@ def fixture(folder):
             if command == 'secure':
                 field.setEchoMode(QLineEdit.Password)
                 field.setText('Do not read this fixture')
+                field.selectAll()
             if command == 'insert':
                 field.setEchoMode(QLineEdit.Normal)
                 field.setText('abc')

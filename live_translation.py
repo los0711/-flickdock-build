@@ -377,11 +377,9 @@ class LiveEditorTranslation(QObject):
         if mouse_buttons_mask() & 1:
             self._sample_pressed = True
             return
-        if not isinstance(value, EditorSelection):
-            return
-        if value.text.strip() and (self._sample_pressed or value != self._sample_selection):
+        pressed, self._sample_pressed = self._sample_pressed, False
+        if isinstance(value, EditorSelection) and value.text.strip() and (pressed or value != self._sample_selection):
             self._sample_language(value.text)
-        self._sample_pressed = False
 
     def _cancel_sample(self):
         self._sample_active = False
