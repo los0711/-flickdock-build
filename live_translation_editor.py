@@ -270,46 +270,53 @@ class _AutomationObjects:
             self.ole.SafeArrayDestroy(array)
 
 
-def _windows_editor(cancel, expected, insertion, sample, at_pointer):
+def _windows_editor(cancel, expected, insertion, sample, at_pointer, rejected=None):
     from ctypes.wintypes import RECT
     from clipboard_history_native import front_target
 
+    def reject(reason):
+        if rejected is not None:rejected(reason)
+        return None
+
     target = front_target()
     if target is None:
-        return None
+        return reject('no external foreground window')
     scope = None if sample else _windows_application_scope(target[1], int(monotonic() // 5))
     if scope == 'document':
         return None
     with _automation() as apartment:
         if apartment is None or cancel.is_set():
-            return None
+            return reject('UI Automation unavailable')
         automation, com = apartment
         focused = com.object(automation, 8)
         if focused is None:
-            return None
+            return reject('no focused UI Automation element')
         process, control = (com.read(focused, slot, _INT) for slot in (20, 21))
         password, enabled = (com.read(focused, slot, _INT) for slot in (35, 28))
         if (process is None or process.value != target[1] or control is None
                 or password is None or password.value or enabled is None or not enabled.value):
-            return None
+            return reject(('focus rejected',process.value if process is not None else None,target[1],
+                           control.value if control is not None else None,
+                           password.value if password is not None else None,
+                           enabled.value if enabled is not None else None))
         if sample:
             selection = _sample_windows_selection(com, automation, focused, target, cancel, at_pointer)
             return selection if front_target() == target and not cancel.is_set() else None
         if control.value != 50004:
-            return None
+            return reject(('focus is not an edit control',control.value))
         value = com.pattern(focused, 10002, 'a94cd8b1-0844-4cd6-9d2d-640537ab39e9')
         if value is not None:
             readonly = com.read(value, 5, _INT)
             if readonly is None or readonly.value:
-                return None
+                return reject('value pattern is read-only')
         pattern = com.pattern(focused, 10014, '32eba289-3583-42c9-9c59-3b6d9a1e9b6a')
         document = com.object(pattern, 7) if pattern is not None else None
         if value is None and (document is None or not _windows_editable_range(com, document)):
-            return None
+            return reject(('no writable editor range',document is not None))
         identifier = com.runtime_id(focused)
         bounds = com.read(focused, 43, RECT)
         if not identifier or bounds is None or bounds.right <= bounds.left or bounds.bottom <= bounds.top:
-            return None
+            return reject('missing editor identity or geometry')
         web, document_site = False, False
         if scope == 'browser' or insertion is not None:
             web, document_site = _windows_web_context(com, automation, focused, cancel)
@@ -319,12 +326,12 @@ def _windows_editor(cancel, expected, insertion, sample, at_pointer):
             return None
         text = com.string(document, 12, _INT(MAX_TEXT_CHARS + 1)) if document is not None else com.string(value, 4)
         if text is None or len(text) > MAX_TEXT_CHARS or cancel.is_set():
-            return None
+            return reject('editor text unavailable or too long')
         selection = _windows_selection(com, pattern, document, text) if document is not None else None
         bounds = bounds.left, bounds.top, bounds.right - bounds.left, bounds.bottom - bounds.top
         state = EditorState((target, identifier), bounds, text, selection)
         if front_target() != target:
-            return None
+            return reject('foreground changed during editor read')
         if insertion is not None:
             if (not _same_draft(state, expected) or cancel.is_set() or not insertion
                     or len(insertion) > 24000 or '\0' in insertion):

@@ -50,10 +50,13 @@ app.whenReady().then(async () => {
         try {
           const state = await view.executeJavaScript(`(() => {
             const field = document.getElementById('field');
+            const box=field.getBoundingClientRect();
             return { text: field.innerText, selected: getSelection().toString(),
               inputs: Number(field.dataset.inputs), focused: document.activeElement === field,
-              other: document.getElementById('other').value };
+              other: document.getElementById('other').value, x:Math.round(box.left+25),y:Math.round(box.top+18) };
           })()`);
+          const bounds=window.getContentBounds();
+          state.point=[bounds.x+state.x,bounds.y+state.y];
           state.clipboard = clipboard.readText();
           fs.writeFileSync(path.join(folder, 'state.json'), JSON.stringify(state));
         } catch { /* A concurrent inspection or shutdown can interrupt a sample. */ }

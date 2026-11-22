@@ -1,11 +1,13 @@
 """Exercise real Windows UIA against two controlled Seda-style Electron webviews."""
 import json
+import ctypes
 import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 from threading import Event
+from time import sleep
 from unittest.mock import patch
 
 from ci_live_translation_web import wait_for
@@ -26,10 +28,20 @@ def verify(folder, electron, editor):
             except (OSError,ValueError):return {}
 
         assert wait_for(lambda:sample().get('focused'),interval=14), 'Electron webview never became focused'
+        point=sample()['point']
+        user=ctypes.windll.user32
+        assert user.SetCursorPos(*point)
+        sleep(.08)
+        user.mouse_event(2,0,0,0,0)
+        sleep(.05)
+        user.mouse_event(4,0,0,0,0)
         stop=Event()
         state=wait_for(lambda:focused_editor(stop),interval=8)
         if state is None:
-            return dict(accessible=False)
+            from live_translation_editor import _windows_editor
+            problems=[]
+            _windows_editor(stop,None,None,False,False,rejected=problems.append)
+            return dict(accessible=False,focus=sample().get('focused'),problems=problems)
         flags=[]
         selector=native.select_editor_text
         paste=native.paste_editor_text
