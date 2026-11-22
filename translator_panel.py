@@ -72,7 +72,7 @@ class TranslatorDialog(ReferenceModalDialog):
         self.back_button=overview_back_button(self.title_bar,lambda:manager.return_to_overview(self));head.addWidget(self.back_button);head.addStretch(1)
         self.auto_clipboard_button=button('自动翻译','translate',variant='secondary',parent=self.title_bar)
         self.auto_clipboard_button.setCheckable(True)
-        help_text='将当前输入框的文字发送给翻译服务。点击插入可用译文替换原文。'
+        help_text='将当前输入框的文字发送给翻译服务。文档编辑器会跳过。点击插入可用译文替换原文。'
         self.auto_clipboard_button.setToolTip(help_text)
         self.auto_clipboard_button.setAccessibleDescription(help_text)
         self.auto_clipboard_button.setProperty('flickdockHoverHelp',True)

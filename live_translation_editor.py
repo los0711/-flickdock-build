@@ -2,8 +2,11 @@
 from contextlib import ExitStack, contextmanager
 import ctypes
 from dataclasses import dataclass
-from functools import cache
+from functools import cache, lru_cache
+from ntpath import basename
 import sys
+from time import monotonic
+from urllib.parse import urlsplit
 from uuid import UUID
 
 from translation_document import python_position
@@ -22,6 +25,100 @@ class EditorState:
 class EditorSelection:
     identity: tuple
     text: str
+
+
+_WINDOWS_DOCUMENTS = frozenset((
+    'winword.exe', 'excel.exe', 'powerpnt.exe', 'wps.exe', 'wpp.exe', 'et.exe',
+    'soffice.exe', 'soffice.bin', 'wordpad.exe', 'notepad.exe', 'notepad++.exe',
+))
+_MAC_DOCUMENTS = frozenset((
+    'com.microsoft.word', 'com.microsoft.excel', 'com.microsoft.powerpoint',
+    'com.apple.iwork.pages', 'com.apple.iwork.numbers', 'com.apple.iwork.keynote',
+    'com.apple.textedit', 'com.kingsoft.wpsoffice.mac', 'org.libreoffice.script',
+))
+_WINDOWS_BROWSERS = frozenset((
+    'chrome.exe', 'msedge.exe', 'firefox.exe', 'brave.exe', 'opera.exe', 'vivaldi.exe', 'arc.exe',
+))
+_MAC_BROWSERS = frozenset((
+    'com.apple.safari', 'com.google.chrome', 'com.microsoft.edgemac', 'org.mozilla.firefox',
+    'com.brave.browser', 'com.operasoftware.opera', 'com.vivaldi.vivaldi', 'company.thebrowser.browser',
+))
+_DOCUMENT_HOSTS = frozenset((
+    'docs.google.com', 'docs.qq.com', 'kdocs.cn', 'www.kdocs.cn',
+    'shimo.im', 'www.shimo.im', 'notion.so', 'www.notion.so',
+    'word.cloud.microsoft', 'excel.cloud.microsoft', 'powerpoint.cloud.microsoft',
+))
+_OFFICE_PORTALS = frozenset(('office.com', 'www.office.com', 'm365.cloud.microsoft'))
+_OFFICE_EDITORS = frozenset(('word', 'excel', 'powerpoint'))
+
+
+def _application_scope(platform, identifier):
+    name = (identifier or '').casefold()
+    if platform == 'win32':
+        name = basename(name)
+        documents, browsers = _WINDOWS_DOCUMENTS, _WINDOWS_BROWSERS
+    else:
+        documents, browsers = _MAC_DOCUMENTS, _MAC_BROWSERS
+    if name in documents:
+        return 'document'
+    if name in browsers:
+        return 'browser'
+    return 'editor'
+
+
+def _is_web_document(address):
+    if not address or len(address) > 8192:
+        return False
+    try:
+        url = urlsplit(address)
+        host = (url.hostname or '').rstrip('.')
+    except ValueError:
+        return False
+    if url.scheme not in ('https', 'http'):
+        return False
+    path = url.path.casefold()
+    if host in _DOCUMENT_HOSTS or host.endswith(('.officeapps.live.com', '.kdocs.cn')):
+        return True
+    if host in _OFFICE_PORTALS:
+        return any(part in _OFFICE_EDITORS for part in path.split('/'))
+    return host.endswith('.sharepoint.com') and path.endswith(('/doc.aspx', '/wopiframe.aspx'))
+
+
+@cache
+def _process_image_api():
+    from ctypes import wintypes
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    kernel.OpenProcess.restype = wintypes.HANDLE
+    kernel.QueryFullProcessImageNameW.argtypes = (
+        wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD))
+    kernel.QueryFullProcessImageNameW.restype = wintypes.BOOL
+    kernel.CloseHandle.argtypes = (wintypes.HANDLE,)
+    return kernel
+
+
+@lru_cache(maxsize=32)
+def _windows_application_scope(pid, _period):
+    from ctypes import wintypes
+    kernel = _process_image_api()
+    process = kernel.OpenProcess(0x1000, False, pid)
+    if not process:
+        return 'editor'
+    try:
+        size = wintypes.DWORD(1024)
+        image = ctypes.create_unicode_buffer(size.value)
+        if kernel.QueryFullProcessImageNameW(process, 0, image, ctypes.byref(size)):
+            return _application_scope('win32', image.value)
+        return 'editor'
+    finally:
+        kernel.CloseHandle(process)
+
+
+@lru_cache(maxsize=32)
+def _mac_application_scope(pid, _period):
+    from AppKit import NSRunningApplication
+    application = NSRunningApplication.runningApplicationWithProcessIdentifier_(pid)
+    return _application_scope('darwin', application.bundleIdentifier() if application is not None else None)
 
 
 def focused_editor(cancel, *, expected=None, insertion=None, sample=False, at_pointer=False):
@@ -151,6 +248,9 @@ def _windows_editor(cancel, expected, insertion, sample, at_pointer):
     target = front_target()
     if target is None:
         return None
+    scope = None if sample else _windows_application_scope(target[1], int(monotonic() // 5))
+    if scope == 'document':
+        return None
     with _automation() as apartment:
         if apartment is None or cancel.is_set():
             return None
@@ -181,6 +281,10 @@ def _windows_editor(cancel, expected, insertion, sample, at_pointer):
         bounds = com.read(focused, 43, RECT)
         if not identifier or bounds is None or bounds.right <= bounds.left or bounds.bottom <= bounds.top:
             return None
+        if scope == 'browser' and _windows_web_document(com, automation, focused, cancel):
+            return None
+        if cancel.is_set():
+            return None
         text = com.string(document, 12, _INT(MAX_TEXT_CHARS + 1)) if document is not None else com.string(value, 4)
         if text is None or len(text) > MAX_TEXT_CHARS or cancel.is_set():
             return None
@@ -199,6 +303,25 @@ def _windows_editor(cancel, expected, insertion, sample, at_pointer):
                 return False
             return bool(front_target() == target and not cancel.is_set() and insert_text(insertion, target, cancel=cancel))
         return state
+
+
+def _windows_web_document(com, automation, editor, cancel):
+    walker = com.object(automation, 16)
+    if walker is None:
+        return False
+    deadline = monotonic() + .12
+    node = editor
+    for _ in range(32):
+        if node is None or cancel.is_set() or monotonic() > deadline:
+            break
+        control = com.read(node, 21, _INT)
+        if control is not None and control.value == 50030:
+            # Browser-provided document URL, separate from the editor's text.
+            legacy = com.pattern(node, 10018, '828055ad-355b-4435-86d5-3b51c14a9b1b')
+            if legacy is not None and _is_web_document(com.string(legacy, 8)):
+                return True
+        node = com.object(walker, 3, node)
+    return False
 
 
 def _same_draft(state, expected):
@@ -299,6 +422,9 @@ def _mac_editor_api():
     cf.CFHash.argtypes = [_POINTER]
     cf.CFHash.restype = ctypes.c_size_t
     cf.CFStringGetTypeID.restype = ctypes.c_size_t
+    cf.CFURLGetTypeID.restype = ctypes.c_size_t
+    cf.CFURLGetString.argtypes = [_POINTER]
+    cf.CFURLGetString.restype = _POINTER
     cf.CFGetTypeID.argtypes = [_POINTER]
     cf.CFGetTypeID.restype = ctypes.c_size_t
     cf.CFStringGetLength.argtypes = [_POINTER]
@@ -322,6 +448,9 @@ def _mac_editor(cancel, expected, insertion, sample, rejected=None):
         return reject('protected input is active')
     if not target or not ax.AXIsProcessTrusted():
         return reject('no external foreground application or Accessibility grant')
+    scope = None if sample else _mac_application_scope(target, int(monotonic() // 5))
+    if scope == 'document':
+        return None
     with ExitStack() as stack:
         def retain(ref):
             if ref:
@@ -386,6 +515,21 @@ def _mac_editor(cancel, expected, insertion, sample, rejected=None):
         selection_writable = settable(selected_key)
         if not selection_writable and not settable(value_key):
             return reject('neither AXSelectedText nor AXValue is writable')
+        if scope == 'browser':
+            deadline = monotonic() + .12
+            node = editor
+            for _ in range(32):
+                if not node or cancel.is_set() or monotonic() > deadline:
+                    break
+                if read_string(attr(node, b'AXRole')) == 'AXWebArea':
+                    address = attr(node, b'AXURL')
+                    if address and cf.CFGetTypeID(address) == cf.CFURLGetTypeID():
+                        address = cf.CFURLGetString(address)
+                    if _is_web_document(read_string(address)):
+                        return None
+                node = attr(node, b'AXParent')
+        if cancel.is_set() or secure_input():
+            return None
         text = read_string(attr(editor, b'AXValue'))
         if text and all(char in '•●* ' for char in text):
             return None

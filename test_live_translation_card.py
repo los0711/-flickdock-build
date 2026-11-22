@@ -1,6 +1,8 @@
 """Synthetic editor regression coverage for the floating, incremental translator."""
 import tempfile
+from threading import Event
 import time
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -10,7 +12,7 @@ from PySide6.QtWidgets import QApplication, QWidget
 
 from live_translation import FOOTER_HEIGHT, LiveEditorTranslation, LiveTranslationCard, fit_card
 from live_translation_draft import LiveDraft
-from live_translation_editor import EditorSelection, EditorState
+from live_translation_editor import EditorSelection, EditorState, _application_scope, _is_web_document, _windows_web_document
 from live_translation_motion import LiveTranslationMark, LiveTranslationNotice
 from native_ui_common import colors
 from translator_store import TranslatorStore
@@ -79,6 +81,58 @@ class LiveTranslationTests(unittest.TestCase):
             self.assertTrue(settings.live_editor_translation_enabled)
             settings.update(live_editor_translation_enabled=False)
             self.assertFalse(SettingsStore(directory).live_editor_translation_enabled)
+
+    def test_document_apps_are_excluded_without_a_chat_allowlist(self):
+        for platform, identifier in (
+            ('win32', r'C:\Office\WINWORD.EXE'), ('win32', 'wps.exe'),
+            ('darwin', 'com.apple.iWork.Pages'), ('darwin', 'com.apple.TextEdit'),
+        ):
+            self.assertEqual(_application_scope(platform, identifier), 'document')
+        for platform, identifier in (
+            ('win32', 'qq.exe'), ('win32', 'UnknownMessenger.exe'),
+            ('darwin', 'org.telegram.desktop'), ('darwin', 'org.example.custom-editor'),
+        ):
+            self.assertEqual(_application_scope(platform, identifier), 'editor')
+        self.assertEqual(_application_scope('win32', 'firefox.exe'), 'browser')
+        self.assertEqual(_application_scope('darwin', 'com.apple.Safari'), 'browser')
+
+    def test_only_document_sites_and_editor_routes_are_excluded(self):
+        for address in (
+            'https://docs.google.com/document/d/sample/edit',
+            'https://web.kdocs.cn/l/sample', 'https://docs.qq.com/doc/sample',
+            'https://www.notion.so/workspace/page', 'https://word.cloud.microsoft/',
+            'https://www.office.com/launch/word', 'https://office.sharepoint.com/_layouts/15/Doc.aspx',
+            'https://word-edit.officeapps.live.com/we/wordeditorframe.aspx',
+        ):
+            self.assertTrue(_is_web_document(address), address)
+        for address in (
+            None, 'https://web.whatsapp.com/', 'https://chatgpt.com/', 'https://claude.ai/chat/',
+            'https://copilot.microsoft.com/', 'https://www.office.com/chat',
+            'https://office.sharepoint.com/sites/home', 'https://docs.google.com.example.org/',
+        ):
+            self.assertFalse(_is_web_document(address), address)
+
+    def test_windows_finds_document_ancestry_without_requiring_a_chat_label_or_url(self):
+        class Automation:
+            def __init__(self, address):
+                self.address = address
+
+            def object(self, provider, slot, *arguments):
+                return 'walker' if slot == 16 else {'editor':'inner', 'inner':'tab'}.get(arguments[0])
+
+            def read(self, provider, slot, value_type):
+                return SimpleNamespace(value=50030 if provider == 'tab' else 50004)
+
+            def pattern(self, provider, pattern, iid):
+                return provider
+
+            def string(self, provider, slot):
+                return self.address
+
+        for address, is_document in (('https://docs.google.com/document/d/test/edit', True),
+                                     ('https://claude.ai/new', False), (None, False)):
+            self.assertEqual(_windows_web_document(Automation(address), 'automation', 'editor', Event()),
+                             is_document)
 
     def test_append_sends_only_the_new_sentence(self):
         api = UnitsApi()

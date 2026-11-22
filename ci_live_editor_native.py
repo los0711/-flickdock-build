@@ -8,6 +8,7 @@ import sys
 import tempfile
 from threading import Event
 import time
+from unittest.mock import patch
 
 from live_translation_editor import focused_editor
 
@@ -167,6 +168,11 @@ def verify(output):
             assert editor.selection == (0, 9), editor.selection
             sample = focused_editor(cancel, sample=True)
             assert sample is not None and sample.text == 'Synthetic', sample
+            scope_probe = '_windows_application_scope' if sys.platform == 'win32' else '_mac_application_scope'
+            with patch('live_translation_editor.'+scope_probe, return_value='document'):
+                assert focused_editor(cancel) is None, 'Document text must be skipped by automatic translation'
+                assert focused_editor(cancel, sample=True) == sample, 'Manual language sampling remains available'
+            result['document_scope_checked'] = True
             if sys.platform == 'win32':
                 import ctypes
                 x, y, width, height = editor.bounds
