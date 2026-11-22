@@ -48,7 +48,8 @@ def click_insert(folder, sample):
 
     try:
         live.start('en')
-        if not wait_for(lambda:observed(lambda:live.draft.ready and live.card.isVisible()),interval=9):
+        if not wait_for(lambda:observed(lambda:live.draft.ready and live.card.isVisible()
+                        and live.card.motion.values['opacity']==1 and live.card.motion.values['y']==0),interval=9):
             return {'card_ready':False}
         card=live.card
         point=card.screen_point(card.surface,QPoint(35,card.surface.height()//2))
@@ -57,7 +58,10 @@ def click_insert(folder, sample):
             return {'card_ready':True,'hover_opens':False}
         clicks=[]
         card.insert.clicked.connect(lambda _checked=False:clicks.append(True))
-        pointer(card.screen_point(card.insert,card.insert.rect().center()),click=True)
+        button=card.screen_point(card.insert,card.insert.rect().center())
+        pointer(button)
+        wait_for(lambda:observed(lambda:False),interval=.14)
+        pointer(button,click=True)
         applied=wait_for(lambda:observed(lambda:sample().get('text')==TARGET
             and sample().get('clipboard')==CLIPBOARD and not live._submitting),interval=6)
         return {'card_ready':True,'hover_opens':True,'click_replaced':bool(applied),
@@ -141,12 +145,13 @@ if __name__=='__main__':
     if os.environ.get('GITHUB_ACTIONS')!='true' or sys.platform!='win32':
         raise RuntimeError('The Electron input probe requires a disposable Windows desktop.')
     report={}
-    application=QApplication([])
-    application.setQuitOnLastWindowClosed(False)
     try:
         with tempfile.TemporaryDirectory(prefix='flickdock-seda-webview-') as scratch:
             for app in ('whatsapp','telegram'):
                 report[app]=verify(Path(scratch)/app,sys.argv[1],app)
+            application=QApplication([])
+            application.setQuitOnLastWindowClosed(False)
+            for app in ('whatsapp','telegram'):
                 report[app]['card']=verify(Path(scratch)/(app+'-card'),sys.argv[1],app,through_card=True)
     finally:
         Path(sys.argv[2]).write_text(json.dumps(report,indent=2),encoding='utf-8')
