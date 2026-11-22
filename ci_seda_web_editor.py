@@ -60,6 +60,10 @@ def click_insert(folder, sample):
         card.insert.clicked.connect(lambda _checked=False:clicks.append(True))
         for _ in range(2):
             button=card.screen_point(card.insert,card.insert.rect().center())
+            # Traverse the visible body before entering the newly expanded
+            # footer just as a pointer moving over the real surface would.
+            pointer(QPoint(button.x(), point.y()))
+            wait_for(lambda:observed(lambda:False),interval=.10)
             pointer(button)
             wait_for(lambda:observed(lambda:False),interval=.12)
             user=ctypes.windll.user32
@@ -70,12 +74,22 @@ def click_insert(folder, sample):
                 break
         applied=wait_for(lambda:observed(lambda:sample().get('text')==TARGET
             and sample().get('clipboard')==CLIPBOARD and not live._submitting),interval=6)
+        from ctypes.wintypes import HWND, POINT, DWORD
+        user.WindowFromPoint.argtypes=(POINT,)
+        user.WindowFromPoint.restype=HWND
+        hit=user.WindowFromPoint(POINT(*button.toTuple()))
+        hit_pid=DWORD()
+        user.GetWindowThreadProcessId(hit,ctypes.byref(hit_pid))
+        widget=QApplication.widgetAt(button)
         return {'card_ready':True,'hover_opens':True,'click_replaced':bool(applied),
                 'click_received':bool(clicks),'focus_retained':front_target()==target,
                 'input_events':sample().get('inputs'),
                 'adjacent_preserved':sample().get('other')=='Other input must remain unchanged',
                 **({} if clicks else {'point':button.toTuple(),'card_frame':card.screen_frame().getRect(),
-                    'status':live._sample_message,'entered':card.insert.underMouse()})}
+                    'status':live._sample_message,'entered':card.insert.underMouse(),
+                    'native_hit':('card' if hit==int(card.winId()) else 'fixture' if hit_pid.value==target[1] else 'other'),
+                    'qt_hit':type(widget).__name__ if widget else None,'own_pid':hit_pid.value==os.getpid(),
+                    'button_visible':card.insert.isVisible(),'open_height':card.footer_clip.height()})}
     finally:
         live.stop()
         live.pool.waitForDone(4000)
