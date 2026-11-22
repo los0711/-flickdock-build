@@ -566,7 +566,9 @@ class TranslatorSurface(RoundedSurfaceFrame):
     def __init__(self,parent=None,*,role='card',radius=12,border=True):
         super().__init__(parent,content_inset=0);self.role=role;self.radius=radius;self.border=border
     def surface_style(self):
-        c=colors(ui_theme.current_theme());return c[self.role],c['border'] if self.border else None,self.radius
+        palette = colors(ui_theme.current_theme())
+        outline = 'glass_border' if self.role == 'window_backdrop' else 'border'
+        return palette[self.role], palette[outline] if self.border else None, self.radius
 
 
 class TranslatorSplitAction(TranslatorSurface):

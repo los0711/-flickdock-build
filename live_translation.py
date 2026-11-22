@@ -103,7 +103,7 @@ class LiveTranslationCard(QWidget):
         self._body_height = 20
         self._base_height = CARD_MIN_HEIGHT
         self._footer_open = False
-        self.surface = TranslatorSurface(self, role='popup_surface', radius=14)
+        self.surface = TranslatorSurface(self, role='window_backdrop', radius=14)
         self.content = QWidget(self.surface)
         body = QVBoxLayout(self.content)
         body.setContentsMargins(14, 8, 14, 9)
@@ -181,7 +181,7 @@ class LiveTranslationCard(QWidget):
             "QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;}"
             "QScrollBar::handle:vertical{min-height:18px;background:transparent;}"
         )
-        self.result.set_viewport_fill(QColor(palette['popup_surface']))
+        self.result.set_viewport_fill(QColor(palette['window_backdrop']))
         self.surface.update()
         self.language.update()
 

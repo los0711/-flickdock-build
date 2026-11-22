@@ -5,14 +5,16 @@ import unittest
 from unittest.mock import patch
 
 from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, QSize, Qt, Signal
-from PySide6.QtGui import QEnterEvent
+from PySide6.QtGui import QColor, QEnterEvent
 from PySide6.QtWidgets import QApplication, QWidget
 
 from live_translation import FOOTER_HEIGHT, LiveEditorTranslation, LiveTranslationCard, fit_card
 from live_translation_draft import LiveDraft
 from live_translation_editor import EditorSelection, EditorState
 from live_translation_motion import LiveTranslationMark, LiveTranslationNotice
+from native_ui_common import colors
 from translator_store import TranslatorStore
+import ui_theme
 
 
 def complete(request, *texts):
@@ -226,6 +228,25 @@ class LiveTranslationTests(unittest.TestCase):
             finally:
                 card.close()
                 store.close()
+
+    def test_live_card_and_text_viewport_use_the_application_backdrop(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = TranslatorStore(directory, autoload=False)
+            previous_theme = ui_theme.current_theme()
+            card = LiveTranslationCard(store)
+            try:
+                for theme in ('light', 'dark'):
+                    with self.subTest(theme=theme):
+                        ui_theme.set_theme(theme)
+                        card.refresh_theme()
+                        palette = colors(theme)
+                        self.assertEqual(card.surface.surface_style(),
+                                         (palette['window_backdrop'], palette['glass_border'], 14))
+                        self.assertEqual(card.result._viewport_fill, QColor(palette['window_backdrop']))
+            finally:
+                card.close()
+                store.close()
+                ui_theme.set_theme(previous_theme)
 
     def test_follow_caret_and_selection_in_long_translation(self):
         bounds = (60, 105, 450, 120)
