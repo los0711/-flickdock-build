@@ -1092,11 +1092,7 @@ class LanPanel(QFrame):
         columns = QHBoxLayout(); columns.setContentsMargins(0,0,0,0); columns.setSpacing(WORKBENCH_GAP_PX)
         self.left_column=QWidget(self)
         self.left_column.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Expanding)
-        left_outer=QVBoxLayout(self.left_column);left_outer.setContentsMargins(0,0,0,0);left_outer.setSpacing(8)
-        self.left_content=QWidget(self.left_column)
-        self.left_content.setObjectName('lanLeftContent');self.left_content.setAttribute(Qt.WA_StyledBackground,True)
-        left=QVBoxLayout(self.left_content);left.setContentsMargins(0,0,0,0);left.setSpacing(WORKBENCH_GAP_PX)
-        left.setSizeConstraint(QLayout.SetMinimumSize)
+        left=QVBoxLayout(self.left_column);left.setContentsMargins(0,0,0,0);left.setSpacing(WORKBENCH_GAP_PX)
         columns.addWidget(self.left_column,1)
         self.queue_area=_TransferSurface(self,self,'workbench');self.queue_area.setObjectName('lanPayloadArea')
         payload=QVBoxLayout(self.queue_area);payload.setContentsMargins(CARD_MARGIN_PX-1,CARD_MARGIN_PX-1,CARD_MARGIN_PX-1,CARD_MARGIN_PX-1);payload.setSpacing(10)
@@ -1150,6 +1146,10 @@ class LanPanel(QFrame):
         target.addStretch(1)
         target.addWidget(self.scan_indicator); target.addWidget(self.peer_count)
         send.addLayout(target)
+        self.left_content=QWidget(self.send_column)
+        self.left_content.setObjectName('lanLeftContent');self.left_content.setAttribute(Qt.WA_StyledBackground,True)
+        form=QVBoxLayout(self.left_content);form.setContentsMargins(0,0,0,0);form.setSpacing(8)
+        form.setSizeConstraint(QLayout.SetMinimumSize)
         self.devices = _DevicesCombo(self); self.devices.setMinimumHeight(32); self.devices.setMinimumWidth(0)
         self.devices.setObjectName('lanDevicePicker')
         self.devices.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
@@ -1165,14 +1165,14 @@ class LanPanel(QFrame):
         self.devices.remove_requested.connect(self._remove_recent)
         self._pending_peers=None
         self.devices.popup_closed.connect(self._apply_pending_peers,Qt.QueuedConnection)
-        send.addWidget(self.devices)
+        form.addWidget(self.devices)
         self.nearby_hint=_TransferSurface(self.send_column,self,'route');self.nearby_hint.setObjectName('lanRouteHint');nearby_row=QHBoxLayout(self.nearby_hint)
         nearby_row.setContentsMargins(10,6,10,6);nearby_row.setSpacing(8)
         nearby_text=_label('已在局域网发现此设备，推荐使用局域网传输',self.nearby_hint,muted=True)
         nearby_text.setWordWrap(True);nearby_row.addWidget(nearby_text,1)
         self.use_lan_button=_button('使用局域网',self.nearby_hint);nearby_row.addWidget(self.use_lan_button)
         self.use_lan_button.clicked.connect(self._recommend_lan);self.nearby_hint.hide()
-        if self._wan:send.addWidget(self.nearby_hint)
+        if self._wan:form.addWidget(self.nearby_hint)
         self.peer_code_label=_label('对方接收码',self.send_column)
         self.peer_code_label.setObjectName('lanMuted');self.peer_code_label.setVisible(self._wan)
         self.peer_code_input=_TransferLineEdit(self.send_column)
@@ -1213,30 +1213,28 @@ class LanPanel(QFrame):
             pair.addWidget(self.send_code,1)
             remote=QWidget(self.pairing_card);remote_layout=QVBoxLayout(remote);remote_layout.setContentsMargins(0,0,0,0);remote_layout.setSpacing(4)
             remote_layout.addWidget(self.peer_code_label);self.peer_code_input.setFixedHeight(36);remote_layout.addWidget(self.peer_code_input);remote_layout.addStretch(1)
-            pair.addWidget(remote,1);send.addWidget(self.pairing_card)
+            pair.addWidget(remote,1);form.addWidget(self.pairing_card)
         else:
-            send.addWidget(self.send_code)
+            form.addWidget(self.send_code)
             self.send_code.hide()
-        send.addStretch(1)
+        form.addStretch(1)
         self.send_button = _button('发送', self); self.send_button.setObjectName('lanPrimary')
         self.send_button.setProperty('pressScale',True)
         self.send_button.setMinimumHeight(34)
         self.send_button.clicked.connect(self._send)
-        # The WAN form has additional receive-code fields. Keep its natural
-        # minimum height and scroll on short screens instead of letting Qt
-        # resolve impossible fixed heights by overlapping adjacent controls.
-        self.send_scroll=QScrollArea(self);self.send_scroll.setObjectName('lanSendScroll')
+        # Keep the device heading, file queue and send button outside the
+        # receive-code form's scrollable content.
+        self.send_scroll=QScrollArea(self.send_column);self.send_scroll.setObjectName('lanSendScroll')
         self.send_scroll.setVerticalScrollBar(_TransferScrollBar(self.send_scroll))
         self.send_scroll.setFrameShape(QFrame.Shape.NoFrame);self.send_scroll.setWidgetResizable(True)
         self.send_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        send.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
-        left.addWidget(self.send_column,1)
-        self.send_scroll.setWidget(self.left_content);left_outer.addWidget(self.send_scroll,1)
+        self.send_scroll.setMinimumHeight(36);self.send_scroll.setWidget(self.left_content)
         self.left_content.setAutoFillBackground(False);self.send_scroll.viewport().setAutoFillBackground(False)
-        left_outer.addWidget(self.send_button)
+        send.addWidget(self.send_scroll,1)
+        left.addWidget(self.send_column,1)
+        left.addWidget(self.send_button)
 
         self.activity_column = QFrame(self); self.activity_column.setObjectName('lanActivityColumn')
-        self._fixed_activity_cards=sys.platform=='darwin'
         self.activity_column.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Expanding)
         activity = QVBoxLayout(self.activity_column); activity.setContentsMargins(0,0,0,0); activity.setSpacing(WORKBENCH_GAP_PX)
         self.tasks_card=_TransferSurface(self.activity_column,self,'workbench');self.tasks_card.setObjectName('lanWorkbenchCard')
@@ -1253,20 +1251,17 @@ class LanPanel(QFrame):
         self.transfers_layout = QVBoxLayout(self.transfers_body)
         self.transfers_layout.setContentsMargins(3,3,3,3); self.transfers_layout.setSpacing(10)
         self.transfers_layout.addStretch(1)
-        self.transfers_body.setMinimumHeight(76)
-        self.active_rows_scroll=None
-        if self._fixed_activity_cards:
-            self.active_rows_scroll=QScrollArea(self.tasks_card)
-            self.active_rows_scroll.setObjectName('lanActiveRowsScroll')
-            self.active_rows_scroll.setFrameShape(QFrame.NoFrame)
-            self.active_rows_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-            self.active_rows_scroll.setVerticalScrollBar(_TransferScrollBar(self.active_rows_scroll))
-            self.active_rows_scroll.setWidgetResizable(True)
-            self.active_rows_scroll.setFixedHeight(76)
-            self.active_rows_scroll.setWidget(self.transfers_body)
-            self.transfers_body.setAutoFillBackground(False)
-            self.transfers_layout.setSizeConstraint(QLayout.SetMinimumSize)
-        tasks.addWidget(self.active_rows_scroll if self._fixed_activity_cards else self.transfers_body,1)
+        self.transfers_layout.setSizeConstraint(QLayout.SetMinimumSize)
+        self.active_rows_scroll=QScrollArea(self.tasks_card)
+        self.active_rows_scroll.setObjectName('lanActiveRowsScroll')
+        self.active_rows_scroll.setFrameShape(QFrame.NoFrame)
+        self.active_rows_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.active_rows_scroll.setVerticalScrollBar(_TransferScrollBar(self.active_rows_scroll))
+        self.active_rows_scroll.setWidgetResizable(True)
+        self.active_rows_scroll.setFixedHeight(76)
+        self.active_rows_scroll.setWidget(self.transfers_body)
+        self.transfers_body.setAutoFillBackground(False)
+        tasks.addWidget(self.active_rows_scroll,1)
         self.transfers_empty = _label('目前没有正在进行的传输', self.transfers_body, muted=True)
         self.transfers_empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.transfers_empty.setSizePolicy(QSizePolicy.Policy.Expanding,QSizePolicy.Policy.Expanding)
@@ -1330,22 +1325,7 @@ class LanPanel(QFrame):
         self.open_destination.clicked.connect(self._open_destination);destination.addWidget(self.open_destination)
         self.choose_destination = _button('更改位置', self); self.choose_destination.clicked.connect(self._choose_destination)
         destination.addWidget(self.choose_destination)
-        # Preserve the natural minimum of both right-hand sections on short
-        # logical screens. Otherwise Qt compresses the layout past its fixed
-        # children and overlays history, headings and the destination field.
-        self.activity_scroll=QScrollArea(self);self.activity_scroll.setObjectName('lanActivityScroll')
-        self.activity_scroll.setVerticalScrollBar(_TransferScrollBar(self.activity_scroll))
-        self.activity_scroll.setFrameShape(QFrame.Shape.NoFrame);self.activity_scroll.setWidgetResizable(True)
-        self.activity_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        if self._fixed_activity_cards:
-            self.activity_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-            self.activity_scroll.setWidgetResizable(False)
-            self.activity_scroll.setProperty('scrollEdgeBlur',False)
-            self.activity_column.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Ignored)
-            activity.setSizeConstraint(QLayout.SetNoConstraint)
-        else:activity.setSizeConstraint(QLayout.SetMinimumSize)
-        self.activity_scroll.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Expanding)
-        self.activity_scroll.setWidget(self.activity_column);columns.addWidget(self.activity_scroll,1)
+        columns.addWidget(self.activity_column,1)
         layout.addLayout(columns, 1)
         layout.addWidget(self.destination_bar)
         self.status_label = _StatusLabel('', self)
@@ -1361,18 +1341,17 @@ class LanPanel(QFrame):
         self._activity_fit_timer=QTimer(self);self._activity_fit_timer.setSingleShot(True)
         self._activity_fit_timer.timeout.connect(self._fit_activity)
         self.tasks_card.installEventFilter(self)
-        if self._fixed_activity_cards:self.activity_scroll.viewport().installEventFilter(self)
+        self.activity_column.installEventFilter(self)
         self._peers_changed(self.service.peers()); self.queue_paths([],replace=True); self.apply_theme(theme)
 
     def eventFilter(self,watched,event):
         if watched is self.tasks_card and event.type()==QEvent.LayoutRequest:self._activity_fit_timer.start(0)
-        if self._fixed_activity_cards and watched is self.activity_scroll.viewport() and event.type()==QEvent.Resize:
-            self._fit_activity()
+        if watched is self.activity_column and event.type()==QEvent.Resize:self._activity_fit_timer.start(0)
         return super().eventFilter(watched,event)
 
     def resizeEvent(self,event):
         super().resizeEvent(event)
-        if hasattr(self,'_activity_fit_timer'):self._fit_queue();self._fit_activity()
+        if hasattr(self,'_activity_fit_timer'):self._fit_queue();self._activity_fit_timer.start(0)
 
     def _fit_queue(self):
         queue=self.queue_column.layout();payload=self.queue_area.layout()
@@ -1391,30 +1370,16 @@ class LanPanel(QFrame):
         if self.queue_area.minimumHeight()!=height or self.queue_area.maximumHeight()!=height:self.queue_area.setFixedHeight(height)
 
     def _fit_activity(self):
-        if self._fixed_activity_cards:
-            rows=self.active_rows_scroll
-            viewport=self.activity_scroll.viewport()
-            if self.activity_column.size()!=viewport.size():self.activity_column.setFixedSize(viewport.size())
-            chrome=self.tasks_card.minimumSizeHint().height()-rows.minimumHeight()
-            room=viewport.height()-WORKBENCH_GAP_PX-self.history_card.minimumSizeHint().height()-chrome
-            active=sum(not row.get('finished') for row in self._rows.values())
-            # Reserve space from the outer viewport, never from the inner
-            # layout's current size hint. A history scroll or a wrapped offer
-            # can otherwise resize the two cards while the user scrolls.
-            target=76 if not active else max(104,round(viewport.height()*(.32 if active==1 else .48)))
-            height=max(76,min(room,target))
-            if rows.height()!=height:rows.setFixedHeight(height)
-            return
-        width=max(1,self.activity_scroll.viewport().width())
-        heights=[]
-        for card in (self.tasks_card,self.history_card):
-            inner=card.layout();inner.activate();wrapped=inner.totalHeightForWidth(width) if inner.hasHeightForWidth() else -1
-            height=max(card.minimumSizeHint().height(),wrapped)
-            if card.minimumHeight()!=height:card.setMinimumHeight(height)
-            heights.append(height)
-        required=sum(heights)+WORKBENCH_GAP_PX
-        if self.activity_column.minimumHeight()!=required:self.activity_column.setMinimumHeight(required)
-        self.activity_column.layout().activate()
+        rows=self.active_rows_scroll
+        height=self.activity_column.height()
+        chrome=self.tasks_card.minimumSizeHint().height()-rows.minimumHeight()
+        room=height-WORKBENCH_GAP_PX-self.history_card.minimumSizeHint().height()-chrome
+        active=sum(not row.get('finished') for row in self._rows.values())
+        # The allocated space depends on the column and card headers.
+        # The lists' contents and scroll positions never size their cards.
+        target=76 if not active else max(104,round(height*(.32 if active==1 else .48)))
+        visible_height=max(40,min(room,target))
+        if rows.height()!=visible_height:rows.setFixedHeight(visible_height)
 
     def set_paths_provider(self, callback): self._paths_provider = callback
 
@@ -1704,8 +1669,8 @@ class LanPanel(QFrame):
             QFrame#lanPanel QLabel#lanHistoryState {{font-size:10px;}}
             QFrame#lanPanel QPushButton, QFrame#lanPanel QComboBox {{font-size:12px;}}
             QFrame#lanPanel QLineEdit {{font-size:11px;}}
-            QScrollArea#lanSendScroll, QScrollArea#lanActivityScroll, QScrollArea#lanQueueScroll, QScrollArea#lanHistoryScroll, QScrollArea#lanActiveRowsScroll {{background:transparent;border:0;}}
-            QScrollArea#lanSendScroll > QWidget, QScrollArea#lanActivityScroll > QWidget {{background:transparent;}}
+            QScrollArea#lanSendScroll, QScrollArea#lanQueueScroll, QScrollArea#lanHistoryScroll, QScrollArea#lanActiveRowsScroll {{background:transparent;border:0;}}
+            QScrollArea#lanSendScroll > QWidget {{background:transparent;}}
             QScrollArea#lanQueueScroll > QWidget > QWidget, QScrollArea#lanHistoryScroll > QWidget > QWidget,
             QScrollArea#lanActiveRowsScroll > QWidget, QScrollArea#lanActiveRowsScroll > QWidget > QWidget {{background:transparent;}}
             QScrollBar:vertical {{background:transparent;width:6px;margin:2px 0;}}
@@ -1886,12 +1851,10 @@ class LanPanel(QFrame):
         row=self._rows.get(identifier)
         if row is None:return
         if row.get('finished'):
-            if not self._fixed_activity_cards:self.activity_scroll.ensureWidgetVisible(self.history_card,8,8)
             return
         rows=sorted((value for value in self._rows.values() if not value.get('finished')),key=lambda value:-value['sequence'])
         self._row_page=rows.index(row)//2;self._refresh_transfer_pages()
-        scroll=self.active_rows_scroll if self._fixed_activity_cards else self.activity_scroll
-        scroll.ensureWidgetVisible(row['frame'],8,8)
+        self.active_rows_scroll.ensureWidgetVisible(row['frame'],8,8)
 
     def _refresh_transfer_pages(self):
         # Terminal transfers belong in history; they never reserve active slots.
@@ -1913,6 +1876,7 @@ class LanPanel(QFrame):
         self.page_label.setText(f'{self._row_page+1} / {pages}')
         self.previous_page.setEnabled(self._row_page > 0)
         self.next_page.setEnabled(self._row_page < pages - 1)
+        self._activity_fit_timer.start(0)
 
     def _offer(self, offer):
         self.show_offer(offer)

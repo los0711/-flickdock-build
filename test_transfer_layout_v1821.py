@@ -13,7 +13,7 @@ from test_html_native_lan import FakeLan
 
 
 class TransferGeometryTests(unittest.TestCase):
-    def test_short_logical_screen_scrolls_right_column_without_overlapping_destination(self):
+    def test_short_logical_screen_keeps_activity_cards_above_destination(self):
         with tempfile.TemporaryDirectory() as directory,patch('window_chrome.WindowChrome._available',return_value=QRect(0,0,853,480)):
             base=Path(directory);wan=WanTransferService(base/'wan',enabled=False)
             dialog=LanDialog(FakeLan(),SettingsStore(base/'profile'));dialog.show();flush()
@@ -25,7 +25,8 @@ class TransferGeometryTests(unittest.TestCase):
                         history=QRect(panel.history_scroll.mapTo(panel.activity_column,QPoint()),panel.history_scroll.size())
                         destination=QRect(panel.receive_path.mapTo(panel.activity_column,QPoint()),panel.receive_path.size())
                         self.assertFalse(history.intersects(destination))
-                        bar=panel.activity_scroll.verticalScrollBar();bar.setValue(bar.maximum());flush()
+                        self.assertTrue(panel.activity_column.rect().contains(panel.history_card.geometry()))
+                        self.assertTrue(panel.activity_column.rect().contains(panel.tasks_card.geometry()))
                         self.assertTrue(panel.destination_bar.rect().contains(panel.choose_destination.mapTo(panel.destination_bar,panel.choose_destination.rect().bottomRight())))
             finally:dialog.hide();dialog.deleteLater();wan.close();wan.deleteLater();flush()
 

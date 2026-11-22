@@ -49,7 +49,7 @@ class NativeLanTests(unittest.TestCase):
         self.assertEqual(self.dialog.minimumSize().toTuple(),(min(824,area.width()-16),min(660,area.height()-16)))
         self.assertEqual(self.dialog.title_bar.height(),48)
         panel=self.dialog.panel
-        self.assertAlmostEqual(panel.left_column.width()/panel.activity_scroll.width(),1,delta=.005)
+        self.assertAlmostEqual(panel.left_column.width()/panel.activity_column.width(),1,delta=.005)
         self.assertFalse(self.dialog.isModal())
         seen=[];self.dialog.overview_requested.connect(lambda:seen.append('overview'))
         self.dialog.back_button.click();self.assertEqual(seen,['overview'])
@@ -203,20 +203,16 @@ class NativeLanTests(unittest.TestCase):
         self.assertGreaterEqual(self.dialog.card.height(),540)
         self.assertTrue(panel.destination_bar.rect().contains(panel.receive_path.mapTo(panel.destination_bar,panel.receive_path.rect().bottomRight())))
         self.assertTrue(panel.left_column.rect().contains(panel.send_button.mapTo(panel.left_column,panel.send_button.rect().bottomRight())))
-        for widget in (panel.history_scroll,panel.devices):
-            scroll=next(area for area in (panel.send_scroll,panel.activity_scroll)
-                        if area.widget().isAncestorOf(widget))
-            viewport=scroll.viewport();bar=scroll.verticalScrollBar()
-            top=widget.mapTo(viewport,widget.rect().topLeft()).y()
-            bottom=widget.mapTo(viewport,widget.rect().bottomRight()).y()
-            if top<0:bar.setValue(bar.value()+top-8)
-            elif bottom>=viewport.height():bar.setValue(bar.value()+bottom-viewport.height()+9)
-            APP.processEvents()
-            bounds=(widget.objectName(),widget.size().toTuple(),viewport.size().toTuple(),
-                    widget.mapTo(viewport,widget.rect().topLeft()).toTuple(),
-                    widget.mapTo(viewport,widget.rect().bottomRight()).toTuple())
-            self.assertTrue(viewport.rect().contains(widget.mapTo(viewport,widget.rect().topLeft())),bounds)
-            self.assertTrue(viewport.rect().contains(widget.mapTo(viewport,widget.rect().bottomRight())),bounds)
+        self.assertTrue(panel.activity_column.rect().contains(panel.history_card.geometry()))
+        scroll=panel.send_scroll;viewport=scroll.viewport();bar=scroll.verticalScrollBar()
+        widget=panel.devices
+        top=widget.mapTo(viewport,widget.rect().topLeft()).y()
+        bottom=widget.mapTo(viewport,widget.rect().bottomRight()).y()
+        if top<0:bar.setValue(bar.value()+top-8)
+        elif bottom>=viewport.height():bar.setValue(bar.value()+bottom-viewport.height()+9)
+        APP.processEvents()
+        self.assertTrue(viewport.rect().contains(widget.mapTo(viewport,widget.rect().topLeft())))
+        self.assertTrue(viewport.rect().contains(widget.mapTo(viewport,widget.rect().bottomRight())))
         # History content can scroll independently; every record must be reachable.
         for row in panel.history_rows:
             scroll=panel.history_scroll;viewport=scroll.viewport();bar=scroll.verticalScrollBar()

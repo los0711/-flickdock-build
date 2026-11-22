@@ -8,8 +8,8 @@ import unittest
 import threading
 from types import SimpleNamespace
 
-from PySide6.QtCore import QByteArray,QEvent,QObject,QMimeData,QPointF,Qt,QUrl,Signal
-from PySide6.QtGui import QDragEnterEvent,QDropEvent,QMouseEvent,QPalette
+from PySide6.QtCore import QByteArray,QEvent,QObject,QMimeData,QPoint,QPointF,Qt,QUrl,Signal
+from PySide6.QtGui import QDragEnterEvent,QDropEvent,QMouseEvent,QPalette,QWheelEvent
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import QApplication,QPushButton,QScrollArea,QLabel
 from unittest.mock import patch
@@ -165,30 +165,44 @@ class LanDialogTests(unittest.TestCase):
         combo.hidePopup();APP.processEvents()
         self.assertEqual(combo.currentIndex(),-1)
 
-    def test_mac_activity_cards_stay_fixed_while_history_scrolls(self):
+    def test_activity_cards_only_scroll_their_own_rows(self):
         from lan_panel import LanPanel
-        with patch('lan_panel.sys',SimpleNamespace(platform='darwin')):
-            panel=LanPanel(self.service,settings=self.settings)
+        from PySide6.QtTest import QTest
+        panel=LanPanel(self.service,settings=self.settings)
+
+        def wheel(scroll):
+            viewport=scroll.viewport()
+            center=viewport.rect().center()
+            event=QWheelEvent(QPointF(center),QPointF(viewport.mapToGlobal(center)),QPoint(),QPoint(0,-120),
+                              Qt.NoButton,Qt.NoModifier,Qt.NoScrollPhase,False)
+            QApplication.sendEvent(viewport,event)
+
         try:
-            panel.setFixedSize(824,460);panel.show();APP.processEvents()
+            panel.setFixedSize(824,420);panel.show();APP.processEvents()
             panel._history=[dict(name=f'测试{i}',peer='设备',state='完成',direction='receive',when='11-21 09:00') for i in range(12)]
             panel._render_history()
             for i in range(3):
                 panel.show_offer(dict(id=f'offer{i}',peer='测试设备',names=['sample.txt'],count=1,total=16))
-            from PySide6.QtTest import QTest
             QTest.qWait(100)
-            slots=(panel.tasks_card.geometry(),panel.history_card.geometry())
-            outer=panel.activity_scroll.verticalScrollBar()
-            inner=panel.history_scroll.verticalScrollBar()
-            self.assertEqual(outer.maximum(),0)
-            self.assertGreater(inner.maximum(),0)
-            inner.setValue(inner.maximum());QTest.qWait(40)
-            self.assertEqual((panel.tasks_card.geometry(),panel.history_card.geometry()),slots)
-            self.assertEqual(outer.value(),0)
-            self.assertGreater(inner.value(),0)
-            self.assertTrue(panel.activity_scroll.viewport().rect().contains(panel.history_card.geometry()))
+            slots=(panel.tasks_card.geometry(),panel.history_card.geometry(),panel.send_column.geometry())
+            self.assertEqual(set(panel.activity_column.findChildren(QScrollArea)),
+                             {panel.active_rows_scroll,panel.history_scroll})
+            active=panel.active_rows_scroll.verticalScrollBar()
+            history=panel.history_scroll.verticalScrollBar()
+            self.assertGreater(active.maximum(),0)
+            self.assertGreater(history.maximum(),0)
+            wheel(panel.history_scroll)
+            QTest.qWait(450)
+            self.assertGreater(history.value(),0)
+            history_offset=history.value()
+            self.assertEqual(active.value(),0)
+            wheel(panel.active_rows_scroll)
+            QTest.qWait(450)
+            self.assertGreater(active.value(),0)
+            self.assertEqual(history.value(),history_offset)
+            self.assertEqual((panel.tasks_card.geometry(),panel.history_card.geometry(),panel.send_column.geometry()),slots)
+            self.assertTrue(panel.activity_column.rect().contains(panel.history_card.geometry()))
             panel.focus_transfer('offer0');QTest.qWait(30)
-            self.assertEqual(outer.value(),0)
             self.assertTrue(panel._rows['offer0']['frame'].isVisible())
         finally:panel.close();panel.deleteLater();APP.processEvents()
 
@@ -378,16 +392,16 @@ class LanDialogTests(unittest.TestCase):
 
     def test_two_columns_keep_send_and_transfer_visible_without_window_scroll(self):
         panel=self.dialog.panel
-        self.assertLess(panel.send_scroll.geometry().right(),panel.activity_scroll.geometry().left())
-        # Columns stay independent; the send form also scrolls when the
-        # full WAN code controls cannot fit a short viewport.
+        self.assertLess(panel.left_column.geometry().right(),panel.activity_column.geometry().left())
         self.assertEqual(set(self.dialog.findChildren(QScrollArea)),
-                         {panel.send_scroll,panel.activity_scroll,panel.queue_scroll,panel.history_scroll})
+                         {panel.send_scroll,panel.active_rows_scroll,panel.queue_scroll,panel.history_scroll})
         self.assertIs(panel.queue_scroll.widget(),panel.queue_body)
         self.assertIs(panel.history_scroll.widget(),panel.history_body)
         self.assertIs(panel.send_scroll.widget(),panel.left_content)
         self.assertEqual(panel.send_scroll.verticalScrollBar().maximum(),0)
-        self.assertIs(panel.activity_scroll.widget(),panel.activity_column)
+        self.assertIs(panel.active_rows_scroll.widget(),panel.transfers_body)
+        self.assertTrue(panel.send_column.isAncestorOf(panel.send_scroll))
+        self.assertFalse(panel.send_scroll.isAncestorOf(panel.queue_area))
         self.assertTrue(panel.drop_zone.isVisible())
         self.assertFalse(panel.add_files.isVisible())
         self.assertEqual(panel.drop_zone.focusPolicy(),Qt.FocusPolicy.StrongFocus)

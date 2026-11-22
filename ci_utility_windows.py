@@ -138,7 +138,8 @@ def main():
                 QTest.keyClick(combo.view(),Qt.Key_Return)
                 wait(lambda:not popup.isVisible() and combo.count()==1)
                 assert combo.currentData()=='fixture-b'
-            assert panel.activity_scroll.verticalScrollBar().maximum()==0 and panel.active_rows_scroll is not None
+            assert panel.activity_column.isAncestorOf(panel.active_rows_scroll)
+            assert panel.activity_column.rect().contains(panel.history_card.geometry())
             report['cocoa_device_picker']=dict(stable_geometry=True,tracks_in_existing_popup=True,retains_selection=True)
             report['cocoa_activity_cards_fixed']=True
             transfer.close();wait(lambda:not transfer.isVisible())

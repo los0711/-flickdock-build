@@ -264,7 +264,7 @@ class LanHigLayoutTests(unittest.TestCase):
                             'send_button','history_scroll','receive_path','choose_destination'):
                         widget=getattr(panel,name)
                         self.assertTrue(widget.isVisible())
-                        for scroll in (panel.send_scroll,panel.activity_scroll):
+                        for scroll in (panel.send_scroll,):
                             if scroll.widget().isAncestorOf(widget):
                                 # ensureWidgetVisible uses a style-dependent
                                 # focus rect. Exercise actual scroll-bar reachability

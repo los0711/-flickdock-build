@@ -102,7 +102,7 @@ class WorkbenchTests(unittest.TestCase):
                     panel=window.set_service(backend)
                     for width in (824,980,1100,1400):
                         window.resize(width,760);QTest.qWait(20)
-                        self.assertLessEqual(abs(panel.left_column.width()-panel.activity_scroll.width()),1)
+                        self.assertLessEqual(abs(panel.left_column.width()-panel.activity_column.width()),1)
                     self.assertTrue(panel.open_destination.isVisible())
                 panel=window.set_service(service);path=base/'原始文件.txt';path.write_text('original bytes',encoding='utf-8')
                 panel.queue_paths([str(path)]);panel.send_button.click();QTest.qWait(10)
