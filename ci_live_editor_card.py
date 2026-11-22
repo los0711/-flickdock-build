@@ -140,7 +140,7 @@ def verify(report, folder):
             and card.motion.values['opacity'] == 1 and card.footer_clip.isHidden()))
         frame = card.screen_frame()
         assert not frame.intersects(bounds)
-        body = card.surface.mapToGlobal(QPoint(35, card.surface.height() // 2))
+        body = card.screen_point(card.surface,QPoint(35,card.surface.height() // 2))
         pointer(body)
         report['hover_opens'] = bool(wait_for(lambda: observed(
             lambda: card.footer_clip.height() == FOOTER_HEIGHT), seconds=2))
@@ -183,7 +183,7 @@ def verify(report, folder):
                           translator_visible=translator.isVisible(), updates=updates)
         assert report['hover_opens'] and report['body_preserves_focus'], report
         assert card.screen_frame() == frame
-        pointer(card.language.mapToGlobal(card.language.rect().center()), click=True)
+        pointer(card.screen_point(card.language,card.language.rect().center()),click=True)
         assert wait_for(lambda: observed(card.popup.isVisible)), 'Target language menu did not open'
         report['menu_preserves_focus'] = front_target() == target and not translator.isVisible()
         assert not translator.isVisible(), report
@@ -194,7 +194,7 @@ def verify(report, folder):
         pointer(body)
         assert wait_for(lambda: observed(lambda: card.footer_clip.height() == FOOTER_HEIGHT))
         assert wait_for(lambda: observed(card.insert.isEnabled))
-        pointer(card.insert.mapToGlobal(card.insert.rect().center()), click=True)
+        pointer(card.screen_point(card.insert,card.insert.rect().center()),click=True)
         report['inserted'] = bool(wait_for(lambda: observed(
             lambda: state().get('text') == 'Please confirm the shipping address.'), seconds=4))
         assert report['inserted'] and front_target() == target and not translator.isVisible(), report

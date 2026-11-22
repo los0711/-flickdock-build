@@ -773,6 +773,7 @@ class TranslatorPopup(QFrame):
         self.surface=TranslatorSurface(self,role='popup_surface',radius=RADIUS_PANEL_PX);outer.addWidget(self.surface)
         self.body=QVBoxLayout(self.surface);self.body.setContentsMargins(12,12,12,12);self.body.setSpacing(10)
         self._anchor=None
+        self._anchor_screen_rect=None
     def paintEvent(self,event):
         p=QPainter(self);p.setCompositionMode(QPainter.CompositionMode_Source);p.fillRect(self.rect(),Qt.transparent);p.setCompositionMode(QPainter.CompositionMode_SourceOver)
         paint_surface_shadow(p,QRectF(self.surface.geometry()),self._shadow,12,QPoint(0,1),QColor(0,0,0,32),radius=RADIUS_PANEL_PX);p.end()
@@ -783,12 +784,15 @@ class TranslatorPopup(QFrame):
     def eventFilter(self,watched,event):
         if self.isVisible() and event.type()==QEvent.MouseButtonPress and self._anchor is not None:
             anchor=self._anchor()
-            if anchor is not None and isValid(anchor) and anchor.isVisible() and anchor.rect().contains(anchor.mapFromGlobal(event.globalPosition().toPoint())):
-                self.setAttribute(Qt.WA_NoMouseReplay,True);self.hide();return True
+            if anchor is not None and isValid(anchor) and anchor.isVisible():
+                position=event.globalPosition().toPoint()
+                hit=self._anchor_screen_rect.contains(position) if self._anchor_screen_rect is not None else anchor.rect().contains(anchor.mapFromGlobal(position))
+                if hit:self.setAttribute(Qt.WA_NoMouseReplay,True);self.hide();return True
         return False
 
-    def popup_below(self,anchor,*,position=None,passive=False):
+    def popup_below(self,anchor,*,position=None,passive=False,anchor_rect=None):
         self._dropdown_anchor=anchor
+        self._anchor_screen_rect=anchor_rect
         self._anchor=weakref.ref(anchor);QApplication.instance().installEventFilter(self)
         self.setAttribute(Qt.WA_NoMouseReplay,True)
         self.adjustSize()

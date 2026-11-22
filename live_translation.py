@@ -272,7 +272,7 @@ class LiveTranslationCard(QWidget):
 
     def _restore_hover(self):
         if self.isVisible() and not self.deferred_hide and self.drag_origin is None and not self.popup.isVisible():
-            inside=self.surface.geometry().contains(self.mapFromGlobal(QCursor.pos()))
+            inside=self.surface.geometry().contains(QCursor.pos()-self.screen_frame().topLeft())
             if self._cocoa_host is not None:self._cocoa_host.accept_pointer(inside)
             self._set_footer(inside)
 
@@ -328,6 +328,11 @@ class LiveTranslationCard(QWidget):
     def screen_frame(self):
         return QRect(self._screen_frame) if self._cocoa_host is not None else self.geometry()
 
+    def screen_point(self, child, point):
+        if self._cocoa_host is None:
+            return child.mapToGlobal(point)
+        return self.screen_frame().topLeft()+child.mapTo(self,point)
+
     def _place(self, offset):
         if self.goal.isEmpty():
             return
@@ -372,11 +377,13 @@ class LiveTranslationCard(QWidget):
             for list_height in (222, 154, 104):
                 self.popup.list.setFixedHeight(list_height)
                 self.popup.adjustSize()
-                anchor = self.language.mapToGlobal(QPoint(0, self.language.height())) - QPoint(8, 0)
+                anchor_rect = QRect(self.screen_point(self.language,QPoint()),self.language.size())
+                anchor = anchor_rect.bottomLeft()+QPoint(-8,1)
                 preferred = anchor - QPoint(0, self.popup.height())
                 frame = fit_card(self.anchor_area, self.obstacle, self.popup.size(), preferred, gap=self._gap)
                 if not frame.isEmpty():
-                    self.popup.popup_below(self.language, position=frame.topLeft(), passive=self._cocoa_card)
+                    self.popup.popup_below(self.language, position=frame.topLeft(), passive=self._cocoa_card,
+                                           anchor_rect=anchor_rect if self._cocoa_card else None)
                     self.popup.search.setFocus()
                     break
 
