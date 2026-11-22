@@ -14,9 +14,11 @@ from live_translation_editor import focused_editor
 
 def fixture(folder):
     from PySide6.QtCore import QTimer
+    from PySide6.QtGui import QAccessible
     from PySide6.QtWidgets import QApplication, QLineEdit, QVBoxLayout, QWidget
 
     app = QApplication([])
+    QAccessible.setActive(True)
     window = QWidget()
     window.setWindowTitle('FlickDock isolated accessibility fixture')
     window.setGeometry(120, 140, 480, 120)
@@ -30,6 +32,9 @@ def fixture(folder):
     window.raise_()
     window.activateWindow()
     field.setFocus()
+    if sys.platform == 'darwin':
+        from AppKit import NSApplication
+        NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
 
     previous = None
 

@@ -243,6 +243,8 @@ def _windows_selection(com, pattern, document, text):
 def _mac_editor_api():
     from translation_focus import _mac_api
     ax, cf = _mac_api()
+    ax.AXUIElementCreateApplication.argtypes = [_INT]
+    ax.AXUIElementCreateApplication.restype = _POINTER
     ax.AXUIElementGetPid.argtypes = [_POINTER, ctypes.POINTER(_INT)]
     ax.AXUIElementIsAttributeSettable.argtypes = [_POINTER, _POINTER, ctypes.POINTER(ctypes.c_ubyte)]
     ax.AXUIElementSetAttributeValue.argtypes = [_POINTER, _POINTER, _POINTER]
@@ -304,7 +306,12 @@ def _mac_editor(cancel, expected, insertion, sample, rejected=None):
         ax.AXUIElementSetMessagingTimeout(root, .055)
         editor = attr(root, b'AXFocusedUIElement')
         if not editor:
-            return reject('no AX focused control')
+            application = retain(ax.AXUIElementCreateApplication(target))
+            if application:
+                ax.AXUIElementSetMessagingTimeout(application, .055)
+                editor = attr(application, b'AXFocusedUIElement')
+        if not editor:
+            return reject('no AX focused control from the system or foreground application')
         ax.AXUIElementSetMessagingTimeout(editor, .055)
         pid = _INT()
         if ax.AXUIElementGetPid(editor, ctypes.byref(pid)) or pid.value != target:
