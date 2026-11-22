@@ -79,6 +79,7 @@ def verify(report, folder):
     service = FixedTranslationService()
     latencies = []
     failures = []
+    updates = []
 
     def probe(cancel, **options):
         start = monotonic()
@@ -91,6 +92,13 @@ def verify(report, folder):
         return value
 
     live = LiveEditorTranslation(service, store, probe=probe)
+    observed_live = live._observed
+    def log_observed(value, error, sampling, checking_empty=False):
+        observed_live(value,error,sampling,checking_empty)
+        if len(updates)<18:
+            updates.append(dict(observed=value is not None, active=front_target(),
+                                visible=live.card.isVisible(), ready=live.draft.ready))
+    live._observed = log_observed
     script = Path(__file__).with_name('ci_live_editor_native.py')
     child = subprocess.Popen([sys.executable, str(script), '--fixture', str(folder)])
     command = folder / 'command'
@@ -137,7 +145,7 @@ def verify(report, folder):
                           surface=card.surface.geometry().getRect(), window=card.geometry().getRect(),
                           hover_timer=card._hover_timer.isActive(), local=card.mapFromGlobal(QCursor.pos()).toTuple(),
                           extent=card.footer_clip.height(), footer_open=card._footer_open,
-                          cocoa=card._cocoa_card, visible=card.isVisible())
+                          cocoa=card._cocoa_card, visible=card.isVisible(), probe_rejections=failures, updates=updates)
         pointer(body, click=True)
         wait_for(lambda: observed(lambda: False), seconds=.25)
         report['body_preserves_focus'] = front_target() == target and not translator.isVisible()
