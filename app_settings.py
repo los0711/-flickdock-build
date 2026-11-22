@@ -185,8 +185,7 @@ class SettingsComboBox(QComboBox):
         from native_ui_common import prepare_combo_popup,show_rounded_combo
         c=ui_colors('dark' if self.dark else 'light')
         prepare_combo_popup(popup,self.view(),c,margin=1)
-        self.view().setStyleSheet(
-            f"QListView{{background:transparent;color:{c['text']};"
+        style=(f"QListView{{background:transparent;color:{c['text']};"
             "border:0;padding:5px;outline:0;}"
             "QListView::item{border:0;background:transparent;padding:5px 10px;margin:1px 0;}"
             f"QListView::item:selected{{background:transparent;color:{c['text']};}}"
@@ -194,6 +193,7 @@ class SettingsComboBox(QComboBox):
             "QScrollBar::handle:vertical{background:transparent;min-height:20px;}"
             "QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;}"
             "QScrollBar::add-page:vertical,QScrollBar::sub-page:vertical{background:transparent;}")
+        if style!=self.view().styleSheet():self.view().setStyleSheet(style)
         show_rounded_combo(self,super().showPopup)
 
     def paintEvent(self, event):
