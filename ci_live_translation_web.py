@@ -31,8 +31,9 @@ EMBEDDED = '<div id="embedded" contenteditable="true" role="textbox" aria-label=
 
 
 def fixture(folder):
-    from PySide6.QtCore import QTimer
+    from PySide6.QtCore import QPoint, Qt, QTimer
     from PySide6.QtGui import QAccessible
+    from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication
     from PySide6.QtWebEngineWidgets import QWebEngineView
 
@@ -57,6 +58,7 @@ def fixture(folder):
     last = None
     ready = False
     pending = False
+    clicked = None
 
     def loaded(ok):
         nonlocal ready
@@ -65,11 +67,15 @@ def fixture(folder):
     view.loadFinished.connect(loaded)
 
     def record(json_value):
-        nonlocal pending
+        nonlocal pending, clicked
         pending = False
         if not json_value:
             return
         record = json.loads(json_value)
+        if record['field'] != clicked and record.get('location'):
+            button_target = view.focusProxy() or view
+            QTest.mouseClick(button_target,Qt.LeftButton,pos=QPoint(*record['location']))
+            clicked = record['field']
         record['active'] = view.isActiveWindow()
         temporary = folder / 'state.tmp'
         temporary.write_text(json.dumps(record), encoding='utf-8')
@@ -123,11 +129,15 @@ def fixture(folder):
                         field.setSelectionRange(field.value.length, field.value.length);
                     }
                 }
+                const box = field.getBoundingClientRect();
+                const frame = command === "embedded" ? document.getElementById("frame").getBoundingClientRect()
+                                                      : {left:0, top:0};
                 return JSON.stringify({
                     field: command, text: field.isContentEditable ? field.innerText : field.value,
                     inputs: Number(field.dataset.inputs || "0"),
                     selected: field.isContentEditable ? field.ownerDocument.getSelection().toString().length
                                                      : field.selectionEnd - field.selectionStart,
+                    location: [Math.round(box.left+frame.left+14),Math.round(box.top+frame.top+10)],
                     focused: field === field.ownerDocument.activeElement
                 });
             })()
@@ -184,14 +194,25 @@ def verify_field(folder, field):
                 translation = TRANSLATION+'\nSecond line.' if field=='multiline' else TRANSLATION
                 from clipboard_history_native import paste_editor_text, select_editor_text
                 paste_results = []
+                observations = []
+                def read_editor(*args,**kwargs):
+                    current = focused_editor(*args,**kwargs)
+                    if len(observations)<25:
+                        observations.append(None if current is None else
+                            dict(same_id=current.identity==observed.identity,same_value=current.text==observed.text,
+                                 selection=current.selection))
+                    return current
                 def paste(*args):
                     result = paste_editor_text(*args)
                     paste_results.append(getattr(result,'name',result))
                     return result
                 with patch('clipboard_history_native.select_editor_text',wraps=select_editor_text) as select, \
+                        patch('live_translation_editor.focused_editor',side_effect=read_editor), \
                         patch('clipboard_history_native.paste_editor_text',side_effect=paste):
                     inserted = focused_editor(cancel,expected=observed,insertion=translation)
                 row.update(select_attempts=select.call_count,paste_results=paste_results)
+                if not inserted:
+                    row['observations'] = observations
                 applied = wait_for(lambda: state().get('text') == translation and state().get('inputs',0)>0)
                 current = focused_editor(cancel)
                 row.update(request_accepted=bool(inserted),updated=bool(applied),input_event=state().get('inputs',0)>0,
