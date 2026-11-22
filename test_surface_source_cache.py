@@ -24,6 +24,38 @@ class SourceCacheTests(unittest.TestCase):
     def paint(self):
         self.shelf.update();QCoreApplication.sendPostedEvents(None,QEvent.UpdateRequest);workspace.APP.processEvents()
 
+    def test_resting_overview_repaints_without_a_full_source_pixmap(self):
+        from PySide6.QtCore import QPointF
+        effect=self.shelf.surface_effect
+        self.shelf.presentation.jump({'sx':1,'sy':1,'dx':0,'dy':0,'alpha':1})
+        self.shelf.geometry_morph.complete()
+        workspace.flush()
+        self.preview.show_path(self.fixture.paths[1])
+        with patch.object(effect,'sourcePixmap',wraps=effect.sourcePixmap) as source:
+            self.preview.name.setText('Changed only the selected file label')
+            self.paint()
+            source.assert_not_called()
+        image=self.shelf.grab().toImage()
+        ratio=image.devicePixelRatio()
+        right=self.shelf.card.geometry().topRight()
+        point=QPointF(right)
+        self.assertLess(image.pixelColor(round(point.x()*ratio),round(point.y()*ratio)).alpha(),120)
+
+    def test_first_overview_constructs_rows_at_the_final_width(self):
+        from overview_ui import ContentsPopup
+        self.shelf.popup.deleteLater()
+        self.shelf.popup=None
+        self.shelf.hide_immediately()
+        widths=[];original=ContentsPopup._rebuild_files
+        def rebuild(view,refs,animate):
+            widths.append(view.width())
+            return original(view,refs,animate)
+        with patch.object(ContentsPopup,'_rebuild_files',rebuild):
+            target=self.shelf._expansion_rect(self.shelf.visual_geometry())
+            self.shelf._show_contents('permanent',target,animate=False)
+        self.assertTrue(widths)
+        self.assertEqual(set(widths),{target.width()-28})
+
     def test_transform_frames_reuse_content_and_real_text_changes_invalidate_it(self):
         effect=self.shelf.surface_effect
         effect._cache_while=lambda:True

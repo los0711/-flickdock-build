@@ -453,7 +453,9 @@ class ContentsPopup(QFrame):
         self._sidebar_collapse=_SidebarCollapse(self)
         for row in self.scope_buttons.values():row.installEventFilter(self)
         self.scroll.viewport().installEventFilter(self)
-        self.rebuild();self.update_transfer_status()
+        # The owner prepares the destination size before reset_for_open().
+        # Building here would populate the miniature parent layout first and
+        # immediately discard that work for the real overview breakpoints.
         self.drop_router=OverviewDropRouter(self)
         from transfer_entry import TransferEntryRouter
         self.transfer_entry=TransferEntryRouter(self,self.lan_nav,lambda mode,paths:self.shelf.manager.queue_transfer_paths(mode,paths))
@@ -701,7 +703,7 @@ class ContentsPopup(QFrame):
             if isinstance(item,IconItem):item.set_selected(False)
             elif isinstance(item,FileRow):item.update()
         refs=self.visible_refs()
-        self._sync_body_visibility(refs);self.update_selection_actions();self.update_transfer_status()
+        self._sync_body_visibility(refs);self.update_selection_actions(refs);self.update_transfer_status()
 
     def open_category_menu(self):
         menu=AnimatedMenu(self);style_menu(menu)

@@ -8,8 +8,9 @@ def shortcut_details(path):
     path=Path(path)
     if path.suffix.lower() not in SUFFIXES:return None
     try:
-        if path.stat().st_size>256*1024:return {'description':'快捷方式文件过大，保留原文件。'}
-        data=path.read_bytes()
+        maximum=256*1024
+        with path.open('rb') as stream:data=stream.read(maximum+1)
+        if len(data)>maximum:return {'description':'快捷方式文件过大，保留原文件。'}
         value=''
         if path.suffix.lower()=='.webloc':
             value=plistlib.loads(data).get('URL','')

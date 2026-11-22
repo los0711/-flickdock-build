@@ -636,6 +636,7 @@ class ShelfManager:
             target=shelf._expansion_rect(shelf.visual_geometry())
             shelf.popup.resize(target.width()-28,target.height()-27)
             shelf.popup.prepare_open_layout()
+            shelf.popup.reset_for_open()
             shelf.popup.prepare_transition()
 
     def _prewarm_next_utility(self,step=0):

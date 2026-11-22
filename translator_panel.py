@@ -322,12 +322,8 @@ class TranslatorDialog(ReferenceModalDialog):
             cursor.clearSelection()
             rect=other.cursorRect(cursor)
             if rect.top()<0 or rect.bottom()>other.viewport().height():
-                # QPlainTextEdit scroll units are lines, not pixels. Let Qt
-                # position this cursor, then restore the existing caret.
-                bar=other.verticalScrollBar();original=other.textCursor()
-                with QSignalBlocker(other):
-                    other.setTextCursor(cursor);other.centerCursor();position=bar.value()
-                    other.setTextCursor(original);bar.setValue(position)
+                bar=other.verticalScrollBar()
+                bar.setValue(bar.value()+rect.center().y()-other.viewport().height()//2)
 
     def _download_speech(self,side):
         text=self.session.result if side=='target' else self.session.source_text
@@ -856,14 +852,16 @@ class TranslatorDialog(ReferenceModalDialog):
             for popup in self._popups:popup._applied_settings_theme=theme
             from native_ui_common import apply_widget_theme_style
             apply_widget_theme_style(self,
-                f'QPlainTextEdit{{background:transparent;border:0;color:{c["text"]};font:400 15px {font_css_stack()};selection-background-color:{c["action"]};selection-color:{c["on_action"]};}}'
-                f'QPlainTextEdit#translatorResult{{color:{TRANSLATED_INK[theme]};}}'
+                f'QPlainTextEdit,QTextEdit{{background:transparent;border:0;color:{c["text"]};font:400 15px {font_css_stack()};selection-background-color:{c["action"]};selection-color:{c["on_action"]};}}'
+                f'QTextEdit#translatorResult{{color:{TRANSLATED_INK[theme]};}}'
                 f'QLineEdit{{background:{c["input"]};color:{c["text"]};border:1px solid {c["input_border"]};border-radius:8px;padding:8px 11px;font:400 12px {font_css_stack()};}} QLineEdit:focus{{border-color:{c["ring"]};}}'
                 f'QScrollArea{{background:transparent;border:0;}} QListWidget{{background:transparent;color:{c["text"]};border:0;outline:0;}} QListWidget::item{{background:transparent;border:0;}}'
                 f'QComboBox{{background:transparent;color:{c["text"]};border:0;padding:5px 28px 5px 9px;font:11px {font_css_stack()};min-height:22px;}} QComboBox::drop-down{{border:0;width:28px;background:transparent;}} QComboBox::down-arrow{{image:none;}}'
                 'QSlider::groove:horizontal{height:4px;background:transparent;border:0;} QSlider::sub-page:horizontal{background:transparent;} QSlider::handle:horizontal{width:16px;margin:-6px 0;background:transparent;border:0;}'
             )
             refresh_tree(self,theme)
+            fill=QColor(c['card'])
+            self.source_editor.set_viewport_fill(fill);self.output_editor.set_viewport_fill(fill)
             if alignment:=getattr(self,'_alignment_highlights',None):
                 self._selection_highlight(*alignment,scroll=False)
             self.source_task.set_theme(theme);self.output_task.set_theme(theme)
