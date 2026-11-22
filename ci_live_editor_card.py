@@ -10,6 +10,7 @@ from threading import Event
 from time import monotonic
 
 from PySide6.QtCore import QPoint, QRect, QTimer
+from PySide6.QtGui import QCursor
 from PySide6.QtWidgets import QApplication, QWidget
 
 from ci_live_editor_native import wait_for
@@ -45,6 +46,7 @@ def pointer(point, click=False):
     x, y = point.toTuple()
     if sys.platform == 'darwin':
         import Quartz
+        assert Quartz.CGWarpMouseCursorPosition((x, y)) == 0
         kinds = [Quartz.kCGEventMouseMoved]
         if click:
             kinds.extend((Quartz.kCGEventLeftMouseDown, Quartz.kCGEventLeftMouseUp))
@@ -126,10 +128,16 @@ def verify(report, folder):
         assert wait_for(lambda: observed(lambda: card.motion.values['y'] == 0 and card.footer_clip.isHidden()))
         frame = card.geometry()
         assert not frame.intersects(bounds)
-        body = card.mapToGlobal(QPoint(35, card.surface.height() // 2))
+        body = card.surface.mapToGlobal(QPoint(35, card.surface.height() // 2))
         pointer(body)
         report['hover_opens'] = bool(wait_for(lambda: observed(
             lambda: card.footer_clip.height() == FOOTER_HEIGHT), seconds=2))
+        if not report['hover_opens']:
+            report.update(cursor=QCursor.pos().toTuple(), requested=body.toTuple(),
+                          surface=card.surface.geometry().getRect(), window=card.geometry().getRect(),
+                          hover_timer=card._hover_timer.isActive(), local=card.mapFromGlobal(QCursor.pos()).toTuple(),
+                          extent=card.footer_clip.height(), footer_open=card._footer_open,
+                          cocoa=card._cocoa_card, visible=card.isVisible())
         pointer(body, click=True)
         wait_for(lambda: observed(lambda: False), seconds=.25)
         report['body_preserves_focus'] = front_target() == target and not translator.isVisible()

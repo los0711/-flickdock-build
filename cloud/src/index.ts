@@ -10,10 +10,13 @@ import {intakeRequest} from './intake';
 import {storageBudget,StorageBudgetError} from './storage-budget';
 import {shelfStorage,shelfResetAt} from './shelf-storage';
 import {translate,type TranslationEnv} from './translation';
-import {speech,type SpeechEnv} from './speech';
+import {awesomeAlign} from './awesome-align';
+import {speech,type SpeechEnv} from './speech.ts';
+import {serviceAdmin,type ServiceAdminEnv} from './service-admin.ts';
+import {checkActiveServices} from './service-health.ts';
 export {WanHub} from './wan';
 
-interface Env extends WanEnv,TranslationEnv,SpeechEnv {
+interface Env extends WanEnv,TranslationEnv,SpeechEnv,ServiceAdminEnv {
   DB:D1Database; FILES:R2Bucket; EVENTS:DurableObjectNamespace<AccountEvents>;
   ACCOUNT_QUOTA_BYTES?:string; GLOBAL_QUOTA_BYTES?:string; CHUNK_BYTES?:string; AUTH_PEPPER?:string;
   SINGLE_PUT_LIMIT_BYTES?:string;
@@ -352,6 +355,7 @@ async function cleanup(env:Env){
 
 async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Response>{
   const url=new URL(request.url),path=url.pathname,method=request.method;
+  if(path==='/admin'||path.startsWith('/admin/'))return serviceAdmin(request,env);
   if(path.startsWith('/v1/wan/')&&!path.startsWith('/v1/wan/cloud/')&&!['/v1/wan/account','/v1/wan/ice'].includes(path))return wanRoute(request,env);
   if(method==='GET'&&path==='/v1/health')return json({service:'flickdock-cloud'});
   // Cloudflare enforces its account-wide free limits. Keep per-identity
@@ -391,6 +395,11 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
   }
   if(path==='/v1/translation'&&method==='POST'){
     return translate(request,env);
+  }
+  if(path==='/v1/align'&&method==='POST'){
+    const ip=sha(request.headers.get('CF-Connecting-IP')||'local');
+    await rate(env,'word-alignment:'+ip,120,60000);
+    return awesomeAlign(request,env);
   }
   const owner=await auth(request,env);
   if(path.startsWith('/v1/speech/'))return speech(request,env,owner.id);
@@ -912,6 +921,10 @@ const application={
       return json({error:{code:'SERVICE_UNAVAILABLE',message:'Service operation failed; retry later'}},503);
     }
   },
-  async scheduled(_event:ScheduledController,env:Env,ctx:ExecutionContext){ctx.waitUntil(cleanup(env));},
+  async scheduled(event:ScheduledController,env:Env,ctx:ExecutionContext){
+    ctx.waitUntil(cleanup(env));
+    if(env.SERVICE_CONFIG_SECRET||env.TRANSLATION_PRIMARY_API_KEY)
+      ctx.waitUntil(checkActiveServices(env,event.scheduledTime).catch(()=>undefined));
+  },
 } satisfies ExportedHandler<Env>;
 export default application;

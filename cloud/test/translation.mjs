@@ -27,3 +27,30 @@ response=await translate(request(body()),env,async()=>Response.json({choices:[{f
 response=await translate(request(body()),env,async()=>{throw Error('secret provider response');});
 const failure=await response.text();assert(!failure.includes('secret provider'));assert(!failure.includes(env.DEEPSEEK_API_KEY));
 console.log('Translation contract, no usage quotas, duplicate billing prevention and safe errors passed; no real API calls');
+
+const {awesomeAlign}=await import('../src/awesome-align.ts');
+const alignmentOrigin='https://translation.example.com';
+const alignmentEnv={...env, TRANSLATION_PRIMARY_ENDPOINT:alignmentOrigin+'/v1/translate',
+  TRANSLATION_PRIMARY_API_KEY:'test-only-alignment-key', SERVICE_TRANSLATION_ORIGINS:alignmentOrigin};
+const words={source_text:'😀 café',target_text:'😀 咖啡',source_lang:'fr',target_lang:'zh'};
+const mapped={protocol_version:'1',model_version:'awesome-fixture',alignment_version:'1.0.1',
+  offset_unit:'unicode_codepoint',alignments:[{source:[2,6],target:[[2,4]]}],
+  reverse_alignments:[{target:[2,4],source:[[2,6]]}]};
+response=await awesomeAlign(request(words),alignmentEnv,async(url,options)=>{
+  assert.equal(url.href,alignmentOrigin+'/v1/align');
+  assert.equal(options.headers.Authorization,'Bearer '+alignmentEnv.TRANSLATION_PRIMARY_API_KEY);
+  assert.equal(options.redirect,'error');
+  assert.deepEqual(JSON.parse(options.body),words);
+  return Response.json(mapped);
+});
+assert.deepEqual(await response.json(),mapped);
+response=await awesomeAlign(request(words),alignmentEnv,async()=>new Response('private provider error',{
+  status:503,headers:{'Retry-After':'2'}
+}));
+assert.equal(response.status,503);
+assert.equal(response.headers.get('Retry-After'),'2');
+assert.deepEqual(await response.json(),{error:{code:'ALIGNMENT_UNAVAILABLE'}});
+assert.equal((await awesomeAlign(request(words),env,()=>assert.fail('No matching provider'))).status,503);
+assert.equal((await awesomeAlign(request({...words,source_text:'😀'.repeat(6001)}),alignmentEnv,
+  ()=>assert.fail('Over-limit payload must be rejected'))).status,413);
+console.log('Awesome-Align server-side authentication, code point contract, and isolated outage handling passed');
