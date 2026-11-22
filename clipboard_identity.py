@@ -27,10 +27,15 @@ def _image_signature(data):
         if cached is not None:_images.move_to_end(key);return cached
     if 'raw' in data:
         buffer=QBuffer();buffer.setData(raw);buffer.open(QIODevice.ReadOnly)
-        reader=QImageReader(buffer);size=reader.size()
-        if not size.isValid() or size.width()*size.height()>MAX_IDENTITY_IMAGE_PIXELS:
-            return ('image-encoded',key[1])
-        image=reader.read()
+        reader=QImageReader(buffer)
+        try:
+            size=reader.size()
+            if not size.isValid() or size.width()*size.height()>MAX_IDENTITY_IMAGE_PIXELS:
+                return ('image-encoded',key[1])
+            image=reader.read()
+        finally:
+            # The TIFF handler still accesses its QIODevice during teardown.
+            del reader
     else:image=data['image']
     if image.isNull():return ('image-invalid',key)
     # Windows may render the same bitmap as DIB, PNG or premultiplied pixels.
