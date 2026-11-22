@@ -1,5 +1,6 @@
 """Actual original file streams, current consent boundaries and cloud isolation."""
 import ast,json,os,queue,subprocess,sys,tempfile,threading,unittest
+from collections import deque
 from pathlib import Path
 from unittest.mock import patch
 os.environ.setdefault('QT_QPA_PLATFORM','offscreen')
@@ -14,14 +15,23 @@ class OriginalTransferTests(unittest.TestCase):
         node=ROOT/'p2p/runtime'/('node.exe' if sys.platform=='win32' else 'node')
         if not node.is_file():self.fail('Prepare p2p_assets.py before verification')
         worker=subprocess.Popen([str(node),str(ROOT/'cloud/test/qa-server.mjs')],cwd=ROOT,
-            stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+            stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
         ready=queue.Queue()
+        output_tail=deque(maxlen=40)
         def read_origin():
+            announced=False
             for line in worker.stdout:
-                if line.startswith(b'http://127.0.0.1:'):ready.put(line.decode().strip());return
-        threading.Thread(target=read_origin,daemon=True).start()
+                output_tail.append(line.decode('utf8','replace'))
+                if not announced and line.startswith(b'http://127.0.0.1:'):
+                    announced=True
+                    ready.put(line.decode().strip())
+            if not announced:ready.put(None)
+        reader=threading.Thread(target=read_origin,daemon=True)
+        reader.start()
         try:
-            origin=ready.get(timeout=90)
+            try:origin=ready.get(timeout=100)
+            except queue.Empty:self.fail('Isolated Worker startup timed out:\n'+''.join(tuple(output_tail)))
+            self.assertIsNotNone(origin,'Isolated Worker exited before startup:\n'+''.join(tuple(output_tail)))
             with tempfile.TemporaryDirectory(prefix='flickdock-original-pipeline-') as directory:
                 output=Path(directory)/'verified.json'
                 command=[sys.executable,'-c',"import verify_wan,sys;raise SystemExit(verify_wan.run(sys.argv,lambda _:None))",'--verify-output',str(output)]
@@ -32,7 +42,13 @@ class OriginalTransferTests(unittest.TestCase):
                 self.assertEqual(report['route'],'direct');self.assertTrue(report['receiver_consent'])
                 self.assertTrue(report['empty_folders_preserved']);self.assertTrue(report['code_pairing'])
         finally:
-            worker.communicate(b'stop',timeout=30)
+            worker.stdin.close()
+            try:worker.wait(timeout=12)
+            except subprocess.TimeoutExpired:
+                worker.kill()
+                worker.wait(timeout=5)
+            reader.join(timeout=5)
+            worker.stdout.close()
 
     def test_incompatible_kernel_is_rejected_before_reading_source(self):
         with tempfile.TemporaryDirectory() as directory:
