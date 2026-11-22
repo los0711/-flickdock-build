@@ -23,6 +23,14 @@ class TooltipTests(unittest.TestCase):
                 self.assertEqual(ui_theme._TooltipCorners._text(control),control.accessibleName())
         finally:window.deleteLater();APP.processEvents()
 
+    def test_labelled_control_can_opt_into_a_descriptive_hint(self):
+        from ui_theme import _TooltipCorners
+        control=QPushButton('自动翻译')
+        control.setToolTip('复制的文字会自动翻译并写入剪贴板')
+        self.assertEqual(_TooltipCorners._text(control),'')
+        control.setProperty('flickdockHoverHelp',True)
+        self.assertEqual(_TooltipCorners._text(control),control.toolTip())
+
     def test_icon_hint_waits_half_a_second_without_a_native_tooltip_event(self):
         ui_theme.apply_application(APP,'Microsoft YaHei')
         control=button('','download');control.setToolTip('下载文件');control.show();APP.processEvents()

@@ -18,6 +18,7 @@ _PALETTES = ('light', 'dark')
 
 def allows_hover_hint(widget):
     if not isinstance(widget,QAbstractButton):return False
+    if widget.property('flickdockHoverHelp'):return bool(widget.toolTip().strip())
     hides_text=isinstance(widget,QToolButton) and widget.toolButtonStyle()==Qt.ToolButtonIconOnly
     if widget.text().strip() and not hides_text:return False
     return not widget.icon().isNull() or bool(getattr(widget,'glyph',None)) or bool(widget.property('flickdockIconOnly'))

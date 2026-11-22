@@ -153,7 +153,7 @@ class CapsuleNotice(QWidget):
         self._fade=DisplayAnimation(self);self._fade.setDuration(COPY_NOTICE_FADE_MS)
         self._fade.setEasingCurve(QEasingCurve.OutCubic);self._fade.valueChanged.connect(self._alpha_changed)
         self._fade.finished.connect(self._fade_finished)
-        self._ring_clock=FramePulse(self);self._ring_clock.timeout.connect(self.update)
+        self._ring_clock=FramePulse(self,follow_refresh_rate=True);self._ring_clock.timeout.connect(self.update)
         self._progress_value=0.
         self._progress_motion=DisplayAnimation(self);self._progress_motion.setDuration(NOTICE_PROGRESS_SMOOTH_MS)
         self._progress_motion.setEasingCurve(QEasingCurve.Linear);self._progress_motion.valueChanged.connect(self._progress_changed)

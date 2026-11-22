@@ -139,7 +139,7 @@ class _PopupPresentation(QWidget):
         p.setRenderHints(QPainter.Antialiasing | QPainter.SmoothPixmapTransform)
         p.setOpacity(opacity)
         width, height = motion.snapshot.deviceIndependentSize().toTuple()
-        scale = .9 + .1 * progress
+        scale=.9+.1*min(1.,progress)
         p.translate(width * (1-scale)/2, 0)
         p.scale(scale, 1.)
         reveal = min(self.height(), height*progress)
@@ -262,11 +262,13 @@ class DropdownMotion(QObject):
         if self.snapshot.isNull():
             self._clear()
             return
-        self.rows=self._capture_rows(popup)
+        self.rows=() if popup.property('flickdockDropdownRowsTogether') else self._capture_rows(popup)
         self.scene=QPainterPath()
         self.scene.addRect(QRectF(0,0,*self.snapshot.deviceIndependentSize().toTuple()))
         for row in self.rows:self.scene.addRect(row)
-        self.radius=getattr(popup,'_popup_clip_radius',RADIUS_CARD_PX if isinstance(popup,QMenu) else RADIUS_PANEL_PX)
+        backdrop=getattr(popup,'_rounded_backdrop',None)
+        self.radius=getattr(popup,'_popup_clip_radius',getattr(backdrop,'radius',
+            RADIUS_CARD_PX if isinstance(popup,QMenu) else RADIUS_PANEL_PX))
         theme=popup.property('dropdownTheme') or getattr(popup,'surface_theme',None) or ui_theme.current_theme()
         self.fill=qss_color(colors(theme)['popup_surface'])
         anchor=getattr(popup,'_dropdown_anchor',None)
@@ -329,7 +331,12 @@ class DropdownMotion(QObject):
             raise_edge_target(self.presentation,above=popup)
 
     def _frame(self, _):
-        if self.presentation is not None:self.presentation.update()
+        if self.presentation is None:return
+        self.presentation.update()
+        # The animation is owned by the origin window; its inline layer and
+        # backing store belong to the separate native popup.
+        clock=self.height._timer.clock or self.alpha._timer.clock
+        if clock is not None and isValid(clock):clock.paint_with_frame(self.presentation)
 
     def _settle(self):
         if self.height._timer.isActive() or self.alpha._timer.isActive():return

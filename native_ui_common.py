@@ -506,7 +506,7 @@ class RoundedPopupBackdrop(QWidget):
         painter.end()
 
 
-def prepare_combo_popup(popup, view, colors, *, margin):
+def prepare_combo_popup(popup, view, colors, *, margin, highlight_insets=None):
     """Paint the native combo backing and the row view with a single palette."""
     from PySide6.QtGui import QPalette
     if QGuiApplication.platformName()=='cocoa':
@@ -519,7 +519,8 @@ def prepare_combo_popup(popup, view, colors, *, margin):
     popup.setProperty('dropdownTheme','light' if qss_color(fill).lightness()>128 else 'dark')
     view.setProperty('scrollBackdropColor',fill)
     from dropdown_motion import install_item_highlight
-    install_item_highlight(view,(5,2,-5,-2) if margin>1 else (0,1,0,-1))
+    if highlight_insets is None:highlight_insets=(5,2,-5,-2) if margin>1 else (0,1,0,-1)
+    install_item_highlight(view,highlight_insets)
     for part in (popup,view,view.viewport()):
         palette=part.palette()
         palette.setColor(QPalette.Window,qss_color(fill))
@@ -609,7 +610,7 @@ class RoundedProgressBar(QProgressBar):
     def __init__(self,parent=None):
         super().__init__(parent)
         from display_frames import FramePulse
-        self._frames=FramePulse(self);self._frames.timeout.connect(self.update)
+        self._frames=FramePulse(self,follow_refresh_rate=True);self._frames.timeout.connect(self.update)
         self.setTextVisible(False)
 
     def surface_colors(self):

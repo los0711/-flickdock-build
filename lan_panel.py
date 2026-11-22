@@ -40,6 +40,7 @@ SAME_ACCOUNT_BADGE_PADDING_PX = 5
 SAME_ACCOUNT_BADGE_GAP_PX = 6
 DEVICE_ACTION_SHIFT_PX = 8
 DEVICE_POPUP_GAP_PX = 5
+DEVICE_ROW_INSETS = (5,0,-5,0)
 
 
 def _paint_account_badge(painter,x,center_y,dark):
@@ -294,7 +295,7 @@ class _ScanIndicator(QWidget):
         self._scanning = False
         self._phase = 0.
         from display_frames import FramePulse
-        self._timer = FramePulse(self)
+        self._timer = FramePulse(self,follow_refresh_rate=True)
         self._timer.timeout.connect(self._advance)
 
     def set_scanning(self, scanning):
@@ -359,7 +360,9 @@ class _DevicesCombo(QComboBox):
         from native_ui_common import prepare_combo_popup,show_rounded_combo
         dark=bool(getattr(self.itemDelegate(),'dark',False))
         c=ui_colors('dark' if dark else 'light')
-        prepare_combo_popup(popup,view,c,margin=5)
+        popup.setProperty('flickdockInlineDropdown',True)
+        popup.setProperty('flickdockDropdownRowsTogether',True)
+        prepare_combo_popup(popup,view,c,margin=5,highlight_insets=DEVICE_ROW_INSETS)
         show_rounded_combo(self,super().showPopup,gap=DEVICE_POPUP_GAP_PX)
         view.viewport().installEventFilter(self)
         view.installEventFilter(self)
@@ -433,7 +436,7 @@ class _DeviceDelegate(QStyledItemDelegate):
         marker=getattr(self.parent(),'_dropdown_highlight',None)
         moving=marker is not None and marker.paint(painter,QColor(background),RADIUS_CONTROL_PX,option.rect)
         if selected and not moving:
-            paint_rounded_surface(painter,QRectF(option.rect.adjusted(5,3,-5,-3)),RADIUS_CONTROL_PX,QColor(background))
+            paint_rounded_surface(painter,QRectF(option.rect.adjusted(*DEVICE_ROW_INSETS)),RADIUS_CONTROL_PX,QColor(background))
         icon_color = c['secondary']
         platform=index.data(Qt.ItemDataRole.UserRole+1)
         if platform=='windows':
@@ -1153,7 +1156,7 @@ class LanPanel(QFrame):
         self.devices.setMinimumContentsLength(10); self.devices.setMaxVisibleItems(8)
         self.devices_view = QListView(self.devices)
         self.devices_view.setMouseTracking(True);self.devices_view.viewport().setMouseTracking(True)
-        self.devices_view.setSpacing(2)
+        self.devices_view.setSpacing(0)
         self.device_delegate = _DeviceDelegate(self.devices_view)
         self.devices_view.setItemDelegate(self.device_delegate)
         self.devices.setView(self.devices_view)
@@ -2201,7 +2204,8 @@ class LanDialog(QDialog):
         else:super().reject()
 
     def __init__(self, service, settings, parent=None):
-        super().__init__(parent, Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
+        from window_chrome import utility_window_flags
+        super().__init__(parent,utility_window_flags(Qt.WindowType.Dialog|Qt.WindowType.FramelessWindowHint))
         self._settings=settings;self._panels={};self._theme=settings.theme
         self._close_prompt=None;self._closing_confirmed=False;self._navigate_after_close=None
         self.finished.connect(self._finish_navigation)

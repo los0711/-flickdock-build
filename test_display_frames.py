@@ -2,6 +2,7 @@
 import os
 os.environ['QT_QPA_PLATFORM']='offscreen'
 
+import sys
 import unittest
 import time
 from math import ceil
@@ -244,6 +245,32 @@ class DisplayFramesTests(unittest.TestCase):
             clock._screen_changed(APP.primaryScreen());self.assertIsNotNone(clock.refresh_hz)
         finally:
             _set_on_battery(False);pulse.stop()
+
+    def test_utility_animation_tracks_a_240_hz_screen_on_battery(self):
+        animation=DisplayAnimation(self.window)
+        animation.setStartValue(0.);animation.setEndValue(1.);animation.setDuration(1000);animation.start()
+        clock=animation._frames.clock
+        try:
+            clock._display_paced=True
+            clock.refresh_hz=240.
+            with patch('display_frames._on_battery',True):
+                self.assertAlmostEqual(clock.display_period(),1/240)
+        finally:animation.stop()
+
+    @unittest.skipUnless(sys.platform=='win32','Windows waitable timer')
+    def test_native_timer_rearms_after_each_gui_event(self):
+        from display_frames import _windows_frame_timer_type
+        from PySide6.QtCore import QEventLoop
+        loop=QEventLoop(self.window);samples=[]
+        def tick():
+            samples.append(time.perf_counter())
+            if len(samples)==52:loop.quit()
+            else:timer.start(1/240)
+        timer=_windows_frame_timer_type()(self.window,tick)
+        stop=QTimer(loop);stop.setSingleShot(True);stop.timeout.connect(loop.quit)
+        self.assertTrue(timer.start(1/240));stop.start(1200)
+        loop.exec();timer.stop();timer.deleteLater()
+        self.assertEqual(len(samples),52)
 
     def test_interactive_scroll_follows_screen_refresh_even_when_background_motion_is_capped(self):
         background=FramePulse(self.window)

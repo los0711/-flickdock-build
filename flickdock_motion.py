@@ -47,7 +47,7 @@ class Spring(QObject):
         self._finished: Callable[[], None] | None = None
         self._last_tick = time.perf_counter()
         self._started_at = self._last_tick
-        self._timer = FramePulse(self)
+        self._timer = FramePulse(self,follow_refresh_rate=True)
         self._timer.timeout.connect(self._tick)
         # A spring is a value transition, not a promise that the compositor
         # keeps delivering frames. If the native clock stalls (occluded window,

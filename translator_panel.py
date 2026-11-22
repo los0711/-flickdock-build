@@ -34,7 +34,7 @@ TRANSLATED_INK={'dark':'#CCCCCC','light':'#464646'}
 class TranslatorDialog(ReferenceModalDialog):
     def __init__(self,manager,*,api=None,store=None,detector=None,speech=None):
         self._layout_ready=False
-        super().__init__(None,surface_width=1000,modal=False)
+        super().__init__(None,surface_width=1000,modal=False,utility_chrome=True)
         self.manager=manager;self._theme=None;self._theme_key=None;self._closing=False;self._pinning=False;self._transport=None
         self._preset_key=None;self._shown_result=None;self._shown_source=None;self._active_preset=''
         self._compact_footer=None;self._notice='';self._notice_role='secondary';self._shown_notice_role='red'
@@ -70,7 +70,10 @@ class TranslatorDialog(ReferenceModalDialog):
         self.back_button=overview_back_button(self.title_bar,lambda:manager.return_to_overview(self));head.addWidget(self.back_button);head.addStretch(1)
         self.auto_clipboard_button=button('自动翻译','translate',variant='secondary',parent=self.title_bar)
         self.auto_clipboard_button.setCheckable(True)
-        self.auto_clipboard_button.setAccessibleDescription('复制文字后将译文写回剪贴板，关闭翻译器时停止')
+        clipboard_help='开启后，复制的文字会自动翻译成指定语言，译文将替换剪贴板里的原文。关闭此模式或翻译器即可停止。'
+        self.auto_clipboard_button.setToolTip(clipboard_help)
+        self.auto_clipboard_button.setAccessibleDescription(clipboard_help)
+        self.auto_clipboard_button.setProperty('flickdockHoverHelp',True)
         clipboard_controller=getattr(manager,'translation',None)
         if clipboard_controller is not None and hasattr(clipboard_controller,'set_automatic'):
             clipboard_controller.changed.connect(self._clipboard_translation_changed)

@@ -330,7 +330,7 @@ class SurfaceMorph(QObject):
         self.prepare = prepare
         self.settle = settle
         self.animation = QVariantAnimation(self)
-        self._frames = FramePulse(self)
+        self._frames = FramePulse(self,follow_refresh_rate=True)
         self._frames.timeout.connect(self._advance)
         # Cocoa may suspend display callbacks while another app covers the
         # shelf. Finish once at the deadline so the compositor and hit-test

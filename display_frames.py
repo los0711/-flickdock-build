@@ -47,6 +47,11 @@ class FrameRateGate:
         return True
 
 
+def has_active_window_frames():
+    return any(isValid(clock) and clock.pulses and clock.window.isVisible()
+               and not clock.window.isMinimized() for clock in _window_clocks)
+
+
 def _reset_frame_gates():
     for clock in tuple(_window_clocks):
         if isValid(clock):clock.gate.reset();clock.schedule()
@@ -110,21 +115,78 @@ def _cocoa_link_target():
     return FlickDockDisplayLinkTarget
 
 
+@cache
+def _windows_frame_timer_type():
+    import ctypes
+    from ctypes import wintypes
+    from PySide6.QtCore import QWinEventNotifier
+    from shiboken6 import VoidPtr
+
+    kernel=ctypes.WinDLL('kernel32',use_last_error=True)
+    kernel.CreateWaitableTimerExW.argtypes=[ctypes.c_void_p,wintypes.LPCWSTR,wintypes.DWORD,wintypes.DWORD]
+    kernel.CreateWaitableTimerExW.restype=wintypes.HANDLE
+    kernel.SetWaitableTimer.argtypes=[wintypes.HANDLE,ctypes.POINTER(ctypes.c_longlong),wintypes.LONG,
+                                     ctypes.c_void_p,ctypes.c_void_p,wintypes.BOOL]
+    kernel.SetWaitableTimer.restype=wintypes.BOOL
+    for func in (kernel.CancelWaitableTimer,kernel.CloseHandle):
+        func.argtypes=[wintypes.HANDLE]
+        func.restype=wintypes.BOOL
+
+    class WindowsFrameTimer(QWinEventNotifier):
+        """Auto-reset high-resolution timer delivered on Qt's GUI thread."""
+        def __init__(self,parent,callback):
+            # CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, SYNCHRONIZE | TIMER_MODIFY_STATE.
+            handle=kernel.CreateWaitableTimerExW(None,None,0x2,0x100002)
+            if not handle:
+                raise ctypes.WinError(ctypes.get_last_error())
+            try:
+                super().__init__(VoidPtr(handle),parent)
+            except (RuntimeError,TypeError,ValueError):
+                kernel.CloseHandle(handle)
+                raise
+            self._timer_handle=handle
+            self._callback=callback
+            self._armed=False
+            self.destroyed.connect(lambda:kernel.CloseHandle(handle))
+
+        def start(self,seconds):
+            due=ctypes.c_longlong(-max(1,round(seconds*10_000_000)))
+            self._armed=bool(kernel.SetWaitableTimer(self._timer_handle,ctypes.byref(due),0,None,None,False))
+            return self._armed
+
+        def stop(self):
+            if self._armed:
+                self._armed=False
+                kernel.CancelWaitableTimer(self._timer_handle)
+
+        def isActive(self):
+            return self._armed
+
+        def event(self,event):
+            if event.type()==QEvent.WinEventAct:
+                super().event(event)  # Re-register the one-shot native wait.
+                if self._armed:
+                    self._armed=False
+                    self._callback()
+                return True
+            return super().event(event)
+
+    return WindowsFrameTimer
+
+
 class WindowFrames(QObject):
     """One frame clock per native window, paced to the display it is shown on.
 
-    Windows' native requestUpdate is a 5 ms polling timer that also flushes a
-    frame each time, so an ungated clock asks for ~200 frames per second on
-    every monitor and spends its budget rendering states DWM never shows.
-    After each dispatched step the next native request is scheduled one display
-    period later (shortened by the request latency), giving one animated step
-    per presented frame on 60, 75, 120, 144 and 240 Hz displays without a fixed
-    16 ms timer. Offscreen/minimal backends keep the immediate request loop.
+    Cocoa supplies display-linked callbacks. Windows schedules deadlines with
+    a high-resolution waitable timer at the current screen's refresh rate.
+    A dispatch is an application frame attempt, not a presentation timestamp.
+    Offscreen/minimal backends keep the immediate request loop.
     """
     def __init__(self, window):
         super().__init__(window)
         self.window = window
         self.pulses = WeakSet()
+        self._paint_targets=set()
         self.handle = None
         self.pending = False
         self.dispatching = False
@@ -136,8 +198,10 @@ class WindowFrames(QObject):
         platform=QGuiApplication.platformName()
         self._display_paced=platform not in ('offscreen','minimal')
         self._use_cocoa_link=platform=='cocoa'
-        self._flush_paced_paint=platform=='windows'
+        self._flush_paced_paint=platform in ('windows','cocoa')
         self._cocoa_link=None
+        self._windows_timer=None
+        self._try_windows_timer=platform=='windows'
         self._last_dispatch=0.0
         self._next_frame_at=0.0
         self._cadence=QTimer(self);self._cadence.setSingleShot(True)
@@ -215,7 +279,7 @@ class WindowFrames(QObject):
         if not self._display_paced:return 0.0
         if self._rate_capped():return 1.0/LOCKED_FRAME_RATE_HZ
         hz=self.refresh_hz or 60.0
-        return 1.0/max(30.0,float(hz))
+        return 1.0/float(hz)
 
     def schedule(self):
         if self.queued or self.pending or self.dispatching or not self.pulses:
@@ -229,7 +293,7 @@ class WindowFrames(QObject):
             # Paced backends dispatch from the cadence timer below. The native
             # requestUpdate timer is coalesced to ~16 ms once the process is
             # idle or not foreground, which would halve the intended cadence.
-            if not self._cadence.isActive():self._arm_cadence_timer(.001)
+            if not self._cadence_active():self._arm_cadence_timer(.001)
             return
         self.queued = True
         # Run after QWidgetWindow has flushed the preceding frame. Filtering
@@ -250,7 +314,7 @@ class WindowFrames(QObject):
             import objc
             from AppKit import NSScreen
             from Foundation import NSRunLoop, NSRunLoopCommonModes
-            from Quartz import CADisplayLink
+            import Quartz
             view=objc.objc_object(c_void_p=ctypes.c_void_p(int(handle.winId())))
             native=view.window()
             screen=native.screen() if native is not None else None
@@ -260,8 +324,15 @@ class WindowFrames(QObject):
             callback=_cocoa_link_target().alloc().init()
             callback.clock=ref(self)
             candidate=screen.displayLinkWithTarget_selector_(callback,b'flickDockDisplayLinkTick:')
-            if not isinstance(candidate,CADisplayLink):
+            if not isinstance(candidate,Quartz.CADisplayLink):
                 raise RuntimeError('Could not create the Cocoa display link')
+            make_range=getattr(Quartz,'CAFrameRateRangeMake',None)
+            if make_range is not None and hasattr(screen,'maximumFramesPerSecond') and hasattr(candidate,'setPreferredFrameRateRange_'):
+                maximum=screen.maximumFramesPerSecond()
+                if maximum>0:
+                    try:candidate.setPreferredFrameRateRange_(make_range(min(60,maximum),maximum,maximum))
+                    except (TypeError,ValueError):
+                        LOG.debug('Cocoa kept the system default display-link range')
             self._cocoa_link=candidate
             candidate.addToRunLoop_forMode_(NSRunLoop.mainRunLoop(),NSRunLoopCommonModes)
             self._arm_stall_timer()
@@ -296,15 +367,30 @@ class WindowFrames(QObject):
         self._dispatch_pulses()
         # Consume only the dirty QWidget region queued by the callbacks.
         # QWindow.requestUpdate would instead force an entire-window repaint.
-        if isValid(self.window) and self.window.isVisible() and not self.window.isMinimized():
-            QCoreApplication.sendPostedEvents(self.window,QEvent.UpdateRequest)
+        self._flush_dirty()
+
+    def paint_with_frame(self,widget):
+        if self.dispatching and self._flush_paced_paint:
+            target=widget.window()
+            if target is not self.window:self._paint_targets.add(target)
+
+    def _flush_dirty(self):
+        targets=tuple(self._paint_targets)
+        self._paint_targets.clear()
+        for window in (self.window,*targets):
+            if isValid(window) and window.isVisible() and not window.isMinimized():
+                QCoreApplication.sendPostedEvents(window,QEvent.UpdateRequest)
 
     def _cancel_stall_timer(self):
         if self._stall_timer:
             self.killTimer(self._stall_timer);self._stall_timer=0
 
+    def _cadence_active(self):
+        return self._cadence.isActive() or (self._windows_timer is not None and self._windows_timer.isActive())
+
     def _cancel_cadence_timer(self):
         if self._cadence.isActive():self._cadence.stop()
+        if self._windows_timer is not None:self._windows_timer.stop()
 
     def _arm_cadence_timer(self,seconds=0.0):
         self._cancel_cadence_timer()
@@ -316,6 +402,16 @@ class WindowFrames(QObject):
         # Split a longer wait into a <=13 ms chunk plus the remainder so 60 Hz
         # (16.7 ms) stays at its real period instead of drifting to ~15.4 ms.
         remaining=self._next_frame_at-time.perf_counter()
+        if self._try_windows_timer:
+            if self._windows_timer is None:
+                try:
+                    self._windows_timer=_windows_frame_timer_type()(self,self._cadence_fired)
+                except (ImportError,OSError,RuntimeError,TypeError,ValueError) as error:
+                    self._try_windows_timer=False
+                    LOG.debug('High-resolution Windows frame timer unavailable: %s',type(error).__name__)
+            if self._windows_timer is not None:
+                if self._windows_timer.start(remaining):return
+                self._try_windows_timer=False
         ms=min(13,max(1,round(remaining*1000)))
         self._cadence.start(ms)
 
@@ -360,8 +456,7 @@ class WindowFrames(QObject):
         # Windows OLE can keep dispatching native timers while deferring
         # posted QWidget updates. Flush only this host's dirty paint request
         # so its backing store consumes the state from the same display step.
-        if self._flush_paced_paint and isValid(self.window) and self.window.isVisible():
-            QCoreApplication.sendPostedEvents(self.window,QEvent.UpdateRequest)
+        if self._flush_paced_paint:self._flush_dirty()
         if not self.pulses:return
         if self._next_frame_at!=deadline or self.display_period()!=period:
             self.schedule()
@@ -532,7 +627,7 @@ class DisplayAnimation(QObject):
         super().__init__(parent)
         self._values=QVariantAnimation(self)
         self._values.valueChanged.connect(self.valueChanged.emit)
-        self._frames=FramePulse(self);self._frames.timeout.connect(self._advance)
+        self._frames=FramePulse(self,follow_refresh_rate=True);self._frames.timeout.connect(self._advance)
         # Native paint requests may pause while a window is occluded. A finite
         # transition still owns a completion deadline, independent of painting;
         # this is one endpoint event, never a per-frame polling timer.

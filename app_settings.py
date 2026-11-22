@@ -506,7 +506,7 @@ class UpdateActivityBar(QWidget):
         self.dark = False
         self._clock = QElapsedTimer()
         from display_frames import FramePulse
-        self._timer = FramePulse(self)
+        self._timer = FramePulse(self,follow_refresh_rate=True)
         self._timer.timeout.connect(self.update)
         self.hide()
 
@@ -1320,8 +1320,12 @@ class ReferenceModalDialog(QDialog):
     Paint the backing explicitly: a stylesheet radius alone does not make a
     top-level QWidget's native rectangular backing transparent on both OSes.
     """
-    def __init__(self, parent=None, *, surface_width=390, modal=False, animate=True):
-        super().__init__(parent, Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
+    def __init__(self, parent=None, *, surface_width=390, modal=False, animate=True, utility_chrome=False):
+        flags=Qt.WindowType.Dialog|Qt.WindowType.FramelessWindowHint
+        if utility_chrome:
+            from window_chrome import utility_window_flags
+            flags=utility_window_flags(flags)
+        super().__init__(parent,flags)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAutoFillBackground(False)
         self.setModal(modal)
@@ -1628,7 +1632,8 @@ class SettingsDialog(QDialog):
     mini_requested = Signal()
 
     def __init__(self, store: SettingsStore, parent=None):
-        super().__init__(parent, Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
+        from window_chrome import utility_window_flags
+        super().__init__(parent,utility_window_flags(Qt.WindowType.Dialog|Qt.WindowType.FramelessWindowHint))
         self.store = store
         self.shortcut_validator = None
         self.license_dialog = None

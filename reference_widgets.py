@@ -424,7 +424,7 @@ class HoldRemoveButton(IconTextButton):
         self._hold_timer=QTimer(self);self._hold_timer.setSingleShot(True);self._hold_timer.setTimerType(Qt.PreciseTimer)
         self._hold_timer.timeout.connect(self._complete_hold)
         from display_frames import FramePulse
-        self._hold_frames=FramePulse(self);self._hold_frames.timeout.connect(self.update)
+        self._hold_frames=FramePulse(self,follow_refresh_rate=True);self._hold_frames.timeout.connect(self.update)
 
     def _begin_hold(self):
         if self._hold_started is not None or not self.isEnabled():return
@@ -933,7 +933,7 @@ class MarqueeSelection(QObject):
         super().__init__(view);self.view=view;self.active=False;self.origin=QPoint();self.last=QPoint();self.base=set()
         self.band=QRubberBand(QRubberBand.Rectangle,view.scroll.viewport())
         from display_frames import FramePulse
-        self.timer=FramePulse(self);self.timer.timeout.connect(self._scroll)
+        self.timer=FramePulse(self,follow_refresh_rate=True);self.timer.timeout.connect(self._scroll)
         self._scroll_time=0.;self._scroll_remainder=0.
         view.rows_body.installEventFilter(self)
 

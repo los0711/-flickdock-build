@@ -563,9 +563,6 @@ class PreviewPane(_PreviewSurfaceBase):
         else:
             self.icon.set_content("file",pixmap=self.shelf.item_pixmap(ref,128,dpr=self.devicePixelRatioF()))
             self.stack.setCurrentWidget(self.icon)
-            try: size=source.stat().st_size if source.is_file() else 0
-            except OSError: size=0
-            self.info.setText(kind(ref)+" · "+(f"{size/1024:.1f} KB" if size<1024*1024 else f"{size/(1024*1024):.1f} MB"))
         from reference_widgets import item_detail
         self.info.setText(item_detail(self.shelf,ref))
         self.copy_button.setToolTip("复制文字内容" if self.stack.currentWidget() is self.text else "复制文件")

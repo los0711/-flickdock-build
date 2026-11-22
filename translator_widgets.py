@@ -51,7 +51,7 @@ class ThinkingText(QLabel):
         self._ease_out=exit_curve()
         self._wave=QEasingCurve(QEasingCurve.BezierSpline)
         self._wave.addCubicBezierSegment(QPointF(.42,0),QPointF(.58,1),QPointF(1,1))
-        self._frames=FramePulse(self)
+        self._frames=FramePulse(self,follow_refresh_rate=True)
         self._frames.timeout.connect(self._frame)
         self.hide()
 
@@ -165,7 +165,7 @@ class StreamingResultEditor(QPlainTextEdit):
 
     def __init__(self,parent):
         super().__init__(parent)
-        self._reveal=FramePulse(self);self._reveal.timeout.connect(self._reveal_frame)
+        self._reveal=FramePulse(self,follow_refresh_rate=True);self._reveal.timeout.connect(self._reveal_frame)
         self._words=[]
         self._started_at=0.
         self._delay=self.WORD_INTERVAL
@@ -590,7 +590,7 @@ class PolishPane(TranslatorSurface):
         super().__init__(parent,role='card',radius=RADIUS_PANEL_PX)
         self._active=False;self._started_at=0.
         self._rim=QRegion()
-        self._frames=FramePulse(self);self._frames.timeout.connect(self._tick)
+        self._frames=FramePulse(self,follow_refresh_rate=True);self._frames.timeout.connect(self._tick)
 
     def resizeEvent(self,event):
         super().resizeEvent(event)

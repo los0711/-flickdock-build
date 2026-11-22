@@ -234,7 +234,7 @@ class ItemTransitions(QObject):
         self.overlay=_Exits(self)
         body.destroyed.connect(self.overlay.deleteLater)
         from display_frames import FramePulse
-        self.timer=FramePulse(self);self.timer.timeout.connect(self._tick)
+        self.timer=FramePulse(self,follow_refresh_rate=True);self.timer.timeout.connect(self._tick)
         # The app-level wheel router can consume a wheel event before the
         # viewport filter sees it. Stop entrance effects before that first step.
         self.scroll._flickdock_before_scroll=self.finish

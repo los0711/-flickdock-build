@@ -103,6 +103,8 @@ class ClipboardHistoryPanel(QWidget):
         self._press = None
         self._hits = []
         self._pixmaps = OrderedDict()
+        self._card_pixmaps = OrderedDict()
+        self._card_pixmap_bytes = 0
         self._fonts = {}
         self._captions = OrderedDict()
         self._palette_key = None
@@ -177,6 +179,8 @@ class ClipboardHistoryPanel(QWidget):
                   for index,row,rect,extra,opacity in self._rows_at_current_frame()} if animate else {}
         old_height = self._surface_height()
         self.entries = rows
+        self._card_pixmaps.clear()
+        self._card_pixmap_bytes=0
         self._row_indices={row['id']:index for index,row in enumerate(rows)}
         self.total = count
         self.can_load_more = count>len(rows)
@@ -700,7 +704,41 @@ class ClipboardHistoryPanel(QWidget):
         painter.drawPixmap(thumb,image,crop)
         painter.restore()
 
+    def _card_hits(self,key,rect,thumb):
+        pin=QRectF(rect.right()-31,rect.top()+(ROW-48)/2,23,23)
+        self._hits.extend([('thumb',key,thumb),('pin',key,pin),('remove',key,pin.translated(0,25)),('card',key,rect)])
+
     def _card(self,painter,row,rect,extra,palette,*,content=1.,interactive=True):
+        key=row['id']
+        stable=(content==1. and not extra and interactive and self._stack_progress==1.
+                and self.selected!=key and (self._hovered is None or self._hovered[1]!=key))
+        if not stable:
+            self._paint_card(painter,row,rect,extra,palette,content=content,interactive=interactive)
+            return
+        # On scroll everything in an ordinary row moves together. Use one
+        # DPR-aware raster blit per row and keep hit areas in live coordinates.
+        dpr=self.devicePixelRatioF()
+        cache_key=(key,rect.width(),dpr,self._palette_key,self.font().key())
+        card=self._card_pixmaps.get(cache_key)
+        if card is None:
+            card=QPixmap(math.ceil(rect.width()*dpr),math.ceil(ROW*dpr))
+            card.setDevicePixelRatio(dpr);card.fill(Qt.transparent)
+            raster=QPainter(card)
+            raster.setRenderHints(QPainter.Antialiasing|QPainter.SmoothPixmapTransform)
+            self._paint_card(raster,row,QRectF(0,0,rect.width(),ROW),0,palette,interactive=False)
+            raster.end()
+            self._card_pixmaps[cache_key]=card
+            self._card_pixmap_bytes+=card.width()*card.height()*4
+            while self._card_pixmap_bytes>8*1024*1024 and len(self._card_pixmaps)>1:
+                _,old=self._card_pixmaps.popitem(last=False)
+                self._card_pixmap_bytes-=old.width()*old.height()*4
+        else:
+            self._card_pixmaps.move_to_end(cache_key)
+        painter.drawPixmap(rect.topLeft(),card)
+        thumb=QRectF(rect.x()+CARD_PADDING,rect.y()+(ROW-THUMB)/2,THUMB,THUMB)
+        self._card_hits(key,rect,thumb)
+
+    def _paint_card(self,painter,row,rect,extra,palette,*,content=1.,interactive=True):
         key=row['id']
         hovered=interactive and self._hovered is not None and self._hovered[1]==key
         fill='file_card_selected' if self.selected==key else 'file_card_hover' if hovered else 'file_card'
@@ -769,7 +807,7 @@ class ClipboardHistoryPanel(QWidget):
             self._glyph(painter,glyph,box.adjusted(5,5,-5,-5),tint.name())
         painter.setOpacity(alpha)
         if interactive:
-            self._hits.extend([('thumb',key,visible),('pin',key,pin),('remove',key,remove),('card',key,rect)])
+            self._card_hits(key,rect,visible)
 
     def _layout_rows(self,*,windowed=False):
         y=HEADER-self.scroll+(0. if self._pull_key else self._pull_offset)
@@ -805,18 +843,12 @@ class ClipboardHistoryPanel(QWidget):
         width,height=self._painted.width(),self._painted.height()
         return QRectF(3,HEADER,max(0.,width-6),max(0.,height-HEADER-INSET+1))
 
-    def _update_scroll_body(self,*,on_display_frame=False):
+    def _update_scroll_body(self):
         rect=self._scroll_rect()
         scale=self._panel_scale
         origin=self._paint_origin()
         dirty=QRectF(origin.x()+rect.x()*scale,origin.y()+rect.y()*scale,rect.width()*scale,rect.height()*scale).toAlignedRect()
-        clock=self._wheel_frames.clock
-        if on_display_frame and clock is not None and clock.display_period() and clock._cocoa_link is None:
-            # Paint the viewport in the native cadence callback so a
-            # background tool window's queued update cannot halve the rate.
-            self.repaint(dirty)
-        else:
-            self.update(dirty)
+        self.update(dirty)
 
     def paintEvent(self,event):
         painter=QPainter(self);painter.setRenderHints(QPainter.Antialiasing|QPainter.SmoothPixmapTransform)
@@ -1031,7 +1063,7 @@ class ClipboardHistoryPanel(QWidget):
             self._wheel_remaining-=step
             self._scroll_delta(self._wheel_key,step,Qt.NoScrollPhase)
         self._wheel_at=now
-        self._update_scroll_body(on_display_frame=True)
+        self._update_scroll_body()
         if not self._wheel_remaining:self._wheel_frames.stop()
 
     def wheelEvent(self,event):

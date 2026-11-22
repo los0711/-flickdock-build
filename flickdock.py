@@ -768,6 +768,8 @@ class ShelfManager:
 
     def _shelf_uses_frame_budget(self):
         shelf=self.shelf
+        from display_frames import has_active_window_frames
+        if has_active_window_frames():return True
         return shelf.isVisible() and (shelf.content_transition_active()
             or time.monotonic()-shelf.last_activity<.55
             or any(zone.icon._hovered for zone in shelf.zones.values()))
@@ -950,6 +952,9 @@ class ShelfManager:
 
     def _prewarm_transfer_other(self,dialog,service):
         if self._quitting or dialog is None or service in dialog._panels:return
+        if self._shelf_uses_frame_budget():
+            QTimer.singleShot(500,dialog,lambda:self._prewarm_transfer_other(dialog,service))
+            return
         try:
             from lan_panel import LanPanel
             panel=LanPanel(service,dialog.panel_stack,theme=dialog._theme,settings=self.settings,metadata_cache=dialog.file_metadata)

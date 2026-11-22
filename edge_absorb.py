@@ -140,7 +140,7 @@ class EdgeAbsorb(QObject):
         self._icon_deadline = QTimer(self);self._icon_deadline.setSingleShot(True)
         self._icon_deadline.timeout.connect(self._icon_timeout)
         self.overlay = _Overlay(self)
-        self._timer = FramePulse(self.overlay)
+        self._timer = FramePulse(self.overlay,follow_refresh_rate=True)
         self._timer.timeout.connect(self._tick)
         self._last = 0.0
         self._screen = None

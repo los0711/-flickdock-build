@@ -244,7 +244,7 @@ class TransferProgressRing(QWidget):
         super().__init__(parent)
         from display_frames import FramePulse
         self.state=dict(phase='idle',received=0,total=0)
-        self.setFixedSize(18,18);self.clock=FramePulse(self);self.clock.timeout.connect(self.update)
+        self.setFixedSize(18,18);self.clock=FramePulse(self,follow_refresh_rate=True);self.clock.timeout.connect(self.update)
 
     def set_transfer(self,state):
         if state==self.state:return

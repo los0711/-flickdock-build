@@ -97,6 +97,29 @@ class NativeLanTests(unittest.TestCase):
             self.assertGreaterEqual(popup.height()-view.geometry().bottom()-1,4)
             combo.hidePopup();APP.processEvents()
 
+    def test_device_picker_uses_adjacent_rows_and_the_same_rounded_backing_for_motion(self):
+        panel=self.dialog.panel
+        panel.service.peers_changed.emit([dict(id=str(i),name=f'设备 {i}') for i in range(4)])
+        combo=panel.devices
+        combo.showPopup();APP.processEvents()
+        view=combo.view();popup=view.window()
+        self.assertEqual(view.spacing(),0)
+        rows=[view.visualRect(view.model().index(index,0)) for index in range(combo.count())]
+        self.assertTrue(all(a.bottom()+1==b.top() for a,b in zip(rows,rows[1:])),rows)
+        motion=popup._dropdown_motion
+        self.assertTrue(motion._inline_open)
+        motion._open()
+        try:
+            self.assertEqual(motion.radius,popup._rounded_backdrop.radius)
+            self.assertFalse(motion.rows)
+            for progress in (.30,.67,1.,1.06):
+                motion.height.jump({'height':progress})
+                motion.alpha.jump({'opacity':1.})
+                image=motion.presentation.grab().toImage()
+                for x in (0,image.width()-1):
+                    self.assertEqual(image.pixelColor(x,0).alpha(),0)
+        finally:combo.hidePopup();motion._clear()
+
     def test_windows_device_popup_fades_on_transparent_host_and_restores_preference(self):
         from PySide6.QtCore import QAbstractAnimation
         combo=self.dialog.panel.devices

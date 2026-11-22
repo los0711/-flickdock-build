@@ -34,7 +34,7 @@ class VideoSkeleton(QWidget):
     def __init__(self,parent,*,motion=True):
         super().__init__(parent)
         from display_frames import FramePulse
-        self._pulse=FramePulse(self);self._pulse.timeout.connect(self.update)
+        self._pulse=FramePulse(self,follow_refresh_rate=True);self._pulse.timeout.connect(self.update)
         self._active=False;self._motion=motion;self.dark=True
         self.setAccessibleName('正在解析视频信息')
         self.setMinimumHeight(420);self.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Fixed)
@@ -231,7 +231,9 @@ class VideoSourceCard(QFrame):
         self.shelf.setToolTip('已放入搁架' if row['shelved'] else '正在放入搁架…' if row.get('shelving') else '下载后放入搁架')
         c=colors(theme)
         status_color=c['red'] if row['status']=='error' else c['green'] if complete else c['secondary']
-        self.status.setStyleSheet(f'color:{status_color};background:transparent;border:0;')
+        if getattr(self,'_status_color',None)!=status_color:
+            self._status_color=status_color
+            self.status.setStyleSheet(f'color:{status_color};background:transparent;border:0;')
         self._update_status()
         self.setToolTip(row['error'] if row['status']=='error' else row['path'] or '')
         self.progress_row.setVisible(busy and row['progress'] is not None)
@@ -467,7 +469,7 @@ class VideoDialog(ReferenceModalDialog):
         self._layout_ready=False
         # A topmost shelf must not make this independent utility window inherit
         # its native owner z-order. The manager owns this dialog's lifecycle.
-        super().__init__(None,surface_width=940,modal=False)
+        super().__init__(None,surface_width=940,modal=False,utility_chrome=True)
         self.setFont(manager.shelf.font())
         self.manager=manager;self.controller=controller;self.results={};self.cards={};self._theme=None;self.cover_preview=None
         self._phase_timer=QTimer(self);self._phase_timer.setInterval(1000);self._phase_timer.timeout.connect(self._tick_phase_times)
@@ -595,7 +597,10 @@ class VideoDialog(ReferenceModalDialog):
         self.skeleton.dark=dark;self.skeleton.set_active(busy)
         self.message.setText(self.controller.message)
         c=colors(theme)
-        self.message.setStyleSheet(f'color:{c["red"] if self.controller.message_error else c["secondary"]};background:transparent;border:0;')
+        status_color=c['red'] if self.controller.message_error else c['secondary']
+        if getattr(self,'_message_color',None)!=status_color:
+            self._message_color=status_color
+            self.message.setStyleSheet(f'color:{status_color};background:transparent;border:0;')
         self.message.setVisible(not self.controller.entries or busy or self.controller.message_error)
         keys={entry['key'] for entry in self.controller.entries}
         for key in list(self.results):

@@ -1190,6 +1190,11 @@ class ContentsPopup(QFrame):
         elif ref in changed:widget.refresh_content()
         return widget
 
+    def _row_build_budget(self,ceiling):
+        clock=getattr(self.window(),'_display_frames',None)
+        if clock is None or not clock.refresh_hz:return ceiling
+        return min(ceiling,.45/clock.refresh_hz)
+
     def _append_batch(self,initial=False):
         if not initial and (self.shelf.content_transition_active() or not self.isVisible()): return
         # Constructing thumbnails, styling controls and activating their
@@ -1204,6 +1209,8 @@ class ContentsPopup(QFrame):
         # constructing rows below the fold.
         if not initial and not getattr(self,'_file_entry_pending',False) and self._interactive_motion_active():return
         start=time.perf_counter(); count=0
+        building_visible=getattr(self,'_file_entry_pending',False)
+        budget=self._row_build_budget(.003 if initial or building_visible else .008)
         while self._build_cursor<len(self._build_refs):
             index=self._build_cursor
             ref=self._build_refs[index];self._build_cursor+=1
@@ -1211,8 +1218,7 @@ class ContentsPopup(QFrame):
             self._build_append(index,ref);self._build_installed.add(ref);count+=1
             # One bounded construction slice per paint, instead of repainting
             # the complete composited surface after every one or two rows.
-            building_visible=getattr(self,'_file_entry_pending',False)
-            if count>=(4 if initial else 3 if building_visible else 6) or time.perf_counter()-start>=(.003 if initial or building_visible else .008): break
+            if count>=(4 if initial else 3 if building_visible else 6) or time.perf_counter()-start>=budget:break
         if getattr(self,'_file_entry_pending',False):
             self.rows_layout.activate()
             columns=getattr(self,'_grid_columns',1) if self.view_mode=='icons' else 1
@@ -1256,11 +1262,12 @@ class ContentsPopup(QFrame):
     def _append_visible_batch(self,initial=False):
         if not initial and not getattr(self,'_file_entry_pending',False) and self._interactive_motion_active():return
         started=time.perf_counter();count=0
+        budget=self._row_build_budget(.003)
         while self._visible_queue:
             index=self._visible_queue.pop(0);ref=self._build_refs[index]
             if ref in self._build_installed:continue
             self._build_append(index,ref);self._build_installed.add(ref);count+=1
-            if count>=3 or time.perf_counter()-started>=.003:break
+            if count>=3 or time.perf_counter()-started>=budget:break
         start,end,visible=self._visible_file_indices()
         if getattr(self,'_file_entry_pending',False):
             self.rows_layout.activate()
@@ -1327,7 +1334,7 @@ class ContentsPopup(QFrame):
     def chosen_refs(self):
         return [ref for ref in self.shelf.files['permanent'] if ref in self.selected]
 
-    def update_selection_actions(self):
+    def update_selection_actions(self,visible=None):
         self.shelf.surface_effect.invalidate_source()
         count=len(self.chosen_refs());busy=self.shelf.archive_job is not None
         self.preview.update_action_states()
@@ -1344,10 +1351,10 @@ class ContentsPopup(QFrame):
             control.setChecked(bool(direction))
             control.setToolTip(('正序' if direction==1 else '倒序' if direction==2 else '默认：最新添加在前')+' · 点击切换')
         if not self.sort_direction:self.sort_segment.clear_selection()
-        visible=self.visible_refs()
-        self.select_all_button.setText('弃选' if visible and all(ref in self.selected for ref in visible) else '全选')
-        from reference_widgets import css,colors
+        if visible is None:visible=self.visible_refs()
         deselect=bool(visible and all(ref in self.selected for ref in visible))
+        self.select_all_button.setText('弃选' if deselect else '全选')
+        from reference_widgets import css,colors
         css(self.select_all_button,*[f"QPushButton{{background:transparent;border:0;padding:5px 7px;font:12px 'FlickDock UI';color:{colors(t)['red'] if deselect else colors(t)['secondary']};}}" for t in ('dark','light')])
 
     def change_view_mode(self,key):
@@ -1394,6 +1401,7 @@ class ContentsPopup(QFrame):
 
     def select_item(self,ref,toggle=False,extend=False):
         refs=self.visible_refs()
+        previous=self.selected.copy()
         if extend and self.primary_selection in refs and ref in refs:
             start,end=sorted((refs.index(self.primary_selection),refs.index(ref)))
             self.selected.update(refs[start:end+1])
@@ -1401,16 +1409,19 @@ class ContentsPopup(QFrame):
             if ref in self.selected: self.selected.remove(ref)
             else: self.selected.add(ref)
         elif ref not in self.selected: self.selected={ref}
-        self.primary_selection=ref if ref in self.selected else next((r for r in self.visible_refs() if r in self.selected),None)
-        self.restore_selected_preview()
-        for item in self.rows_body.findChildren(QWidget):
-            if hasattr(item,'set_selected'): item.set_selected(item.path in self.selected)
-            elif isinstance(item,FileRow): item.update()
-        self.update_selection_actions()
+        self.primary_selection=ref if ref in self.selected else next((r for r in refs if r in self.selected),None)
+        self.restore_selected_preview(refs)
+        for changed in previous.symmetric_difference(self.selected):
+            item=self._item_widgets.get(changed)
+            if item is not None:
+                if hasattr(item,'set_selected'):item.set_selected(changed in self.selected)
+                else:item.update()
+        self.update_selection_actions(refs)
 
-    def restore_selected_preview(self):
+    def restore_selected_preview(self,visible=None):
         chosen=self.chosen_refs()
-        if self.primary_selection not in self.visible_refs():
+        if visible is None:visible=self.visible_refs()
+        if self.primary_selection not in visible:
             self.preview.clear_preview();self._preview_metadata={};return
         if self._narrow_layout and not self._narrow_preview:return
         if len(chosen)>1:self.preview.show_group(chosen)

@@ -163,6 +163,12 @@ class _WindowButton(QPushButton):
         p.end()
 
 
+def utility_window_flags(flags):
+    if sys.platform=='win32':
+        flags|=Qt.WindowMinimizeButtonHint|Qt.WindowMaximizeButtonHint|Qt.WindowSystemMenuHint
+    return flags
+
+
 class WindowChrome(QObject):
     def __init__(self,window,title_bar,settings,key,*,surface=None,system_resize=True):
         super().__init__(window);self.window=window;self.title=title_bar;self.surface=surface or window
@@ -175,7 +181,8 @@ class WindowChrome(QObject):
         self._normal=window.size();self._restoring=False
         self._native_resize=False;self._native_configuring=False;self._system_resize=system_resize
         if sys.platform=='win32':
-            window.setWindowFlags(window.windowFlags()|Qt.WindowMinimizeButtonHint|Qt.WindowMaximizeButtonHint|Qt.WindowSystemMenuHint)
+            flags=utility_window_flags(window.windowFlags())
+            if window.windowFlags()!=flags:window.setWindowFlags(flags)
             old=getattr(window,'close_button',None)
             if old is not None:title_bar.layout().removeWidget(old);old.hide()
             controls=QWidget(title_bar)

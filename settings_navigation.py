@@ -244,29 +244,34 @@ class InertialWheelScroll(QObject):
 def _blurred_edge(sample, height, *, top, tone):
     """Progressively diffuse the captured pixels, keeping center content sharp."""
     width=sample.width()
-    source=QRect(0,0 if top else sample.height()-height,width,height)
-    output=sample.copy(source)
+    y=0 if top else sample.height()-height
+    output=sample.copy(0,y,width,height)
     destination=QRect(0,0,width,height)
+    target=QRect(0,-y,width,sample.height())
     start,stop=(0,height) if top else (height,0)
+    level=QImage(output.size(),QImage.Format_ARGB32_Premultiplied)
+    p=QPainter(output)
     for scale,end in ((3.,1.),(6.,.78),(12.,.52)):
         low_detail=sample.scaled(max(1,round(width/scale)),max(1,round(sample.height()/scale)),
                                  Qt.IgnoreAspectRatio,Qt.SmoothTransformation)
-        level=low_detail.scaled(sample.size(),Qt.IgnoreAspectRatio,Qt.SmoothTransformation).copy(source)
-        p=QPainter(level)
-        p.setCompositionMode(QPainter.CompositionMode_DestinationIn)
+        layer=QPainter(level)
+        layer.setCompositionMode(QPainter.CompositionMode_Source)
+        layer.setRenderHint(QPainter.SmoothPixmapTransform)
+        layer.drawImage(target,low_detail)
+        layer.setCompositionMode(QPainter.CompositionMode_DestinationIn)
         blend=QLinearGradient(0,start,0,stop)
         blend.setColorAt(0,Qt.black)
         blend.setColorAt(end*.30,Qt.black)
         blend.setColorAt(end,Qt.transparent)
-        p.fillRect(destination,blend)
-        p.end()
-        p=QPainter(output);p.drawImage(0,0,level);p.end()
+        layer.fillRect(destination,blend)
+        layer.end()
+        p.drawImage(0,0,level)
     clear=QColor(tone);clear.setAlpha(0)
     veil=QLinearGradient(0,start,0,stop)
     veil.setColorAt(0,tone)
     veil.setColorAt(.08,tone)
     veil.setColorAt(.58,clear)
-    p=QPainter(output);p.fillRect(destination,veil);p.end()
+    p.fillRect(destination,veil);p.end()
     return output
 
 
@@ -283,6 +288,7 @@ class _ScrollEdgeFade(QWidget):
         self._strengths=(0.,0.)
         self._capturing=False
         self._bounce_source=None
+        self._capture_image=QImage()
         self.setGeometry(viewport.geometry())
         viewport.installEventFilter(self)
         self.bar.valueChanged.connect(self.sync)
@@ -311,6 +317,8 @@ class _ScrollEdgeFade(QWidget):
             self.sync()
         elif kind in (QEvent.PaletteChange,QEvent.StyleChange,QEvent.Show):
             self._update_bands()
+        elif kind==QEvent.Hide:
+            self._capture_image=QImage()
         return False
 
     def set_bounce_source(self,overlay):
@@ -347,19 +355,33 @@ class _ScrollEdgeFade(QWidget):
         source=self._bounce_source or self.area.viewport()
         tone=self._tone()
         sampled=min(self.height(),height+12)
+        dirty=event.region()
+        bands=[]
+        for top,strength in zip((True,False),self._strengths):
+            y=0 if top else self.height()-height
+            if strength>0 and dirty.intersects(QRect(0,y,self.width(),height)):
+                bands.append((top,strength,y,QRect(0,0 if top else self.height()-sampled,self.width(),sampled)))
+        if not bands:return
         painter=QPainter(self)
         self._capturing=True
         try:
-            for top,strength in zip((True,False),self._strengths):
-                y=0 if top else self.height()-height
-                if strength<=0 or not event.region().intersects(QRect(0,y,self.width(),height)):continue
-                region=QRect(0,0 if top else self.height()-sampled,self.width(),sampled)
-                capture=QImage(region.size(),QImage.Format_ARGB32_Premultiplied)
-                capture.fill(tone)
-                p=QPainter(capture)
-                source.render(p,QPoint(),QRegion(region),QWidget.DrawChildren)
-                p.end()
-                image=_blurred_edge(capture,height,top=top,tone=tone)
+            # One traversal of the viewport when both edge bands are dirty.
+            # The gap between the bands never gets sampled or filled.
+            samples=QRegion()
+            for _,_,_,region in bands:samples+=QRegion(region)
+            bounds=samples.boundingRect()
+            if self._capture_image.size()!=bounds.size():
+                self._capture_image=QImage(bounds.size(),QImage.Format_ARGB32_Premultiplied)
+            capture=self._capture_image
+            p=QPainter(capture)
+            p.setCompositionMode(QPainter.CompositionMode_Source)
+            for _,_,_,region in bands:p.fillRect(region.translated(-bounds.topLeft()),tone)
+            p.setCompositionMode(QPainter.CompositionMode_SourceOver)
+            source.render(p,QPoint(),samples,QWidget.DrawChildren)
+            p.end()
+            for top,strength,y,region in bands:
+                raster=capture.copy(region.translated(-bounds.topLeft())) if len(bands)>1 else capture
+                image=_blurred_edge(raster,height,top=top,tone=tone)
                 # Blend into the actual live pixels at the inner boundary.
                 # The resampled copy never replaces crisp content in the center.
                 mask=QPainter(image)
