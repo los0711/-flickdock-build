@@ -61,6 +61,14 @@ def _windows_seh_probe(mode):
                     if stalled:stop.set()
                     for worker in workers:worker.join()
                     if stalled:raise RuntimeError('Handled exceptions stalled the UI')
+                elif mode=='legacy':
+                    # The legacy control checks what faulthandler logs for a
+                    # caught error. Keep the GIL while its all-thread dump runs
+                    # so the diagnostics worker cannot mutate frames mid-dump.
+                    raise_legacy=ctypes.PyDLL('kernel32').RaiseException
+                    raise_legacy.argtypes=kernel.RaiseException.argtypes
+                    raise_legacy.restype=None
+                    raise_legacy(0x8001010e,0,0,None)
                 else:kernel.RaiseException(0x8001010e,0,0,None)
             finally:kernel.RemoveVectoredExceptionHandler(registration)
             timer.stop()
