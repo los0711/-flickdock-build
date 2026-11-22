@@ -53,3 +53,16 @@ jobs:
         with:
           name: visual-scenes-${{ runner.os }}
           path: display-*.json
+      - name: Regress frame handoff, source composition and text scrolling
+        env:
+          QT_QPA_PLATFORM: offscreen
+          PYTHONUTF8: '1'
+        run: python -m unittest test_display_frames test_scroll_motion_v1837 test_surface_source_cache test_text_preview_v1838 test_translator_v1844.NativeFixTests.test_long_source_and_result_scroll_by_pixels_and_keep_the_selection -q
+  windows-installer:
+    needs: calibration
+    uses: ./.github/workflows/release-windows.yml
+  macos-installer:
+    needs: calibration
+    uses: ./.github/workflows/macos-build.yml
+    with:
+      test_build: true

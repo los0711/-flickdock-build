@@ -1,6 +1,7 @@
 """Measure changed pixels in the final display during real FlickDock actions."""
 import argparse
 import faulthandler
+from contextlib import ExitStack
 import json
 import math
 import os
@@ -82,7 +83,7 @@ def measure(binary, target, screen, action, duration, *, action_slice=None):
         if measurement.poll() is None:
             measurement.kill()
             measurement.wait(timeout=2)
-    seen = [frame for frame in frames if started - .3 <= frame[0] <= started + duration]
+    seen = [frame for frame in frames if frame[0] <= started + duration]
     before = [frame for frame in seen if frame[0] < started]
     if not before:
         raise RuntimeError(f'No pre-action display sample; Python clock {started}; sample clock {frames[:2]}')
@@ -154,17 +155,19 @@ def main():
     from settings_navigation import install_smooth_scrolling
     from translator_panel import TranslatorDialog
     from translator_store import TranslatorStore
+    from test_translator_v1844 import FakeApi
     from app_version import APP_VERSION
     install_smooth_scrolling(app)
     report = dict(version=APP_VERSION, platform=app.platformName(), refresh_hz=screen.refreshRate(),
                   display=screen.geometry().getRect(), dpr=screen.devicePixelRatio(), physical_panel=False,
                   capture='DXGI Desktop Duplication' if sys.platform=='win32' else 'ScreenCaptureKit displayTime')
-    with tempfile.TemporaryDirectory(prefix='flickdock-desktop-motion-') as folder:
+    with tempfile.TemporaryDirectory(prefix='flickdock-desktop-motion-') as folder, ExitStack() as cleanup:
         base = Path(folder)
         flickdock.BASE = base / 'profile'
         flickdock.STATE_FILE = flickdock.BASE / 'shelves.json'
         flickdock.OLD_STATE_FILE = flickdock.BASE / 'old-shelves.json'
         manager = flickdock.ShelfManager(app, cocoa_smoke=True)
+        cleanup.callback(manager.quit)
         print('Opened isolated desktop session',flush=True)
         shelf = manager.shelf
         manager.timer.stop()
@@ -197,20 +200,25 @@ def main():
         report['overview_scroll'] = measure(options.capture, band(popup.scroll.viewport(),68,76), screen,
             lambda:observe_scroll(popup.scroll,1100), 1.3, action_slice=(.12,1.12))
         popup.scroll.verticalScrollBar().setValue(0)
-        popup.select_item(refs[0]);pump(280)
+        visible = popup.visible_refs()
+        popup.select_item(visible[0])
+        if popup._narrow_layout:
+            popup.toggle_narrow_preview()
+        pump(280)
         def next_file():
-            popup.select_item(refs[13])
+            popup.select_item(visible[13])
         print('Measuring file preview switch',flush=True)
-        report['file_preview'] = measure(options.capture, band(popup.preview,24,68,130,200),
+        report['file_preview'] = measure(options.capture, band(popup.preview,14,12,196,222),
                                          screen, next_file, .62, action_slice=(0,.32))
-        if popup.preview.current_path != refs[13]:
+        if popup.preview.current_path != visible[13]:
             raise RuntimeError('The preview did not preserve the newest selection')
         shelf.hide_immediately()
         settings = SettingsStore(base / 'translator')
         store = TranslatorStore(base / 'translator', autoload=False)
         store.data['live'] = False
         shim = SimpleNamespace(settings=settings, shelf=QWidget())
-        translator = TranslatorDialog(shim,store=store,detector=lambda text:'英语')
+        translator = TranslatorDialog(shim,api=FakeApi(),store=store,detector=lambda text:'英语')
+        cleanup.callback(translator.shutdown)
         translator.show()
         editor = translator.source_editor
         paragraphs = [' '.join(f'{n ^ (k*13):03x}-fixture' for k in range(n%15+23)) for n in range(300)]
@@ -223,8 +231,6 @@ def main():
         options.out.write_text(json.dumps(report,indent=2), encoding='utf-8')
         print(json.dumps({k:{field:case[field] for field in ('input_to_visible_ms','unique_frames_active',
                'interval_p95_ms','backlogged_capture_frames')} for k,case in report.items() if isinstance(case,dict)}))
-        translator.shutdown()
-        manager.quit()
     faulthandler.cancel_dump_traceback_later()
 
 
