@@ -1,0 +1,30 @@
+name: Verify the Mac transfer cards and document scope
+
+on:
+  push:
+    branches: [ci-live-editor-mac-layout-1840]
+
+permissions:
+  contents: read
+
+jobs:
+  transfer-layout:
+    runs-on: macos-15
+    timeout-minutes: 8
+    env:
+      PYTHONUTF8: '1'
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          architecture: arm64
+      - run: python -m pip install 'PySide6==6.12.0' 'cryptography==50.0.2' 'keyring==25.7.0'
+      - run: >-
+          python -m unittest
+          test_lan_dialog_v183.LanDialogTests.test_activity_cards_only_scroll_their_own_rows
+          test_lan_dialog_v183.LanDialogTests.test_two_columns_keep_send_and_transfer_visible_without_window_scroll
+          test_live_translation_card -v
