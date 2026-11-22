@@ -112,6 +112,7 @@ class _SessionSignals(QObject):
 
 class AccountService(QObject):
     account_changed = Signal(object)
+    session_resume_finished = Signal()
     status_changed = Signal(str)
     busy_changed = Signal(bool)
     devices_changed = Signal(list)
@@ -138,6 +139,7 @@ class AccountService(QObject):
         self.device_name = platform.node()[:80] or ('Mac' if self.platform=='macos' else 'Windows PC')
         self._restore_async = self.platform == 'macos' and (native or store is not None)
         self._resume_started = False
+        self.resume_complete = False
         self._restored = self.store.load() if not self._restore_async and (native or store is not None) else None
         self.api.unauthorized.connect(self._expired)
 
@@ -160,18 +162,24 @@ class AccountService(QObject):
         self._session_restored(self.epoch, session, '')
 
     def _session_restored(self, epoch, session, error):
-        # Login/logout/close revoke a restore which was waiting for Keychain.
-        if self._closed or epoch != self.epoch or self.signed_in:
+        if self._closed:
             return
-        if error:
-            self.status_changed.emit('无法读取本机登录凭据，请重新登录。')
-        if not session:
-            self.account_changed.emit(None); return
-        self.api.token = session['token']; self.device_id = session.get('device_id','')
-        # Resume the account's own local cache even while offline; only this
-        # account's session can later upload it. A server401 revokes it.
-        self.account = session['account']; self.account_changed.emit(dict(self.account))
-        self.refresh()
+        # Login/logout/close revoke a restore which was waiting for Keychain.
+        try:
+            if epoch != self.epoch or self.signed_in:
+                return
+            if error:
+                self.status_changed.emit('无法读取本机登录凭据，请重新登录。')
+            if not session:
+                self.account_changed.emit(None); return
+            self.api.token = session['token']; self.device_id = session.get('device_id','')
+            # Resume the account's own local cache even while offline; only this
+            # account's session can later upload it. A server401 revokes it.
+            self.account = session['account']; self.account_changed.emit(dict(self.account))
+            self.refresh()
+        finally:
+            self.resume_complete = True
+            self.session_resume_finished.emit()
 
     def register(self, username, password): return self._auth('register', username, password)
     def login(self, username, password): return self._auth('login', username, password)

@@ -10,7 +10,7 @@ from PySide6.QtGui import QDrag, QPixmap
 from PySide6.QtWidgets import QApplication, QLineEdit, QPlainTextEdit, QTextEdit
 from shiboken6 import isValid
 
-from clipboard_history_native import (front_target, insert_files, insert_image, insert_text, mac_history_paste_blocker,
+from clipboard_history_native import (MacPasteResult, front_target, insert_files, insert_image, insert_text, mac_history_paste_blocker,
                                       mac_owns_foreground, private_clipboard, restore_mac_target)
 from clipboard_history_panel import ClipboardHistoryPanel
 from clipboard_history_store import ClipboardHistoryStore, PAGE, decode_history_image
@@ -243,10 +243,13 @@ class ClipboardHistory(QObject):
             if pasted:
                 self.manager.shelf.hide_animated(explicit=True)
             elif self.panel._cocoa_hover:
-                from clipboard_history_native import MacPasteResult
                 reason=pasted if isinstance(pasted,MacPasteResult) else MacPasteResult.FOCUS
                 LOG.info('Mac history paste did not complete (%s)',reason.name)
-                self.panel.feedback(reason.value)
+                if reason==MacPasteResult.ACCESSIBILITY:
+                    self.manager.open_mac_permission('accessibility')
+                elif reason==MacPasteResult.CLIPBOARD_PERMISSION:
+                    self.manager.open_mac_permission('clipboard')
+                else:self.panel.feedback(reason.value)
             elif kind in ('image','file'):self.panel.feedback('拖入目标窗口')
             else:self.panel.feedback('请先聚焦目标输入框，或拖放')
         def ready(value):
@@ -257,13 +260,14 @@ class ClipboardHistory(QObject):
             kind,payload=value
             if target is None and editor is not None and isValid(editor) and editor is QApplication.focusWidget():
                 complete(self._insert_local(editor,kind,payload),kind)
-            elif target is None:complete(False,kind)
             else:
                 blocker=mac_history_paste_blocker() if self.panel._cocoa_hover else None
                 if blocker:
-                    message=('请在 Mac 权限设置中允许辅助功能' if blocker=='accessibility'
-                             else '请在 Mac 权限设置中将剪贴板设为始终允许')
-                    self.panel.feedback(message)
+                    complete(MacPasteResult.ACCESSIBILITY if blocker=='accessibility'
+                             else MacPasteResult.CLIPBOARD_PERMISSION,kind)
+                    return
+                if target is None:
+                    complete(False,kind)
                     return
                 if kind=='file':insert,data=insert_files,payload
                 elif kind=='image':insert,data=insert_image,payload

@@ -169,6 +169,7 @@ class DropdownMotion(QObject):
         self.popup=weakref.ref(popup)
         self._owned_menu=False
         self._inline_open=bool(popup.property('flickdockInlineDropdown'))
+        self._embedded=False
         self.presentation=None
         self.snapshot=QPixmap()
         self.rows=()
@@ -190,6 +191,13 @@ class DropdownMotion(QObject):
         popup.destroyed.connect(self._popup_gone)
         if owner is not None:owner.installEventFilter(self)
 
+    def use_embedded_host(self, *, upward):
+        # The AppKit host owns the window position and opacity. Paint the
+        # spring inside that host so no second window can flash above it.
+        self._embedded=True
+        self._inline_open=True
+        self.upward=upward
+
     def _live(self):
         widget=self.popup()
         return widget if widget is not None and isValid(widget) else None
@@ -205,6 +213,9 @@ class DropdownMotion(QObject):
                 self.opened=True
                 if self.enabled:
                     if self._inline_open:
+                        if self._embedded:
+                            self.height.jump({'height':0.})
+                            self.alpha.jump({'opacity':0.})
                         # Cover the live menu before its first paint. _open()
                         # removes this child only while grabbing the snapshot.
                         self._present(watched,inline=True)
@@ -216,7 +227,7 @@ class DropdownMotion(QObject):
             elif event.type()==QEvent.Hide:
                 self.opened=False
                 self.after_layout.stop()
-                if self.enabled and self.presentation is not None and not self.snapshot.isNull():
+                if not self._embedded and self.enabled and self.presentation is not None and not self.snapshot.isNull():
                     if self._inline_open:
                         self._present(watched,inline=False)
                     self.presentation.show()
@@ -271,11 +282,12 @@ class DropdownMotion(QObject):
             RADIUS_CARD_PX if isinstance(popup,QMenu) else RADIUS_PANEL_PX))
         theme=popup.property('dropdownTheme') or getattr(popup,'surface_theme',None) or ui_theme.current_theme()
         self.fill=qss_color(colors(theme)['popup_surface'])
-        anchor=getattr(popup,'_dropdown_anchor',None)
-        if anchor is None and popup.parentWidget() is not self.owner:anchor=popup.parentWidget()
-        if anchor is not None and not isValid(anchor):anchor=None
-        point=popup.mapToGlobal(QPoint())
-        self.upward=bool(anchor is not None and point.y()+popup.height()<=anchor.mapToGlobal(QPoint()).y()+2)
+        if not self._embedded:
+            anchor=getattr(popup,'_dropdown_anchor',None)
+            if anchor is None and popup.parentWidget() is not self.owner:anchor=popup.parentWidget()
+            if anchor is not None and not isValid(anchor):anchor=None
+            point=popup.mapToGlobal(QPoint())
+            self.upward=bool(anchor is not None and point.y()+popup.height()<=anchor.mapToGlobal(QPoint()).y()+2)
         self._owned_menu=bool(popup.property('flickdockOwnedShelfMenu'))
         self._present(popup,inline=self._inline_open)
         self.started=time.monotonic()
@@ -342,7 +354,7 @@ class DropdownMotion(QObject):
         if self.height._timer.isActive() or self.alpha._timer.isActive():return
         if self.opened:
             popup=self._live()
-            if popup is not None:
+            if popup is not None and not self._embedded:
                 popup.setWindowOpacity(1.)
                 if self._owned_menu and self.owner is not None and isValid(self.owner):
                     from platform_native import raise_owned_popup
@@ -365,7 +377,7 @@ class DropdownMotion(QObject):
             self.presentation.deleteLater()
             self.presentation=None
         popup=self._live()
-        if popup is not None:popup.setWindowOpacity(1.)
+        if popup is not None and not self._embedded:popup.setWindowOpacity(1.)
         self.snapshot=QPixmap()
         if self.owner is not None and isValid(self.owner) and getattr(self.owner,'_moving_dropdown',None) is self:
             self.owner._moving_dropdown=None

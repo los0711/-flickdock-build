@@ -1,4 +1,4 @@
-"""Nonactivating, draggable help beside the macOS Accessibility settings."""
+"""Nonactivating, draggable help below the macOS Accessibility settings."""
 from __future__ import annotations
 
 import logging
@@ -17,23 +17,13 @@ GAP = 10
 
 
 def guide_geometry(window, available, size):
-    """Place outside the settings window. Leave it hidden if there is no room."""
+    """Place beneath System Settings, clear of the permission controls."""
     width, height = size.width(), size.height()
     if available.width() < width or available.height() < height:
         return QRect()
     x = max(available.left(), min(window.center().x() - width // 2, available.right() - width + 1))
-    y = max(available.top(), min(window.bottom() - height + 1, available.bottom() - height + 1))
-    positions = (
-        (x, window.bottom() + GAP + 1),
-        (window.right() + GAP + 1, y),
-        (window.left() - width - GAP, y),
-        (x, window.top() - height - GAP),
-    )
-    for left, top in positions:
-        rect = QRect(left, top, width, height)
-        if available.contains(rect) and not rect.intersects(window):
-            return rect
-    return QRect()
+    rect = QRect(x, window.bottom() + GAP + 1, width, height)
+    return rect if available.contains(rect) else QRect()
 
 
 def settings_window():

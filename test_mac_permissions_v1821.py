@@ -180,10 +180,7 @@ class PermissionUITests(unittest.TestCase):
         position=guide_geometry(window,area,size)
         self.assertEqual(position.top(),window.bottom()+11)
         window.moveBottom(area.bottom()-8)
-        position=guide_geometry(window,area,size)
-        self.assertTrue(area.contains(position))
-        self.assertFalse(position.intersects(window))
-        self.assertGreater(position.left(),window.right())
+        self.assertTrue(guide_geometry(window,area,size).isEmpty())
         self.assertTrue(guide_geometry(area,area,size).isEmpty())
 
     def test_permission_guide_drags_exact_bundle_and_disappears_after_grant(self):
@@ -194,11 +191,12 @@ class PermissionUITests(unittest.TestCase):
         guide=MacAccessibilityGuide(bundle,backend,'light',APP.font(),reveal)
         try:
             area=APP.primaryScreen().availableGeometry()
-            window=QRect(area.x()+4,area.y()+4,area.width()-330,area.height()-8)
+            window=QRect(area.x()+4,area.y()+4,area.width()-8,area.height()-guide.height()-20)
             with patch('mac_permission_guide.settings_window',return_value=window):
                 guide.start();flush()
                 self.assertTrue(guide.isVisible())
                 self.assertFalse(guide.geometry().intersects(window))
+                self.assertGreater(guide.geometry().top(),window.bottom())
                 self.assertEqual(guide.app_icon.mime_data().urls(),[QUrl.fromLocalFile(str(bundle))])
                 guide.app_icon.click();reveal.assert_called_once()
                 backend.accessibility.return_value='allowed'
@@ -259,6 +257,61 @@ class PermissionUITests(unittest.TestCase):
                 dialog.scroll.ensureWidgetVisible(dialog.setup_button);flush()
                 self.assertTrue(dialog.setup_button.isVisible())
             finally:dialog.hide();dialog.deleteLater();owner.deleteLater();flush()
+
+    def test_permission_status_colors_follow_actual_grants(self):
+        from native_ui_common import colors
+
+        states=dict(clipboard='allowed',accessibility='denied',input='unknown',network='observed',files='on_demand')
+        backend=SimpleNamespace(inspect=lambda **_:dict(states))
+        owner=QWidget();manager=SimpleNamespace(shelf=owner,settings=SimpleNamespace(theme='light'))
+        dialog=MacPermissionsDialog(manager,backend=backend)
+        try:
+            for theme in ('light','dark'):
+                manager.settings.theme=theme
+                dialog.refresh()
+                palette=colors(theme)
+                for kind,token in (('clipboard','green'),('accessibility','red'),('network','secondary')):
+                    self.assertIn(palette[token],dialog.rows[kind][0].styleSheet())
+            states['accessibility']='allowed'
+            dialog.refresh()
+            self.assertIn(colors('dark')['green'],dialog.rows['accessibility'][0].styleSheet())
+        finally:dialog.close();dialog.deleteLater();owner.deleteLater();flush()
+
+    def test_clipboard_permission_shortcut_opens_system_pane_without_an_extra_dialog(self):
+        from flickdock import ShelfManager
+
+        states=dict(clipboard='default',accessibility='denied',input='unknown',network='unknown',files='on_demand')
+        backend=SimpleNamespace(inspect=lambda **_:dict(states),open_settings=Mock(return_value=True),request=Mock())
+        owner=QWidget();manager=SimpleNamespace(shelf=owner,settings=SimpleNamespace(theme='light'),_quitting=False,
+            clipboard_presenter=SimpleNamespace(state={'permission_required':True}),clipboard_preview_dialog=None)
+        dialog=MacPermissionsDialog(manager,backend=backend)
+        manager._mac_permissions=lambda:dialog
+        manager.open_mac_permission=lambda kind:ShelfManager.open_mac_permission(manager,kind)
+        try:
+            ShelfManager.show_clipboard_preview(manager);flush()
+            backend.open_settings.assert_called_once_with('clipboard')
+            backend.request.assert_not_called()
+            self.assertTrue(dialog.awaiting_system)
+            self.assertFalse(dialog.isVisible())
+            dialog._returned_to_app();flush()
+            self.assertFalse(dialog.isVisible())
+        finally:dialog.close();dialog.deleteLater();owner.deleteLater();flush()
+
+    def test_automatic_permission_setup_waits_for_startup_keychain_result(self):
+        from flickdock import ShelfManager
+
+        manager=SimpleNamespace(_quitting=False,cocoa_smoke=False,account=SimpleNamespace(resume_complete=False),
+            settings=SimpleNamespace(base=Path(tempfile.gettempdir())),show_mac_permissions=Mock())
+        with (patch('flickdock.sys.platform','darwin'),patch('flickdock.sys.frozen',True,create=True),
+              patch('flickdock.native_input_available',return_value=True),
+              patch('mac_permissions.setup_needed',return_value=True) as needed):
+            ShelfManager._present_mac_setup(manager)
+            needed.assert_not_called()
+            manager.show_mac_permissions.assert_not_called()
+            manager.account.resume_complete=True
+            ShelfManager._present_mac_setup(manager)
+            needed.assert_called_once_with(manager.settings.base)
+            manager.show_mac_permissions.assert_called_once_with()
 
 
 if __name__=='__main__':unittest.main(verbosity=2)

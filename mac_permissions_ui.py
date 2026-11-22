@@ -1,10 +1,16 @@
 """One guided entry for actual macOS grants, without broad or automatic permission changes."""
+import ctypes
 import logging
 from PySide6.QtCore import Qt,QTimer
 from PySide6.QtWidgets import QApplication,QLabel,QPushButton,QHBoxLayout,QVBoxLayout,QFrame,QWidget
 from app_settings import ReferenceModalDialog,SettingsCloseButton
 from native_ui_common import colors
 from mac_permissions import MacPermissionBackend
+from platform_native import native_input_available
+
+
+GRANTED_STATES = ('allowed', 'legacy', 'not_required')
+ACTION_REQUIRED_STATES = ('denied', 'ask', 'default')
 
 
 class MacPermissionsDialog(ReferenceModalDialog):
@@ -21,6 +27,7 @@ class MacPermissionsDialog(ReferenceModalDialog):
         self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint)
         self.setFont((parent or manager.shelf).font())
         self._awaiting_system=False
+        self._return_to_dialog=False
         self._guided_flow=False
         self._accessibility_guide=None
         self.manager=manager;self.backend=backend or MacPermissionBackend();self.states={};self._guided=set()
@@ -67,10 +74,27 @@ class MacPermissionsDialog(ReferenceModalDialog):
             self.hint.setText('请在 Finder 中打开上方显示的应用路径。')
 
     def _paste_permissions_ready(self):
-        return all(self.states[k] in ('allowed','legacy','not_required') for k in ('clipboard','accessibility'))
+        return all(self.states[k] in GRANTED_STATES for k in ('clipboard','accessibility'))
+
+    @property
+    def awaiting_system(self):
+        return self._awaiting_system
+
+    def bring_to_front(self):
+        self.raise_()
+        self.activateWindow()
+        if not native_input_available():return
+        try:
+            import AppKit
+            import objc
+            AppKit.NSApplication.sharedApplication().activate()
+            view=objc.objc_object(c_void_p=ctypes.c_void_p(int(self.winId())))
+            window=view.window()
+            if window is not None:window.orderFrontRegardless()
+        except (ImportError,OSError,RuntimeError,AttributeError,TypeError,ValueError):
+            logging.getLogger(__name__).exception('Could not bring Mac permission setup forward')
 
     def _show_accessibility_guide(self):
-        from platform_native import native_input_available
         if self.bundle is None or not native_input_available() or not hasattr(self.backend,'accessibility'):
             return
         if self._accessibility_guide is None:
@@ -96,10 +120,14 @@ class MacPermissionsDialog(ReferenceModalDialog):
         lan=getattr(self.manager,'lan',None)
         available=bool(pointer and pointer.backend and pointer.backend.available)
         self.states=self.backend.inspect(pointer_ok=available,peers=bool(lan and lan.peers()))
+        palette=colors(self._theme)
         for kind,(label,button) in self.rows.items():
             state=self.states[kind];label.setText(self.LABELS.get(state,'待检测'))
             if state=='unknown' and kind!='network':label.setText('无法检测，请查看系统设置')
-            button.setText('查看设置' if state in ('allowed','legacy','not_required','observed') else '设置')
+            color=palette['green' if state in GRANTED_STATES else 'red' if state in ACTION_REQUIRED_STATES else 'secondary']
+            style=f'color:{color};font-weight:600;'
+            if label.styleSheet()!=style:label.setStyleSheet(style)
+            button.setText('查看设置' if state in GRANTED_STATES or state=='observed' else '设置')
         pending=(pointer is not None and not available and self.states['accessibility']=='allowed'
                 and self.states['input'] in ('allowed','legacy'))
         if getattr(self,'_listener_pending',False) and not pending:
@@ -123,26 +151,28 @@ class MacPermissionsDialog(ReferenceModalDialog):
         if not self._awaiting_system:return
         self._awaiting_system=False
         self._stop_accessibility_guide()
-        self.show()
         self.refresh()
+        if self._return_to_dialog:self.show()
+        self._return_to_dialog=False
         close_after_setup=self._guided_flow and self._paste_permissions_ready()
         self._guided_flow=False
         if close_after_setup:self.close()
 
-    def request(self,kind):
+    def request(self,kind,*,direct=False):
         if self._awaiting_system:return
-        self._return_geometry=self.geometry()
+        if self.isVisible():self._return_geometry=self.geometry()
+        self._return_to_dialog=not direct or self.isVisible()
         self._awaiting_system=True
         self.hide()
         shelf=getattr(self.manager,'shelf',None)
         if shelf is not None and hasattr(shelf,'hide_immediately'):shelf.hide_immediately()
-        QTimer.singleShot(0,self,lambda:self._request_hidden(kind))
+        QTimer.singleShot(0,self,lambda:self._request_hidden(kind,direct))
 
-    def _request_hidden(self,kind):
+    def _request_hidden(self,kind,direct):
         if not self._awaiting_system:return
         opened=False
         try:
-            opened=self.backend.request(kind)
+            opened=(self.backend.open_settings if direct else self.backend.request)(kind)
             if not opened:self.hint.setText('未能打开系统设置，请手动前往“系统设置 → 隐私与安全性”。')
             elif kind=='clipboard':self.hint.setText('请在剪贴板/从其他 App 粘贴的设置中，将 FlickDock 设为“始终允许”。只允许一次不能用于持续后台同步。')
             elif kind=='accessibility':self.hint.setText('如果旧条目已开启但仍显示未允许，请点辅助功能里的“＋”，选择上面显示的 FlickDock.app 并开启。')
@@ -161,8 +191,10 @@ class MacPermissionsDialog(ReferenceModalDialog):
             self._show_accessibility_guide()
         if not opened:
             self._awaiting_system=False
+            self._return_to_dialog=False
             self._guided_flow=False
             self.show()
+            self.bring_to_front()
         elif kind=='files' and QApplication.instance().applicationState()==Qt.ApplicationActive:
             # The native folder chooser has returned synchronously. System
             # Settings can take longer to launch; wait for a real app return.
@@ -172,7 +204,7 @@ class MacPermissionsDialog(ReferenceModalDialog):
         self.refresh()
         self._guided_flow=True
         for kind in ('clipboard','accessibility'):
-            if self.states[kind] not in ('allowed','legacy','not_required'):
+            if self.states[kind] not in GRANTED_STATES:
                 if not self._awaiting_system:self.request(kind)
                 return
         self._guided_flow=False
@@ -184,6 +216,7 @@ class MacPermissionsDialog(ReferenceModalDialog):
 
     def closeEvent(self,event):
         self._awaiting_system=False
+        self._return_to_dialog=False
         self._guided_flow=False
         self._return_timer.stop()
         self._stop_accessibility_guide()

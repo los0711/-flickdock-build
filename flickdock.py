@@ -288,11 +288,11 @@ class ShelfManager:
             self.timer.start(20)
         self.app.setQuitOnLastWindowClosed(False)
         if not self.cocoa_smoke and self.app.platformName() not in ('offscreen','minimal'):
+            if sys.platform=='darwin':
+                self.account.session_resume_finished.connect(self._present_mac_setup)
             QTimer.singleShot(0,self.account.resume)
             if self.settings.live_editor_translation_enabled:
                 QTimer.singleShot(0,self.app,self._start_default_editor_translation)
-        if sys.platform=='darwin':
-            QTimer.singleShot(1200,self.app,self._present_mac_setup)
         self.update_timer = QTimer(self.app)
         self.update_timer.timeout.connect(self.updates.check_automatically)
         # Development, release verification and offscreen tests never schedule
@@ -378,7 +378,7 @@ class ShelfManager:
         if dialog is not None and dialog.isVisible() and dialog._window_fade.pending is None:
             dialog.close();return
         if self.clipboard_presenter.state.get('permission_required'):
-            self.show_mac_permissions();return
+            self.open_mac_permission('clipboard');return
         if self.clipboard_preview_dialog is None:
             from clipboard_preview import ClipboardPreview
             self.clipboard_preview_dialog=ClipboardPreview(self)
@@ -387,20 +387,29 @@ class ShelfManager:
 
     def _present_mac_setup(self):
         if (self._quitting or self.cocoa_smoke or sys.platform!='darwin'
-                or not native_input_available() or not getattr(sys,'frozen',False)):return
+                or not native_input_available() or not getattr(sys,'frozen',False)
+                or not self.account.resume_complete):return
         from mac_permissions import setup_needed
         if setup_needed(self.settings.base):self.show_mac_permissions()
 
-    def show_mac_permissions(self):
+    def _mac_permissions(self):
         if self._quitting or sys.platform!='darwin' or not native_input_available():return
         from mac_permissions_ui import MacPermissionsDialog
         if getattr(self,'mac_permissions_dialog',None) is None:
             self.mac_permissions_dialog=MacPermissionsDialog(self,self.settings_dialog if self.settings_open() else self.shelf)
-        if self.mac_permissions_dialog.isVisible():
-            self.mac_permissions_dialog.raise_();self.mac_permissions_dialog.activateWindow();return
-        self.mac_permissions_dialog.show()
-        self._center_dialog(self.mac_permissions_dialog)
-        self.mac_permissions_dialog.raise_();self.mac_permissions_dialog.activateWindow()
+        return self.mac_permissions_dialog
+
+    def open_mac_permission(self, kind):
+        dialog=self._mac_permissions()
+        if dialog is not None:dialog.request(kind, direct=True)
+
+    def show_mac_permissions(self):
+        dialog=self._mac_permissions()
+        if dialog is None or dialog.awaiting_system:return
+        if not dialog.isVisible():
+            dialog.show()
+            self._center_dialog(dialog)
+        dialog.bring_to_front()
         from mac_permissions import mark_setup_shown
         try:mark_setup_shown(self.settings.base)
         except OSError:logging.exception('Unable to save Mac permission onboarding state')

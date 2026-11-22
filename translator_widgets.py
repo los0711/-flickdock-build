@@ -563,12 +563,17 @@ def picker_list(parent):
 
 
 class TranslatorSurface(RoundedSurfaceFrame):
-    def __init__(self,parent=None,*,role='card',radius=12,border=True):
+    def __init__(self,parent=None,*,role='card',radius=12,border=True,fill_opacity=1.):
         super().__init__(parent,content_inset=0);self.role=role;self.radius=radius;self.border=border
+        self.fill_opacity=fill_opacity
     def surface_style(self):
         palette = colors(ui_theme.current_theme())
         outline = 'glass_border' if self.role == 'window_backdrop' else 'border'
-        return palette[self.role], palette[outline] if self.border else None, self.radius
+        fill=palette[self.role]
+        if self.fill_opacity!=1.:
+            fill=qss_color(fill)
+            fill.setAlphaF(fill.alphaF()*self.fill_opacity)
+        return fill, palette[outline] if self.border else None, self.radius
 
 
 class TranslatorSplitAction(TranslatorSurface):
@@ -808,6 +813,8 @@ class TranslatorPopup(QFrame):
                     self.setWindowFlags(Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
                     self._passive_host=CocoaNonActivatingHost(self,keyboard=True)
                 self._passive_frame=QRect(position,self.size())
+                anchor_top=anchor_rect.top() if anchor_rect is not None else anchor.mapToGlobal(QPoint()).y()
+                self._dropdown_motion.use_embedded_host(upward=self._passive_frame.bottom()<anchor_top)
                 self._passive_host.place(self._passive_frame)
                 self.show()
                 self._passive_host.show(above=passive_parent,keyboard=True)

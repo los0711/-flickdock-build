@@ -325,20 +325,24 @@ class LiveTranslationTests(unittest.TestCase):
                 card.close()
                 store.close()
 
-    def test_live_card_and_text_viewport_use_the_application_backdrop(self):
+    def test_live_card_paints_one_translucent_backdrop_in_both_themes(self):
         with tempfile.TemporaryDirectory() as directory:
             store = TranslatorStore(directory, autoload=False)
             previous_theme = ui_theme.current_theme()
             card = LiveTranslationCard(store)
             try:
+                card._layout_surface(card.footer_motion.values)
                 for theme in ('light', 'dark'):
                     with self.subTest(theme=theme):
                         ui_theme.set_theme(theme)
                         card.refresh_theme()
                         palette = colors(theme)
-                        self.assertEqual(card.surface.surface_style(),
-                                         (palette['window_backdrop'], palette['glass_border'], 14))
-                        self.assertEqual(card.result._viewport_fill, QColor(palette['window_backdrop']))
+                        backdrop=QColor(palette['window_backdrop'])
+                        backdrop.setAlphaF(.90)
+                        self.assertEqual(card.surface.surface_style(), (backdrop, palette['glass_border'], 14))
+                        self.assertIsNone(card.result._viewport_fill)
+                        frame=card.grab(card.surface.geometry()).toImage()
+                        self.assertEqual(frame.pixelColor(frame.width()//2,frame.height()//2).alpha(),backdrop.alpha())
             finally:
                 card.close()
                 store.close()
@@ -471,6 +475,49 @@ class LiveTranslationTests(unittest.TestCase):
                 live.stop()
                 live.pool.waitForDone(1000)
                 live.card.close()
+                store.close()
+
+    @patch('native_ui_common.reduced_motion', return_value=False)
+    @patch('dropdown_motion.QGuiApplication')
+    @patch('platform_native.CocoaNonActivatingHost')
+    def test_hosted_language_picker_animates_inside_its_only_window(self, host, _platform, _motion):
+        from PySide6.QtTest import QTest
+        from translator_widgets import LanguagePopup
+
+        _platform.platformName.return_value='cocoa'
+        anchor = QWidget()
+        anchor.show()
+        anchor_bounds = QRect(300, 400, 100, 32)
+        with tempfile.TemporaryDirectory() as directory:
+            store = TranslatorStore(directory, autoload=False)
+            popup = LanguagePopup(store)
+            motion = popup._dropdown_motion
+            codes = []
+            popup.selected.connect(codes.append)
+            try:
+                with patch.object(popup, 'setWindowOpacity', wraps=popup.setWindowOpacity) as opacity:
+                    for upward, position in ((True, QPoint(300, 10)), (False, QPoint(300, 438))):
+                        popup.configure('en', allow_auto=False)
+                        popup.popup_below(anchor, position=position, passive_parent=object(),
+                                          anchor_rect=anchor_bounds)
+                        self.assertTrue(wait_for(self.app, lambda: not motion.snapshot.isNull()))
+                        self.assertTrue(motion.presentation.isVisible())
+                        self.assertIs(motion.presentation.parentWidget(), popup)
+                        self.assertFalse(motion.presentation.isWindow())
+                        self.assertEqual(motion.upward, upward)
+                        self.assertTrue(wait_for(self.app, motion.presentation.isHidden))
+                        popup.search.setText('日语')
+                        self.assertEqual(popup.list.count(), 1)
+                        row = popup.list.visualItemRect(popup.list.item(0))
+                        QTest.mouseClick(popup.list.viewport(), Qt.LeftButton, pos=row.center())
+                        self.assertFalse(popup.isVisible())
+                        self.assertIsNone(motion.presentation)
+                    self.assertEqual(codes, ['ja', 'ja'])
+                    host.assert_called_once_with(popup, keyboard=True)
+                    opacity.assert_not_called()
+            finally:
+                popup.close()
+                anchor.close()
                 store.close()
 
 
