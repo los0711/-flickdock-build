@@ -1,0 +1,83 @@
+name: Verify the retained live editor Mac installer
+
+on:
+  push:
+    branches: [ci-flickdock-live-web-insertion-1840]
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  exact-installer:
+    runs-on: macos-15
+    timeout-minutes: 14
+    strategy:
+      fail-fast: false
+      matrix:
+        check: [overwrite, finder]
+    env:
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - name: Verify the bytes from the completed packaging step
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          gh run download 45021861868 -R "$GITHUB_REPOSITORY" \
+            -n 'FlickDock-macOS-incomplete-arm64-c179080f4388385f517d8def51e89ac0b11e2b97' -D "$RUNNER_TEMP/retained"
+          python3 - "$RUNNER_TEMP/retained" <<'PY'
+          import hashlib,json,sys
+          from pathlib import Path
+          root=Path(sys.argv[1])
+          report=json.loads((root/'mac-build-1.8.40-arm64.json').read_bytes())
+          assert report['ok'] and report['pkg_payload_verified'] and report['architecture']=='arm64'
+          pkg=next(row for row in report['artifacts'] if row['name'].endswith('.pkg'))
+          with (root/pkg['name']).open('rb') as source:
+              assert hashlib.file_digest(source,'sha256').hexdigest()==pkg['sha256']
+          PY
+          pkgutil --expand-full "$RUNNER_TEMP/retained/FlickDock-1.8.40-macOS-arm64.pkg" "$RUNNER_TEMP/candidate"
+      - name: Reproduce the old installer skip and check full replacement by the final package
+        if: matrix.check == 'overwrite'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          gh run download 45014804976 -R "$GITHUB_REPOSITORY" \
+            -n 'FlickDock-macOS-incomplete-arm64-2d20943203dc269dfda3aa3cc1a01ee6a2af9928' -D "$RUNNER_TEMP/previous"
+          (cd "$RUNNER_TEMP/previous" && echo '74a55c51198caf98d0b1ee0d0529c4c1887ce37d1a00bcd094a0d4aece938e59  FlickDock-1.8.40-macOS-arm64.pkg' | shasum -a 256 -c -)
+          mkdir "$RUNNER_TEMP/overwrite"
+          python3 ci_mac_pkg_overwrite.py "$RUNNER_TEMP/previous/FlickDock-1.8.40-macOS-arm64.pkg" \
+            "$RUNNER_TEMP/candidate/Payload/FlickDock.app" "$RUNNER_TEMP/overwrite/proof" \
+            --candidate "$RUNNER_TEMP/retained/FlickDock-1.8.40-macOS-arm64.pkg"
+      - name: Drag real Finder files into the app extracted from the final package
+        if: matrix.check == 'finder'
+        run: |
+          set -eu
+          stage="$RUNNER_TEMP/finder"
+          binary="$RUNNER_TEMP/candidate/Payload/FlickDock.app/Contents/MacOS/FlickDock"
+          mkdir -p "$stage/profile" "$stage/proof"
+          swiftc ci_finder_element.swift -o "$stage/finder-element"
+          HOME="$stage/profile" QT_QPA_PLATFORM=cocoa FLICKDOCK_FINDER_AX="$stage/finder-element" \
+            "$binary" --verify-finder-magnetic "$stage/proof/mac-finder-arm64.json"
+      - name: Verify overview and translator inside the exact packaged app
+        if: matrix.check == 'finder' && always()
+        run: |
+          set -eu
+          binary="$RUNNER_TEMP/candidate/Payload/FlickDock.app/Contents/MacOS/FlickDock"
+          mkdir -p "$RUNNER_TEMP/finder/proof"
+          for view in overview translator; do
+            profile="$(mktemp -d)"
+            HOME="$profile" APPDATA="$profile" XDG_CONFIG_HOME="$profile" QT_QPA_PLATFORM=cocoa FLICKDOCK_VERIFY_NATIVE_UI=1 \
+              "$binary" --verify-"$view" --verify-output "$RUNNER_TEMP/finder/proof/mac-cocoa-$view-arm64.json"
+          done
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: final-live-editor-arm64-${{ matrix.check }}
+          path: ${{ runner.temp }}/${{ matrix.check }}/proof/
+          retention-days: 3
+          if-no-files-found: warn
