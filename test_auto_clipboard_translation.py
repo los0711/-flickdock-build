@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from PySide6.QtCore import QEvent, QPoint, QPointF, QRect, Qt
 from PySide6.QtGui import QMouseEvent
@@ -137,10 +137,13 @@ class RuleAndLanguageTests(unittest.TestCase):
     def test_editor_button_owns_automatic_scope_across_dialog_close_until_disabled(self):
         from translator_panel import TranslatorDialog
         from test_translator_v1843 import FakeApi
+        from test_translation import Notice
+        from flickdock import ShelfManager
         view=self.fixture.view
         manager=view.manager
         manager.app=APP
         manager.clipboard_sync=Clipboard()
+        manager.settings.update(translation_enabled=True, translation_target='ja')
         automatic=Api()
         controller=TranslationController(manager,api=automatic,detector=lambda _:'英语')
         manager.translation=controller
@@ -173,8 +176,18 @@ class RuleAndLanguageTests(unittest.TestCase):
             self.assertTrue(live.running and dialog.isVisible())
             self.assertTrue(settle(lambda:live.editor is not None, 2))
             self.assertFalse(live.card.isVisible())
-            manager.clipboard_sync.copy_observed.emit(('text',{'text':'A copied sample.'}))
-            self.assertFalse(automatic.calls or transport.requests)
+            with patch('translation_notice.TranslationNotice', Notice):
+                manager.clipboard_sync.copy_observed.emit(('text',{'text':'A copied sample.'}))
+                self.assertTrue(settle(lambda:controller.notice and controller.notice.visible))
+                self.assertFalse(automatic.calls or transport.requests)
+            manager.translator_dialog=dialog
+            manager._quitting=False
+            manager._clipboard_translation_active=lambda:ShelfManager._clipboard_translation_active(manager)
+            manager._clipboard_runtime_enabled=lambda:True
+            manager.clipboard_notice=Mock()
+            change={'phase':'uploading','local_copy':True}
+            ShelfManager._clipboard_notice_state(manager,change)
+            manager.clipboard_notice.update_delivery.assert_called_once_with(change,authoritative=True)
             focused[0]=EditorState(focused[0].identity,focused[0].bounds,'正在输入。')
             self.assertTrue(settle(lambda:bool(transport.requests),1.5))
             request,done=transport.requests[-1]

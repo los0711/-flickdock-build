@@ -35,7 +35,15 @@ WINDOWS_CHAT_APPS = frozenset((
 ))
 WINDOWS_WEB_BROWSERS = frozenset(('chrome.exe', 'msedge.exe'))
 MAC_WEB_BROWSERS = frozenset(('com.apple.safari', 'com.google.chrome', 'com.microsoft.edgemac'))
-WEB_CHAT_HOSTS = frozenset(('web.telegram.org', 'web.whatsapp.com'))
+WEB_CHAT_PATHS = {
+    'web.telegram.org': ('/',),
+    'web.whatsapp.com': ('/',),
+    'discord.com': ('/channels/',),
+    'app.slack.com': ('/client/',),
+    'teams.microsoft.com': ('/v2',),
+    'teams.live.com': ('/v2',),
+    'chat.google.com': ('/',),
+}
 WEB_COMPOSER_LABELS = frozenset((
     'message', 'message input', 'type a message', 'write a message', '输入消息', '输入讯息',
     '键入消息', '鍵入訊息', '撰寫訊息', '撰写消息', '消息', '訊息',
@@ -69,14 +77,17 @@ def web_chat_address(address):
         return False
     try:
         url = urlsplit(address)
-        return (url.scheme == 'https' and url.hostname in WEB_CHAT_HOSTS and
-                url.port in (None, 443) and not url.username and not url.password)
+        paths = WEB_CHAT_PATHS.get(url.hostname, ())
+        location = url.path or '/'
+        return (url.scheme == 'https' and url.port in (None, 443) and url.username is None and url.password is None
+                and any(location == prefix.rstrip('/') or location.startswith(prefix.rstrip('/') + '/') for prefix in paths))
     except ValueError:
         return False
 
 
 def web_chat_composer(label):
-    return ' '.join((label or '').casefold().split()) in WEB_COMPOSER_LABELS
+    normalized = ' '.join((label or '').casefold().split())
+    return (normalized in WEB_COMPOSER_LABELS or normalized.startswith(('message #', 'message @', 'message to ')))
 
 
 def chat_composer(height, label):

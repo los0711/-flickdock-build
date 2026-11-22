@@ -82,11 +82,14 @@ class LiveTranslationTests(unittest.TestCase):
         self.assertEqual(application_kind('darwin', 'com.apple.Safari'), 'browser')
         for platform, name in (('win32','WINWORD.EXE'),('win32','wps.exe'),('darwin','com.apple.iWork.Pages')):
             self.assertIsNone(application_kind(platform, name))
-        for url in ('https://web.whatsapp.com/', 'https://web.telegram.org/k/#chat'):
+        for url in ('https://web.whatsapp.com/', 'https://web.telegram.org/k/#chat',
+                    'https://discord.com/channels/@me', 'https://app.slack.com/client/ABC',
+                    'https://teams.microsoft.com/v2/', 'https://chat.google.com/'):
             self.assertTrue(web_chat_address(url))
         for url in ('https://chatgpt.com/', 'https://docs.google.com/document', 'http://web.telegram.org',
                     'https://web.whatsapp.com.evil.test/', 'https://web.whatsapp.com@evil.test/',
-                    'https://web.telegram.org:8443/', 'https://[::1]/'):
+                    'https://web.telegram.org:8443/', 'https://[::1]/', 'https://discord.com/app',
+                    'https://app.slack.com/help', 'https://teams.microsoft.com/v2-documents'):
             self.assertFalse(web_chat_address(url))
         self.assertTrue(web_chat_composer('Type a message'))
         self.assertFalse(web_chat_composer('Search messages'))

@@ -702,11 +702,6 @@ class TranslatorDialog(ReferenceModalDialog):
             live.stop()
             if self._live_activation_notice is not None:
                 self._live_activation_notice.hide()
-        controller=getattr(self.manager,'translation',None)
-        if controller is not None:
-            controller.suspend_invitation(live.running)
-        if live.running and (notice:=getattr(self.manager,'clipboard_notice',None)) is not None:
-            notice.supersede()
         if self.auto_clipboard_button.isChecked() != live.running:
             with QSignalBlocker(self.auto_clipboard_button):
                 self.auto_clipboard_button.setChecked(live.running)
