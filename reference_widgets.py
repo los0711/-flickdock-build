@@ -218,6 +218,12 @@ class RoundedPreviewText(PixelScrollTextEdit):
     def __init__(self,parent=None):
         super().__init__(parent)
         self.setVerticalScrollBar(RoundedScrollBar(Qt.Vertical,self,thumb_color=lambda:palette()['input_border']))
+        self.set_viewport_fill(ink(palette()['card']))
+
+    def changeEvent(self,event):
+        super().changeEvent(event)
+        if hasattr(self,'_viewport_fill') and event.type() in (QEvent.PaletteChange,QEvent.StyleChange):
+            self.set_viewport_fill(ink(palette()['card']))
 
     def event(self,event):
         if event.type()==QEvent.Paint:

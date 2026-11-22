@@ -248,6 +248,9 @@ class MotionShadow(QGraphicsDropShadowEffect):
         # instead use Qt's dirty-region paint directly.
         offset=QPoint()
         if direct:
+            # The first transform after live painting must capture this
+            # scene. A pixmap saved by the previous entrance is stale here.
+            if not self._source_cache.isNull():self.invalidate_source()
             source=None
         elif active and snapshot.mix<1:
             # The endpoint was rendered once at the final layout size. Asking
