@@ -36,7 +36,6 @@ jobs:
           cl /nologo /O2 /EHsc ci_display_capture_win.cpp /Fe:capture-win.exe /link d3d11.lib dxgi.lib
       - if: runner.os == 'macOS'
         run: xcrun swiftc -swift-version 5 -O -parse-as-library ci_display_capture_mac.swift -o capture-mac
-      - run: python ci_visual_presentation.py
       - name: Compare actual presented pixels before and after
         shell: pwsh
         env:
