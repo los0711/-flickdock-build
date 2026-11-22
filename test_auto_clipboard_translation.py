@@ -153,24 +153,43 @@ class RuleAndLanguageTests(unittest.TestCase):
             self.assertFalse(dialog.auto_clipboard_button.isChecked())
             self.assertEqual(dialog.source_editor.contextMenuPolicy(),Qt.DefaultContextMenu)
             self.assertEqual(dialog.output_editor.contextMenuPolicy(),Qt.DefaultContextMenu)
+            from live_translation import LiveEditorTranslation
+            from live_translation_editor import EditorState
+
+            class LiveTransport:
+                requests=[]
+                def request(self, method, path, done, *, data, **kwargs):
+                    self.requests.append((data,done))
+                    return object()
+                def cancel(self,ticket):
+                    return None
+
+            transport=LiveTransport()
+            focused=[EditorState(('mock-editor',),(60,120,380,90),'')]
+            live=dialog.live_editor_translation=LiveEditorTranslation(
+                transport,store,dialog,probe=lambda cancel:focused[0])
+            dialog.auto_clipboard_button.setEnabled(True)
             dialog.auto_clipboard_button.click()
-            self.assertTrue(controller.automatic)
-            self.assertTrue(dialog.isVisible())
+            self.assertTrue(live.running and dialog.isVisible())
+            self.assertTrue(settle(lambda:live.editor is not None))
+            self.assertFalse(live.card.isVisible())
             manager.clipboard_sync.copy_observed.emit(('text',{'text':'A copied sample.'}))
-            self.assertTrue(settle(lambda:bool(automatic.calls),1.5),
-                            (controller.automatic,controller.phase,controller.source,controller.target,
-                             dialog.session.target,dialog.isVisible(),controller.generation))
-            self.assertEqual(automatic.calls[-1][2],'ja')
+            self.assertFalse(automatic.calls or transport.requests)
+            focused[0]=EditorState(focused[0].identity,focused[0].bounds,'正在输入。')
+            self.assertTrue(settle(lambda:bool(transport.requests),1.5))
+            request,done=transport.requests[-1]
+            self.assertEqual(request['target'],'ja')
+            self.assertEqual([row['text'] for row in request['units']],['正在输入。'])
             dialog.close()
-            self.assertFalse(controller.automatic)
-            self.assertFalse(dialog.auto_clipboard_button.isChecked())
+            self.assertFalse(live.running or dialog.auto_clipboard_button.isChecked())
             with patch('PySide6.QtWidgets.QApplication.clipboard') as clipboard:
-                automatic.completed.emit(automatic.calls[-1][0],'Old reply','')
+                done(dict(operation='translate_units',units=[dict(id='0',text='古い応答。')]),None)
             clipboard.assert_not_called()
+            self.assertFalse(live.card.isVisible() or live.draft.result)
             dialog.show()
             self.assertFalse(dialog.auto_clipboard_button.isChecked())
             dialog.auto_clipboard_button.click();dialog.auto_clipboard_button.click()
-            self.assertFalse(controller.automatic)
+            self.assertFalse(live.running)
         finally:
             dialog.shutdown();dialog.deleteLater();controller.close()
             controller.pool.waitForDone(2000);APP.processEvents()

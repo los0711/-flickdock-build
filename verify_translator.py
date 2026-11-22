@@ -157,28 +157,43 @@ def run(argv,load_font):
             settings.update(translation_enabled=False)
             view.show()
             view.session.set_language('target','ja')
-            assert view.auto_clipboard_button.isEnabled() and not view.auto_clipboard_button.isChecked()
-            view.auto_clipboard_button.click()
-            assert clipboard_controller.automatic and view.isVisible()
-            clipboard.copy_observed.emit(('text',{'text':'Synthetic clipboard text.'}))
-            deadline=time.monotonic()+3
-            while not clipboard_api.busy and time.monotonic()<deadline:settle(.01)
-            assert clipboard_api.busy and clipboard_api.target=='ja'
+            from live_translation import LiveEditorTranslation
+            from live_translation_editor import EditorState
+            from PySide6.QtCore import QRect
             from unittest.mock import patch
-            received=[]
-            synthetic=SimpleNamespace(setMimeData=lambda mime:received.append(mime.text()),ownsClipboard=lambda:True)
-            with patch('translation_controller.QApplication.clipboard',return_value=synthetic):
-                clipboard_api.finish('確認済みのテキスト。');settle()
-                assert received==['確認済みのテキスト。']
-                clipboard.copy_observed.emit(('text',{'text':'A second clipboard sample.'}))
+
+            class LiveTransport:
+                requests=[]
+                def request(self, method, path, done, *, data, **kwargs):
+                    self.requests.append((data,done));return object()
+                def cancel(self,ticket):
+                    return None
+
+            fixture=[EditorState(('verification-editor',),(65,160,410,90),'')]
+            live_transport=LiveTransport()
+            live=view.live_editor_translation=LiveEditorTranslation(
+                live_transport,store,view,probe=lambda cancel:fixture[0])
+            view.auto_clipboard_button.setEnabled(True)
+            assert not view.auto_clipboard_button.isChecked()
+            with patch('live_translation._editor_geometry',return_value=(QRect(*fixture[0].bounds),app.primaryScreen())):
+                view.auto_clipboard_button.click()
+                assert live.running and view.isVisible()
+                clipboard.copy_observed.emit(('text',{'text':'Synthetic clipboard text.'}))
+                deadline=time.monotonic()+2
+                while live.editor is None and time.monotonic()<deadline:settle(.01)
+                assert live.editor is not None and not live.card.isVisible()
+                assert not clipboard_api.busy and not live_transport.requests
+                fixture[0]=EditorState(fixture[0].identity,fixture[0].bounds,'输入测试。')
                 deadline=time.monotonic()+3
-                while not clipboard_api.busy and time.monotonic()<deadline:settle(.01)
-                assert clipboard_api.busy
+                while not live_transport.requests and time.monotonic()<deadline:settle(.01)
+                assert live_transport.requests and live.card.isVisible()
+                data,finish=live_transport.requests[-1]
+                assert data['target']=='ja' and data['units'][0]['text']=='输入测试。'
                 view.close()
-                assert not clipboard_controller.automatic and not clipboard.observing
-                clipboard_api.finish('Stale result.');settle()
-                assert received==['確認済みのテキスト。']
-            report['editor_scoped_clipboard_translation']=True
+                assert not live.running and not live.card.isVisible() and not view.auto_clipboard_button.isChecked()
+                finish(dict(operation='translate_units',units=[dict(id='0',text='テスト。')]),None);settle()
+                assert not live.card.isVisible() and not live.draft.result and not clipboard.observing
+            report['live_editor_translation']=True
             # Exercise the real bundled fastText binary/model, not only the
             # deterministic detector used by the UI fixture above.
             from translation_languages import detect_source

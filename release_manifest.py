@@ -32,6 +32,7 @@ VERSION_RE=re.compile(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\Z')
 HASH_RE=re.compile(r'[0-9a-f]{64}\Z')
 RUNTIME_SOURCES=(
     'translation_document.py','translation_alignment.py','speech_export.py',
+    'live_translation.py', 'live_translation_draft.py', 'live_translation_editor.py',
     'notice_cluster.py','crash_diagnostics.py','text_preview.py','qt_lifetime.py','theme_accent.py','settings_live.py',
     'magnetic_settings.py','magnetic_editor.py','edge_native_icons.py','monitor_diagram.py','accent_presets.py','verify_magnetic.py',
     'translation_languages.py', 'translation_api.py', 'translation_controller.py', 'translation_notice.py', 'translation_focus.py', 'settings_navigation.py',
@@ -63,6 +64,7 @@ RUNTIME_SOURCES=(
 )
 MAINTAINED_TESTS=(
     'test_auto_clipboard_translation.py',
+    'test_live_translation_card.py',
     'test_glass_ui_v1839.py',
     'test_dropdown_fan_v1839.py',
     'test_edge_magnetic_v1842.py','test_edge_magnetic_v1841.py','test_edge_magnetic_v1840.py','test_edge_magnetic_v1839.py','test_edge_absorb_v1840.py',

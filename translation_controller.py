@@ -57,6 +57,7 @@ class TranslationController(QObject):
         self.phase = 'idle'
         self.notice = None
         self.automatic = False
+        self._invitation_paused = False
         self._automatic_target = DEFAULT_TARGET
         self._pieces = None
         self._translated = []
@@ -213,6 +214,16 @@ class TranslationController(QObject):
         else:
             self.changed.emit()
 
+    def suspend_invitation(self, paused):
+        paused = bool(paused)
+        if self._invitation_paused == paused:
+            return
+        self._invitation_paused = paused
+        if paused:
+            self._reset()
+            if self.notice:
+                self.notice.dismiss()
+
     def observe(self, value):
         if self.closed:
             return
@@ -233,7 +244,7 @@ class TranslationController(QObject):
             expected, self._silent_copy_digest = self._silent_copy_digest, None
             if digest == expected:
                 return
-        if not self._observing():
+        if self._invitation_paused or not self._observing():
             return
         if self.automatic:
             text = body if isinstance(body, str) and '\0' not in body and body.strip() else None

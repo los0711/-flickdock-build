@@ -39,6 +39,7 @@ class TranslatorDialog(ReferenceModalDialog):
         self._preset_key=None;self._shown_result=None;self._shown_source=None;self._active_preset=''
         self._compact_footer=None;self._notice='';self._notice_role='secondary';self._shown_notice_role='red'
         self._was_polishing=False
+        self.live_editor_translation=None
         self._last_polish_revision={}
         self._polish_arrival=PolishArrival(self)
         self._popups=[];self._managers={}
@@ -70,16 +71,12 @@ class TranslatorDialog(ReferenceModalDialog):
         self.back_button=overview_back_button(self.title_bar,lambda:manager.return_to_overview(self));head.addWidget(self.back_button);head.addStretch(1)
         self.auto_clipboard_button=button('自动翻译','translate',variant='secondary',parent=self.title_bar)
         self.auto_clipboard_button.setCheckable(True)
-        clipboard_help='开启后，复制的文字会自动翻译成指定语言，译文将替换剪贴板里的原文。关闭此模式或翻译器即可停止。'
-        self.auto_clipboard_button.setToolTip(clipboard_help)
-        self.auto_clipboard_button.setAccessibleDescription(clipboard_help)
+        help_text='开启后，在输入框中输入文字会发送给翻译服务并显示实时译文。点击插入，把译文放回当前输入框。'
+        self.auto_clipboard_button.setToolTip(help_text)
+        self.auto_clipboard_button.setAccessibleDescription(help_text)
         self.auto_clipboard_button.setProperty('flickdockHoverHelp',True)
-        clipboard_controller=getattr(manager,'translation',None)
-        if clipboard_controller is not None and hasattr(clipboard_controller,'set_automatic'):
-            clipboard_controller.changed.connect(self._clipboard_translation_changed)
-        else:
-            self.auto_clipboard_button.setEnabled(False)
-        self.auto_clipboard_button.toggled.connect(self._toggle_clipboard_translation)
+        self.auto_clipboard_button.setEnabled(self._transport is not None)
+        self.auto_clipboard_button.toggled.connect(self._toggle_editor_translation)
         head.addWidget(self.auto_clipboard_button)
         self.glossary_button=button('术语保护','shield',variant='secondary',parent=self.title_bar);self.glossary_button.clicked.connect(lambda:self.show_manager('glossary'));head.addWidget(self.glossary_button)
         self.rules_button=button('翻译规则','swap',variant='secondary',parent=self.title_bar)
@@ -653,7 +650,7 @@ class TranslatorDialog(ReferenceModalDialog):
         self.refresh()
     def hideEvent(self,event):
         if not self._pinning and (not event.spontaneous() or not self.isMinimized()):
-            self._toggle_clipboard_translation(False)
+            self._toggle_editor_translation(False)
         if hasattr(self,'_polish_arrival'):self._polish_arrival.stop()
         if hasattr(self,'session') and not self._pinning:self.session.suspend()
         if hasattr(self,'speech'):self.speech.stop()
@@ -668,22 +665,43 @@ class TranslatorDialog(ReferenceModalDialog):
                 timer.stop();self._copy_appearance(target,False)
         super().hideEvent(event)
 
-    def _toggle_clipboard_translation(self,enabled):
+    def _toggle_editor_translation(self, enabled):
+        live = self.live_editor_translation
+        if not enabled and self.auto_clipboard_button.isChecked():
+            with QSignalBlocker(self.auto_clipboard_button):
+                self.auto_clipboard_button.setChecked(False)
+        if enabled and live is None:
+            from platform_native import native_input_available
+            if not native_input_available() or self._transport is None:
+                with QSignalBlocker(self.auto_clipboard_button):
+                    self.auto_clipboard_button.setChecked(False)
+                return
+            if sys.platform == 'darwin':
+                from translation_focus import _mac_api
+                if not _mac_api()[0].AXIsProcessTrusted():
+                    with QSignalBlocker(self.auto_clipboard_button):
+                        self.auto_clipboard_button.setChecked(False)
+                    self._message('请在系统设置的辅助功能中允许 FlickDock，再开启自动翻译。')
+                    return
+            from live_translation import LiveEditorTranslation
+            live = self.live_editor_translation = LiveEditorTranslation(
+                self._transport, self.store, self, rules=lambda:getattr(self.manager.settings,'translation_rules',{}))
+        if live is None:
+            return
+        if enabled:
+            live.start(self.session.target)
+        else:
+            live.stop()
         controller=getattr(self.manager,'translation',None)
-        if controller is not None and hasattr(controller,'set_automatic'):
-            controller.set_automatic(enabled,target=self.session.target)
-
-    def _clipboard_translation_changed(self):
-        controller=self.manager.translation
-        with QSignalBlocker(self.auto_clipboard_button):
-            self.auto_clipboard_button.setChecked(controller.automatic)
-        self.auto_clipboard_button.setProperty('referenceVariant','primary' if controller.automatic else 'secondary')
+        if controller is not None:
+            controller.suspend_invitation(live.running)
+        if live.running and (notice:=getattr(self.manager,'clipboard_notice',None)) is not None:
+            notice.supersede()
+        self.auto_clipboard_button.setProperty('referenceVariant','primary' if live.running else 'secondary')
         self.auto_clipboard_button.update()
-        if controller.automatic and controller.error:
-            self._message(controller.error)
 
     def closeEvent(self,event):
-        self._toggle_clipboard_translation(False)
+        self._toggle_editor_translation(False)
         if hasattr(self,'session'):self.session.suspend()
         if hasattr(self,'speech'):self.speech.stop()
         if hasattr(self,'alignment'):self.alignment.cancel()
@@ -868,9 +886,9 @@ class TranslatorDialog(ReferenceModalDialog):
             for control in (self.live_toggle,self.delay_slider,self.tts_rate,self.tts_pitch,self.tts_auto):control.dark=theme=='dark';control.update()
             for dialog in self._managers.values():dialog.refresh()
             if hasattr(self,'history'):self.history.refresh()
-        controller=getattr(self.manager,'translation',None)
-        if getattr(controller,'automatic',False):
-            controller.set_automatic(True,target=self.session.target)
+        live=self.live_editor_translation
+        if live is not None:
+            live.card.refresh_theme()
         state=self.session
         finished_polish=self._was_polishing and state.phase in ('idle','ready') and not state.error
         self._was_polishing=state.phase=='polishing'
@@ -1002,6 +1020,7 @@ class TranslatorDialog(ReferenceModalDialog):
         self.status.setMinimumWidth(self.status.fontMetrics().horizontalAdvance(count))
 
     def shutdown(self):
+        self._toggle_editor_translation(False)
         if self._closing:return
         self._closing=True
         self.speech.close();self.history.set_open(False,animate=False)

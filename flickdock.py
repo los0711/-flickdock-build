@@ -348,7 +348,9 @@ class ShelfManager:
 
     def _clipboard_translation_active(self):
         controller=getattr(self,'translation',None)
-        return bool(controller and controller.automatic)
+        dialog=getattr(self,'translator_dialog',None)
+        live=getattr(dialog,'live_editor_translation',None)
+        return bool(live and live.running or controller and controller.automatic)
 
     def _clipboard_notice_state(self,state):
         if self._quitting:return
