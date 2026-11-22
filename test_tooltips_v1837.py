@@ -36,6 +36,7 @@ class TooltipTests(unittest.TestCase):
         control=button('','download');control.setToolTip('下载文件');control.show();APP.processEvents()
         try:
             handler=APP._flickdock_tooltip_corners
+            handler._clear()
             with patch.object(control,'underMouse',return_value=True) as hovered,patch.object(handler,'show_tip',wraps=handler.show_tip) as shown:
                 APP.sendEvent(control,QEvent(QEvent.Enter))
                 self.assertEqual(handler._timer.interval(),500)
