@@ -991,10 +991,10 @@ class TranslatorDialog(ReferenceModalDialog):
         else:self.version_label.setText('原始译文')
         busy_side=state.busy_side
         self.source_task.set_task('正在润色原文…' if busy_side=='source' else '')
-        if state.phase=='translating':
+        if state.phase=='translating' and not live:
             self.output_task.set_task('正在翻译…','正在生成译文…')
         else:
-            self.output_task.set_task('正在润色译文…' if busy_side=='target' else '')
+            self.output_task.set_task('正在润色译文…' if state.phase=='polishing' and busy_side=='target' else '')
         self._refresh_output_status()
         self._refresh_notice()
         self.copy_button.setEnabled(bool(state.result));self.favorite_button.setEnabled(bool(state.result));self.favorite_button.set_glyph('star-filled' if state.favorite else 'star');self.favorite_button.set_glyph_tint('#E5AA17' if state.favorite else None)

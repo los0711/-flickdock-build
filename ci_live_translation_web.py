@@ -1,6 +1,7 @@
 """Native insertion into a separate Chromium-embedded app on disposable CI."""
 from __future__ import annotations
 
+from dataclasses import replace
 from html import escape
 import json
 import os
@@ -16,6 +17,7 @@ from live_translation_editor import focused_editor
 
 DRAFT = 'Original test message.'
 TRANSLATION = '译文 ✓ Hello 😀'
+CLIPBOARD_SAMPLE = 'FlickDock test original clipboard'
 FIELDS = ('plain', 'multiline', 'rich', 'embedded', 'protected', 'read-only')
 MARKUP = (
     '<input id="plain" aria-label="Ordinary input" value="{draft}">'
@@ -35,6 +37,7 @@ def fixture(folder):
 
     app = QApplication([])
     QAccessible.setActive(True)
+    app.clipboard().setText(CLIPBOARD_SAMPLE)
     view = QWebEngineView()
     view.setWindowTitle('FlickDock isolated browser editor')
     view.setGeometry(120, 120, 650, 450)
@@ -80,6 +83,9 @@ def fixture(folder):
             return
         command_path = folder / 'command'
         command = command_path.read_text(encoding='utf-8') if command_path.exists() else 'plain'
+        if command == 'clipboard':
+            (folder / 'clipboard').write_text(app.clipboard().text(), encoding='utf-8')
+            return
         if command == 'exit':
             app.quit()
             return
@@ -144,55 +150,69 @@ def wait_for(probe, interval=4):
     return None
 
 
+def verify_field(folder, field):
+    folder.mkdir()
+    env = dict(os.environ, QTWEBENGINE_CHROMIUM_FLAGS='--force-renderer-accessibility --disable-gpu',
+               QT_LOGGING_RULES='qt.accessibility.*=false')
+    command = folder / 'command'
+    command.write_text(field, encoding='utf-8')
+    child = subprocess.Popen([sys.executable, __file__, '--fixture', str(folder)], env=env)
+    try:
+        def state():
+            try:
+                return json.loads((folder / 'state.json').read_text(encoding='utf-8'))
+            except (OSError, ValueError):
+                return {}
+
+        cancel = Event()
+        assert wait_for(lambda: state().get('field') == field and state().get('focused') and state().get('active'),
+                        interval=9), state()
+        protected = field in ('protected', 'read-only')
+        observed = wait_for(lambda: focused_editor(cancel),interval=1 if protected else 4)
+        if observed is None and not protected and sys.platform == 'darwin':
+            from live_translation_editor import _mac_editor
+            _mac_editor(cancel,None,None,False,rejected=lambda reason:print(field,reason,flush=True))
+        if protected:
+            attempted = focused_editor(cancel,expected=observed,insertion=TRANSLATION) if observed else False
+            row = dict(blocked=not attempted and state().get('text') == DRAFT,readable=observed is not None)
+        else:
+            row = dict(read=observed is not None,original_length=len(observed.text) if observed else None)
+            if observed is not None:
+                stale = replace(observed,text='A stale draft.')
+                row['stale_rejected'] = not focused_editor(cancel,expected=stale,insertion=TRANSLATION)
+                translation = TRANSLATION+'\nSecond line.' if field=='multiline' else TRANSLATION
+                inserted = focused_editor(cancel,expected=observed,insertion=translation)
+                applied = wait_for(lambda: state().get('text') == translation and state().get('inputs',0)>0)
+                current = focused_editor(cancel)
+                row.update(request_accepted=bool(inserted),updated=bool(applied),input_event=state().get('inputs',0)>0,
+                           final_length=len(state().get('text','')),native_selection=current.selection if current else None,
+                           dom_selected=state().get('selected'))
+        command.write_text('clipboard',encoding='utf-8')
+        restored = folder/'clipboard'
+        if wait_for(restored.exists):
+            row['clipboard_preserved'] = restored.read_text(encoding='utf-8') == CLIPBOARD_SAMPLE
+        print(field,row,flush=True)
+        return row
+    finally:
+        command.write_text('exit',encoding='utf-8')
+        try:
+            child.wait(timeout=6)
+        except subprocess.TimeoutExpired:
+            child.terminate()
+            child.wait(timeout=4)
+
+
 def verify(output):
     if os.environ.get('GITHUB_ACTIONS') != 'true' or sys.platform not in ('win32', 'darwin'):
         raise RuntimeError('Requires an isolated native Windows or macOS desktop.')
     report = {'platform': sys.platform, 'fields': {}}
-    with tempfile.TemporaryDirectory(prefix='flickdock-embedded-web-') as location:
-        folder = Path(location)
-        env = dict(os.environ, QTWEBENGINE_CHROMIUM_FLAGS='--force-renderer-accessibility --disable-gpu',
-                   QT_LOGGING_RULES='qt.accessibility.*=false')
-        child = subprocess.Popen([sys.executable, __file__, '--fixture', str(folder)], env=env)
-        command = folder / 'command'
-        try:
-            def state():
-                try:
-                    return json.loads((folder / 'state.json').read_text(encoding='utf-8'))
-                except (OSError, ValueError):
-                    return {}
-
-            cancel = Event()
+    try:
+        with tempfile.TemporaryDirectory(prefix='flickdock-embedded-web-') as location:
             for field in FIELDS:
-                command.write_text(field, encoding='utf-8')
-                assert wait_for(lambda: state().get('field') == field and state().get('focused') and state().get('active'),
-                                interval=9), state()
-                observed = wait_for(lambda: focused_editor(cancel),
-                                    interval=1 if field in ('protected', 'read-only') else 4)
-                if field in ('protected', 'read-only'):
-                    attempted = focused_editor(cancel,expected=observed,insertion=TRANSLATION) if observed else False
-                    report['fields'][field] = dict(blocked=not attempted and state().get('text') == DRAFT,
-                                                   readable=observed is not None)
-                    continue
-                row = dict(read=observed is not None,original_length=len(observed.text) if observed else None)
-                if observed is not None:
-                    inserted = focused_editor(cancel, expected=observed, insertion=TRANSLATION)
-                    applied = wait_for(lambda: state().get('text') == TRANSLATION and state().get('inputs',0)>0)
-                    current=focused_editor(cancel)
-                    row.update(request_accepted=bool(inserted), updated=bool(applied),
-                               text_matches=state().get('text') == TRANSLATION,
-                               input_event=state().get('inputs',0)>0,final_length=len(state().get('text','')),
-                               native_selection=current.selection if current else None,
-                               dom_selected=state().get('selected'))
-                report['fields'][field] = row
-        finally:
-            command.write_text('exit', encoding='utf-8')
-            try:
-                child.wait(timeout=6)
-            except subprocess.TimeoutExpired:
-                child.terminate()
-                child.wait(timeout=4)
-            output.write_text(json.dumps(report, indent=2), encoding='utf-8')
-            print(json.dumps(report), flush=True)
+                report['fields'][field] = verify_field(Path(location)/field,field)
+    finally:
+        output.write_text(json.dumps(report,indent=2),encoding='utf-8')
+        print(json.dumps(report),flush=True)
 
 
 if __name__ == '__main__':

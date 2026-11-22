@@ -308,7 +308,7 @@ def _windows_editor(cancel, expected, insertion, sample, at_pointer):
                 return com.string(latest,12,_INT(len(insertion)+3)) if latest is not None else None
 
             if web:
-                return _paste_replacement(cancel,state,insertion,target,read_current)
+                return _paste_replacement(cancel,state,insertion,target,read_current,web=True)
             if value is not None and _method(value, 3, _INT, ctypes.c_wchar_p)(value, insertion) >= 0:
                 if _confirmed_replacement(cancel,state,insertion,read_current):
                     return True
@@ -355,20 +355,27 @@ def _confirmed_replacement(cancel, expected, text, read_current):
     return False
 
 
-def _paste_replacement(cancel, expected, text, target, read_current):
+def _paste_replacement(cancel, expected, text, target, read_current, *, web=False):
     from clipboard_history_native import paste_editor_text, select_editor_text
+
+    def same_editor():
+        return _same_draft(focused_editor(cancel),expected)
 
     def all_selected():
         current = focused_editor(cancel)
         return _same_draft(current,expected) and current.selection == (0,len(expected.text))
 
-    if cancel.is_set() or not _same_draft(focused_editor(cancel),expected) or not select_editor_text(target):
+    if cancel.is_set() or not same_editor() or not select_editor_text(target):
         return False
     deadline = monotonic() + .28
     while not all_selected():
         if monotonic() >= deadline or cancel.wait(.02):
-            return False
-    paste_editor_text(text,target,cancel,all_selected)
+            if not web or not same_editor():
+                return False
+            # Chromium can select the entire DOM edit field while exposing a
+            # collapsed accessibility selection for its contenteditable span.
+            break
+    paste_editor_text(text,target,cancel,same_editor if web else all_selected)
     return _confirmed_replacement(cancel,expected,text,read_current)
 
 
@@ -529,18 +536,19 @@ def _mac_editor(cancel, expected, insertion, sample, rejected=None):
         if not root:
             return None
         ax.AXUIElementSetMessagingTimeout(root, .055)
-        editor = attr(root, b'AXFocusedUIElement')
-        if not editor:
+        def belongs_to_target(element):
+            pid = _INT()
+            return element and ax.AXUIElementGetPid(element,ctypes.byref(pid))==0 and pid.value==target
+
+        editor = attr(root,b'AXFocusedUIElement')
+        if not belongs_to_target(editor):
             application = retain(ax.AXUIElementCreateApplication(target))
             if application:
                 ax.AXUIElementSetMessagingTimeout(application, .055)
                 editor = attr(application, b'AXFocusedUIElement')
-        if not editor:
-            return reject('no AX focused control from the system or foreground application')
+        if not belongs_to_target(editor):
+            return reject('no AX focused control from the foreground application')
         ax.AXUIElementSetMessagingTimeout(editor, .055)
-        pid = _INT()
-        if ax.AXUIElementGetPid(editor, ctypes.byref(pid)) or pid.value != target:
-            return reject('AX focus belongs to another process')
         role = read_string(attr(editor, b'AXRole'))
         subrole = read_string(attr(editor, b'AXSubrole'))
         if subrole == 'AXSecureTextField' or secure_input():
@@ -612,7 +620,7 @@ def _mac_editor(cancel, expected, insertion, sample, rejected=None):
                 return read_string(attr(editor,b'AXValue'))
 
             if web:
-                return _paste_replacement(cancel,state,insertion,target,read_current)
+                return _paste_replacement(cancel,state,insertion,target,read_current,web=True)
             native = key(insertion.encode('utf8'))
             if not native:
                 return False

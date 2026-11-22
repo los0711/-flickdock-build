@@ -140,6 +140,23 @@ class PanelTests(unittest.TestCase):
             self.assertFalse(editor._reveal.isActive())
             self.assertFalse(view.output_task.isVisible())
 
+    def test_live_translation_keeps_the_result_editor_still_during_repeated_edits(self):
+        view = self.fixture.view
+        view.store.update_preferences(live=True,debounce_ms=200)
+        stable_geometry = view.output_editor.geometry()
+        for source, translation in (('Hello again.','再次问好。'),('Hello again, team.','大家好。')):
+            previous = view.output_editor.toPlainText()
+            view.source_editor.setPlainText(source)
+            self.assertTrue(settle(lambda:view.session.phase=='translating',1.5))
+            self.assertFalse(view.output_task.isVisible())
+            self.assertFalse(view.output_task._frames.isActive())
+            self.assertEqual(view.output_editor.geometry(),stable_geometry)
+            self.assertEqual(view.output_editor.toPlainText(),previous)
+            self.fixture.api.finish(translation)
+            settle(timeout=.02)
+            self.assertEqual(view.output_editor.geometry(),stable_geometry)
+            self.assertEqual(view.output_editor.toPlainText(),translation)
+
     def test_translator_joined_speech_caps_and_pill_size(self):
         view=self.fixture.view
         self.assertEqual(view.polish_button.width(),76)
