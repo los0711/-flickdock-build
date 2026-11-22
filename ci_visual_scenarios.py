@@ -1,5 +1,6 @@
 """Measure changed pixels in the final display during real FlickDock actions."""
 import argparse
+import faulthandler
 import json
 import math
 import os
@@ -136,6 +137,7 @@ def band(widget, x, y, width=88, height=160):
 
 
 def main():
+    faulthandler.dump_traceback_later(45, exit=True)
     parser = argparse.ArgumentParser()
     parser.add_argument('--capture', type=Path, required=True)
     parser.add_argument('--out', type=Path, required=True)
@@ -163,6 +165,7 @@ def main():
         flickdock.STATE_FILE = flickdock.BASE / 'shelves.json'
         flickdock.OLD_STATE_FILE = flickdock.BASE / 'old-shelves.json'
         manager = flickdock.ShelfManager(app, cocoa_smoke=True)
+        print('Opened isolated desktop session',flush=True)
         shelf = manager.shelf
         manager.timer.stop()
         manager.motion = shelf.presentation.motion = shelf.geometry_morph.motion = True
@@ -184,17 +187,20 @@ def main():
         area = screen.availableGeometry()
         origin = QPoint(area.left()+60, area.top()+115)
         cold_patch = QRect(origin, QRect(0,0,130,170).size())
+        print('Measuring first overview appearance',flush=True)
         report['cold_overview'] = measure(options.capture, cold_patch, screen, manager.show_overview, .70,
                                           action_slice=(.035,.29))
         popup = shelf.popup
         wait_for(lambda:popup.isVisible() and not shelf.content_transition_active()
                  and not shelf.presentation._timer.isActive(), 'Overview did not settle')
+        print('Measuring scrolling the overview',flush=True)
         report['overview_scroll'] = measure(options.capture, band(popup.scroll.viewport(),68,76), screen,
             lambda:observe_scroll(popup.scroll,1100), 1.3, action_slice=(.12,1.12))
         popup.scroll.verticalScrollBar().setValue(0)
         popup.select_item(refs[0]);pump(280)
         def next_file():
             popup.select_item(refs[13])
+        print('Measuring file preview switch',flush=True)
         report['file_preview'] = measure(options.capture, band(popup.preview,24,68,130,200),
                                          screen, next_file, .62, action_slice=(0,.32))
         if popup.preview.current_path != refs[13]:
@@ -211,6 +217,7 @@ def main():
         editor.setPlainText('\n'.join(paragraphs))
         editor.verticalScrollBar().setValue(0)
         pump(420)
+        print('Measuring a long document in the translator',flush=True)
         report['long_text_scroll'] = measure(options.capture,band(editor.viewport(),28,68),screen,
             lambda:observe_scroll(editor,1100),1.3,action_slice=(.12,1.12))
         options.out.write_text(json.dumps(report,indent=2), encoding='utf-8')
@@ -218,6 +225,7 @@ def main():
                'interval_p95_ms','backlogged_capture_frames')} for k,case in report.items() if isinstance(case,dict)}))
         translator.shutdown()
         manager.quit()
+    faulthandler.cancel_dump_traceback_later()
 
 
 if __name__ == '__main__':
