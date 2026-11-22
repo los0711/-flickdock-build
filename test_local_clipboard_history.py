@@ -204,6 +204,31 @@ class ClipboardHistoryPanelTests(unittest.TestCase):
                 self.panel.follow_shelf(0.,True)
                 self.assertFalse(self.panel.isVisible())
 
+    def test_history_animates_when_the_compact_preview_has_already_settled(self):
+        for anchor in (QRect(550,35,332,280),QRect(550,700,332,260)):
+            with self.subTest(above=anchor.top()>500):
+                self.panel.hide()
+                with patch.object(self.panel,'contains_point',return_value=False):
+                    self.assertTrue(self.panel.place(anchor,QRect(0,0,1200,1000),shelf_alpha=1.,animate_arrival=True))
+                    geometry=self.panel.geometry()
+                    self.assertTrue(self.panel.isVisible())
+                    self.assertLess(self.panel._companion_opacity,.1)
+                    self.assertIsNone(self.panel._hit(QPointF(100,120)))
+                    self.panel._reveal.stop()
+                    initial=self.panel._panel_frame
+                    self.assertTrue(initial.translated(geometry.x(),geometry.y()).intersects(anchor))
+                    self.panel._reveal_frame(.25)
+                    self.assertGreater(self.panel._companion_opacity,.25)
+                    self.assertLess(self.panel._companion_opacity,.8)
+                    self.panel._reveal_frame(1.)
+                    self.assertEqual(self.panel._companion_opacity,1.)
+                    self.assertEqual(self.panel.geometry(),geometry)
+                    self.assertFalse(self.panel._panel_frame.intersects(self.panel._anchor))
+        self.panel.hide()
+        with patch('clipboard_history_panel.reduced_motion',return_value=True):
+            self.assertTrue(self.panel.place(QRect(550,35,332,280),QRect(0,0,1200,1000),animate_arrival=True))
+            self.assertEqual(self.panel._companion_opacity,1.)
+
     def test_hover_has_one_slow_rebound_and_lands_at_exact_height(self):
         curve=self.panel._hover_curve
         samples=[curve.valueForProgress(index/100) for index in range(101)]
@@ -335,6 +360,29 @@ class ClipboardHistoryPanelTests(unittest.TestCase):
         self.assertEqual(pinned,['1']);self.assertEqual(removed,['1']);self.assertFalse(activated)
         self.click('clear');self.assertFalse(cleared)
         self.click('clear');self.assertEqual(cleared,[True])
+
+    def test_clear_button_reports_pressed_confirmation_and_disabled(self):
+        for dark in (False,True):
+            with self.subTest(dark=dark):
+                self.panel.set_dark(dark)
+                self.panel.set_entries(self.rows)
+                sample_until(lambda:self.panel._entry_progress==1.)
+                self.panel.repaint()
+                rect=next(rect for part,_,rect in self.panel._hits if part=='clear')
+                point=rect.center().toPoint()
+                self.panel._set_hover(None)
+                self.assertEqual(self.panel._clear_state(),'idle')
+                self.panel._set_hover(('clear',''))
+                self.assertEqual(self.panel._clear_state(),'hover')
+                QTest.mousePress(self.panel,Qt.LeftButton,Qt.NoModifier,point)
+                self.assertEqual(self.panel._clear_state(),'pressed')
+                QTest.mouseRelease(self.panel,Qt.LeftButton,Qt.NoModifier,point)
+                self.assertEqual(self.panel._clear_state(),'confirm')
+                self.panel.set_entries([])
+                self.panel.repaint()
+                self.assertEqual(self.panel._clear_state(),'disabled')
+                self.assertFalse(self.panel._confirm_clear.isActive())
+                self.assertIsNone(self.panel._hit(QPointF(point)))
 
     def test_row_preview_wraps_twice_with_pin_above_delete(self):
         text='第一行 🙂\nSecond line\nThird line'

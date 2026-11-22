@@ -201,7 +201,8 @@ class ClipboardHistory(QObject):
         if placement!=self._placement or shelf is not self._companion_shelf:
             if self.panel._cocoa_hover:self._refresh_foreground_target()
             alpha=self._alpha(shelf.presentation.values['alpha'],False)
-            if self.panel.place(anchor,area,shelf_alpha=alpha,motion=shelf.presentation.values,front=shelf):
+            if self.panel.place(anchor,area,shelf_alpha=alpha,motion=shelf.presentation.values,front=shelf,
+                                animate_arrival=self.manager.motion):
                 self._placement=placement
                 self._companion_shelf=shelf
             else:

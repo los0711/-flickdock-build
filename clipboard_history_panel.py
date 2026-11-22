@@ -131,6 +131,7 @@ class ClipboardHistoryPanel(QWidget):
         self._shelf_alpha = 1.
         self._companion_closing = False
         self._reveal_rebound = 0.
+        self._arrival_alpha = self._arrival_from = 1.
         self._reveal = DisplayAnimation(self)
         self._reveal.setDuration(340)
         self._reveal.setStartValue(0.)
@@ -183,6 +184,10 @@ class ClipboardHistoryPanel(QWidget):
         self._card_pixmap_bytes=0
         self._row_indices={row['id']:index for index,row in enumerate(rows)}
         self.total = count
+        if not rows:
+            self._confirm_clear.stop()
+            if self._hovered==('clear',''):self._set_hover(None)
+            if self._press and self._press[0]==('clear',''):self._press=None
         self.can_load_more = count>len(rows)
         fresh = {row['id']:row for row in rows}
         if self.selected and self.selected not in fresh:
@@ -241,7 +246,7 @@ class ClipboardHistoryPanel(QWidget):
             self._colors()
             self.update()
 
-    def place(self,anchor,area,*,shelf_alpha=1.,motion=None,front=None):
+    def place(self,anchor,area,*,shelf_alpha=1.,motion=None,front=None,animate_arrival=False):
         width=min(anchor.width(),area.width()-12)
         below=area.bottom()-SCREEN_EDGE_GAP-anchor.bottom()
         above=anchor.top()-area.top()-SCREEN_EDGE_GAP
@@ -266,7 +271,7 @@ class ClipboardHistoryPanel(QWidget):
         if self.geometry()!=geometry:self.setGeometry(geometry)
         self._rebase_companion()
         self._tuck_anchor=QRectF(self._anchor)
-        self.follow_shelf(shelf_alpha,False,motion=motion,front=front,placing=True)
+        self.follow_shelf(shelf_alpha,False,motion=motion,front=front,placing=True,animate_arrival=animate_arrival)
         return True
 
     def _rebase_companion(self):
@@ -285,7 +290,7 @@ class ClipboardHistoryPanel(QWidget):
             self._rebase_companion()
             self._update_mask()
 
-    def follow_shelf(self,alpha,closing,*,motion=None,front=None,placing=False):
+    def follow_shelf(self,alpha,closing,*,motion=None,front=None,placing=False,animate_arrival=False):
         # Both directions share the shelf clock. There is no delay at the
         # start, and a reversal reuses the same path and opacity.
         alpha=max(0.,min(1.,alpha))
@@ -296,8 +301,14 @@ class ClipboardHistoryPanel(QWidget):
             # the companion's fade/slide monotonic within each direction.
             alpha=min(self._shelf_alpha,alpha) if closing else max(self._shelf_alpha,alpha)
         self._shelf_alpha=alpha
-        amount=alpha*(1.18-.18*alpha)
-        opacity=alpha*(.72+.28*alpha)
+        # The shelf is already opaque when the overview morph settles. Play
+        # the companion's own entrance from behind the compact card in that case.
+        own_arrival=animate_arrival and not visible and not closing and alpha==1. and not reduced_motion()
+        if own_arrival:
+            self._arrival_alpha=self._arrival_from=.035
+        resume_arrival=visible and self._companion_closing and not closing and self._arrival_alpha<1.
+        if resume_arrival:
+            self._arrival_from=self._arrival_alpha
         tuck=QRectF(self._anchor)
         if motion is not None and not tuck.isEmpty():
             center=tuck.center()+QPointF(motion['dx'],motion['dy'])
@@ -305,30 +316,40 @@ class ClipboardHistoryPanel(QWidget):
             tuck.setHeight(tuck.height()*motion['sy'])
             tuck.moveCenter(center)
         previous=self._companion_amount
-        changed=(amount!=previous or closing!=self._companion_closing or tuck!=self._tuck_anchor)
-        self._companion_amount=amount
+        changed=closing!=self._companion_closing or tuck!=self._tuck_anchor
+        self._apply_companion_alpha()
         self._companion_closing=closing
         self._tuck_anchor=tuck
         if closing:
             self._press=None
             self._reveal.stop()
             self._set_cocoa_pointer(False)
-        if opacity!=self._companion_opacity:
-            self._companion_opacity=opacity
-            if self._native_opacity:self.setWindowOpacity(opacity)
         if not alpha:
             if self.isVisible():self.hide()
             return
-        if changed or placing or not visible:self._update_mask()
+        if changed or previous!=self._companion_amount or placing or not visible:self._update_mask()
         if not visible and not closing:
             if self._cocoa_hover:configure_passive_cocoa_panel(self)
             self.show()
             remove_host_window_shadow(self)
             if front is not None:order_companion_behind(self,front)
             self._set_cocoa_pointer(False)
-            if alpha<1. and not reduced_motion():self._reveal.start()
-        if (not self._cocoa_hover and previous<.92<=amount and not closing
-                and self.entries and self.contains_point(QCursor.pos()) and not self.expanded):
+            if (own_arrival or alpha<1.) and not reduced_motion():self._reveal.start()
+        elif resume_arrival:
+            self._reveal.start()
+        self._hover_after_reveal(previous)
+
+    def _apply_companion_alpha(self):
+        alpha=self._shelf_alpha*self._arrival_alpha
+        self._companion_amount=alpha*(1.18-.18*alpha)
+        opacity=alpha*(.72+.28*alpha)
+        if opacity!=self._companion_opacity:
+            self._companion_opacity=opacity
+            if self._native_opacity:self.setWindowOpacity(opacity)
+
+    def _hover_after_reveal(self,previous):
+        if (not self._cocoa_hover and previous<.92<=self._companion_amount and not self._companion_closing
+                and self.entries and not self.expanded and self.contains_point(QCursor.pos())):
             self.show_all()
 
     def _reveal_frame(self,value):
@@ -338,7 +359,12 @@ class ClipboardHistoryPanel(QWidget):
         else:
             weight=1-_smoothstep((t-.46)/.54)
         self._reveal_rebound=REVEAL_REBOUND_PX*weight
+        previous=self._companion_amount
+        if self._arrival_from<1.:
+            self._arrival_alpha=1.-(1.-self._arrival_from)*(1.-t)**3
+            self._apply_companion_alpha()
         self._update_mask()
+        self._hover_after_reveal(previous)
 
     def contains_point(self,point):
         if not self.isVisible():return False
@@ -508,6 +534,7 @@ class ClipboardHistoryPanel(QWidget):
         self._stack.stop()
         self._reveal.stop()
         self._reveal_rebound=0.
+        self._arrival_alpha=self._arrival_from=1.
         self._wheel_frames.stop()
         self._wheel_events.clear()
         self._wheel_remaining=0.
@@ -564,7 +591,7 @@ class ClipboardHistoryPanel(QWidget):
             theme=colors('dark' if self.dark else 'light')
             self._palette={name:qss_color(theme[name]) for name in
                     ('window_backdrop','glass_border','card','border','input_border','text','secondary',
-                     'control_hover','action','subcard','file_card','file_card_hover','file_card_selected',
+                     'control_hover','control_pressed','red','action','subcard','file_card','file_card_hover','file_card_selected',
                      'selected_border','hover_border')}
         return self._palette
 
@@ -885,11 +912,7 @@ class ClipboardHistoryPanel(QWidget):
             baseline=title.center().y()+(heading_metrics.ascent()-heading_metrics.descent())/2
             painter.setFont(count_font);painter.setPen(ink)
             painter.drawText(QPointF(start+8,baseline),count)
-        if self.entries:
-            if self._hovered==('clear','') or self._confirm_clear.isActive():
-                self._rounded(painter,clear,palette['control_hover'],None,9)
-            self._glyph(painter,'trash',clear.adjusted(7,6,-7,-6),'#d33138' if self._confirm_clear.isActive() else muted.name())
-            self._hits.append(('clear','',clear))
+        self._paint_clear(painter,clear,palette)
         painter.save()
         painter.setClipRect(QRectF(1,HEADER,width-2,max(0.,self._painted.height()-HEADER-INSET+1)))
         if not self.entries:
@@ -920,6 +943,30 @@ class ClipboardHistoryPanel(QWidget):
             y=HEADER+(available-height)*self.scroll/(total-available)
             self._rounded(painter,QRectF(width-7,y,3,height),muted,None,1.5)
         painter.restore();painter.end()
+
+    def _clear_state(self):
+        if not self.entries:return 'disabled'
+        if self._hovered==('clear','') and self._press and self._press[0]==self._hovered:return 'pressed'
+        if self._confirm_clear.isActive():return 'confirm'
+        if self._hovered==('clear',''):return 'hover'
+        return 'idle'
+
+    def _paint_clear(self,painter,rect,palette):
+        state=self._clear_state()
+        tint=palette['secondary']
+        painter.save()
+        if state=='disabled':
+            painter.setOpacity(.34)
+        else:
+            self._hits.append(('clear','',rect))
+            if state!='idle':
+                background=palette['control_pressed' if state=='pressed' else 'control_hover']
+                self._rounded(painter,rect,background,palette['hover_border'],9)
+                tint=palette['red'] if state=='confirm' or self._confirm_clear.isActive() else palette['text']
+        glyph=rect.adjusted(7,6,-7,-6)
+        if state=='pressed':glyph.translate(0,1)
+        self._glyph(painter,'trash',glyph,tint.name())
+        painter.restore()
 
     def _hit(self,position):
         if self._companion_closing or self._companion_amount<.92:return None
@@ -959,11 +1006,18 @@ class ClipboardHistoryPanel(QWidget):
     def mousePressEvent(self,event):
         hit=self._hit(event.position())
         self._press=(hit,event.position()) if hit and event.button()==Qt.LeftButton else None
+        if hit==('clear','') and self._press:
+            self._set_hover(hit)
+            self.update()
         event.accept()
 
     def mouseReleaseEvent(self,event):
+        if event.button()!=Qt.LeftButton:return
         press,self._press=self._press,None
         hit=self._hit(event.position())
+        if press and press[0]==('clear',''):
+            self._set_hover(hit)
+            self.update()
         if not press or hit!=press[0]:return
         part,key=hit
         if part=='clear':
