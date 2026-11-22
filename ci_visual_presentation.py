@@ -1,7 +1,9 @@
 """Probe the composited desktop pixels on disposable native CI sessions."""
 import json
 import os
+from pathlib import Path
 import statistics
+import subprocess
 import sys
 import time
 
@@ -52,7 +54,11 @@ def main():
     pattern = QTimer(timerType=Qt.PreciseTimer)
     pattern.timeout.connect(change)
     pattern.start(max(1, int(1000 / screen.refreshRate())))
-    QTimer.singleShot(1700, app.quit)
+    capture_executable = Path(__file__).resolve().parent / ('capture-win.exe' if sys.platform == 'win32' else 'capture-mac')
+    area = (window.x() + 34 - origin.x(), window.y() + 34 - origin.y(), 18, 18)
+    native = subprocess.Popen([str(capture_executable), *map(str, area), '1.45'],
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) if capture_executable.is_file() else None
+    QTimer.singleShot(1750, app.quit)
     app.exec()
     diffs = [stamp for i, (stamp, _, pixel) in enumerate(samples)
              if i and pixel is not None and pixel != samples[i - 1][2]]
@@ -63,6 +69,13 @@ def main():
                           reads=len(samples), matching=matching, actual_pixel_changes=len(diffs),
                           capture_median_ms=statistics.median(s[1] for s in samples),
                           last_pixel=samples[-1][2])))
+    if native is not None:
+        out, err = native.communicate(timeout=6)
+        frames = [row.split() for row in out.splitlines() if len(row.split()) == 3]
+        stamps = [float(frame[0]) for frame in frames]
+        print(json.dumps(dict(native_exit=native.returncode, native_error=err,
+                              native_frames=len(frames), native_distinct=len({row[1] for row in frames}),
+                              native_span_s=stamps[-1]-stamps[0] if stamps else 0)))
     if matching < 10:
         raise SystemExit('Screen capture did not contain the calibration surface')
 
