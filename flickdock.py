@@ -629,7 +629,7 @@ class ShelfManager:
         if self._quitting:return
         shelf=self.shelf
         if shelf.popup is None and not getattr(shelf,'expanded',False):
-            if self._shelf_uses_frame_budget():return
+            if self._shelf_uses_frame_budget(include_utility=False):return
             # Pre-construct the overview container before the user's first expand click.
             shelf.popup=ContentsPopup(shelf)
             shelf.popup.hide()
@@ -766,10 +766,11 @@ class ShelfManager:
         if self._dock_preview_values is not None:self._dock_preview_values['trigger_visible']=target
         self._refresh_trigger_region_action();self._position_edges();self.update_handles()
 
-    def _shelf_uses_frame_budget(self):
+    def _shelf_uses_frame_budget(self,*,include_utility=True):
         shelf=self.shelf
-        from display_frames import has_active_window_frames
-        if has_active_window_frames():return True
+        if include_utility:
+            from display_frames import has_active_window_frames
+            if has_active_window_frames():return True
         return shelf.isVisible() and (shelf.content_transition_active()
             or time.monotonic()-shelf.last_activity<.55
             or any(zone.icon._hovered for zone in shelf.zones.values()))
