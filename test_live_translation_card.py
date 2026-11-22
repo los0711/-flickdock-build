@@ -172,10 +172,9 @@ class LiveTranslationTests(unittest.TestCase):
                     self.assertFalse(live.card.insert.isEnabled())
                     self.assertEqual(len(transport.requests), 2)
                     field[0] = None
-                    self.assertTrue(wait_for(self.app, lambda: live.job is not None))
-                    self.app.processEvents()
+                    live._language_focus_grace = time.monotonic() - .05
+                    self.assertTrue(wait_for(self.app, lambda: live._language_focus_grace > time.monotonic()))
                     self.assertTrue(live.card.isVisible())
-                    field[0] = EditorState(('scenario',), bounds, '今天有消息。')
                     complete(transport.requests[-1], 'Il y a des nouvelles aujourd’hui.')
                     self.assertTrue(live.draft.ready)
                     self.assertTrue(live.card.isVisible())

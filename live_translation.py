@@ -497,8 +497,12 @@ class LiveEditorTranslation(QObject):
             if self._sample_active:
                 self._observed_sample(value)
             return
-        if value is None and self.editor is not None and monotonic() < self._language_focus_grace:
-            return
+        if value is None and self.editor is not None and self._language_focus_grace:
+            now = monotonic()
+            if self.draft.loading:
+                self._language_focus_grace = now + 1.25
+            if now < self._language_focus_grace:
+                return
         previous, self.editor = self.editor, value
         if value is None and previous is None:
             return
@@ -506,6 +510,7 @@ class LiveEditorTranslation(QObject):
             self._change_editor(previous, value)
             return
         if value.text != previous.text:
+            self._language_focus_grace = 0.
             self._applied_selection = None
             self.alignment.cancel()
             self._edit_anchor = self._last_edit_position(previous.text, value.text)
@@ -641,8 +646,9 @@ class LiveEditorTranslation(QObject):
         self.card.insert.setEnabled(
             self.draft.ready and self.draft.text == observed.text and not self._submitting and not self._sample_active)
         self.card.present()
-        if self.draft.ready and not mouse_buttons_mask() & 1:
-            selection = observed.selection or (self._edit_anchor, self._edit_anchor)
+        selection = observed.selection or (self._edit_anchor, self._edit_anchor)
+        aligns_visible_text = selection[0] != selection[1] and self.draft.result_target == self.draft.target
+        if (self.draft.ready or aligns_visible_text) and not mouse_buttons_mask() & 1:
             key = selection, observed.text, self.draft.result
             if key != self._applied_selection:
                 self._applied_selection = key

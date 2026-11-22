@@ -80,6 +80,7 @@ def wait_for(predicate, seconds=10):
 
 
 def verify_windows_card(folder, editor):
+    from concurrent.futures import ThreadPoolExecutor
     from PySide6.QtCore import QPoint, QRect
     from PySide6.QtGui import QCursor
     from PySide6.QtWidgets import QApplication
@@ -113,7 +114,10 @@ def verify_windows_card(folder, editor):
         QCursor.setPos(bounds.center())
         assert wait_for(lambda: observe(card.footer_clip.isHidden))
         assert card.surface.height() == collapsed
-        assert focused_editor(Event()).identity == editor.identity
+        # UI Automation needs an MTA thread. The Qt GUI owns an STA on Windows.
+        with ThreadPoolExecutor(max_workers=1) as worker:
+            focused = worker.submit(focused_editor, Event()).result(timeout=5)
+        assert focused is not None and focused.identity == editor.identity, focused
     finally:
         card.close()
         store.close()
