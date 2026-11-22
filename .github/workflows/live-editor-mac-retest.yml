@@ -1,0 +1,221 @@
+name: Verify the exact Apple Silicon application payload
+
+on:
+  push:
+    branches: [ci-live-editor-macos-retest-1840]
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  packaged:
+    runs-on: macos-15
+    timeout-minutes: 23
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYTHONUTF8: '1'
+      PIP_DISABLE_PIP_VERSION_CHECK: '1'
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          architecture: arm64
+      - name: Prepare the exact packaged application and isolated test runtime
+        id: ready
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          root="$RUNNER_TEMP/flickdock-retained"
+          mkdir -p ../outputs dist build
+          gh run download 45014804976 --repo "$GITHUB_REPOSITORY" \
+            --name 'FlickDock-macOS-incomplete-arm64-2d20943203dc269dfda3aa3cc1a01ee6a2af9928' --dir "$root"
+          python - "$root" <<'PY'
+          import hashlib,json,sys
+          from pathlib import Path
+          root=Path(sys.argv[1])
+          report=json.loads((root/'mac-build-1.8.40-arm64.json').read_text())
+          assert report['ok'] and report['pkg_payload_verified'] and report['architecture']=='arm64'
+          for item in report['artifacts']:
+              path=root/item['name']
+              with path.open('rb') as content:
+                  assert path.stat().st_size==item['bytes'] and hashlib.file_digest(content,'sha256').hexdigest()==item['sha256'],path
+          PY
+          pkgutil --expand-full "$root/FlickDock-1.8.40-macOS-arm64.pkg" "$root/expanded"
+          ditto "$root/expanded/Payload/FlickDock.app" dist/FlickDock.app
+          codesign --verify --deep --strict dist/FlickDock.app
+          python -m venv build/macos-venv
+          build/macos-venv/bin/python -m pip install -r requirements.txt 'pyobjc-framework-Quartz>=11,<13'
+          build/macos-venv/bin/python - <<'PY'
+          import imageio_ffmpeg,shutil
+          from pathlib import Path
+          destination=Path('assets/video-tools/ffmpeg')
+          destination.parent.mkdir(parents=True,exist_ok=True)
+          shutil.copy2(imageio_ffmpeg.get_ffmpeg_exe(),destination)
+          destination.chmod(0o755)
+          PY
+      - name: Repeat real Finder drops from two fresh app profiles
+        if: ${{ !cancelled() && steps.ready.outcome == 'success' }}
+        run: |
+          set -eu
+          stage="$(mktemp -d "$RUNNER_TEMP/finder-retained.XXXXXX")"
+          swiftc ci_finder_element.swift -o "$stage/finder-element"
+          status=0
+          for trial in 1 2; do
+            mkdir "$stage/profile-$trial"
+            report="$PWD/../outputs/mac-finder-arm64-$trial.json"
+            HOME="$stage/profile-$trial" QT_QPA_PLATFORM=cocoa FLICKDOCK_FINDER_AX="$stage/finder-element" \
+              "$PWD/dist/FlickDock.app/Contents/MacOS/FlickDock" --verify-finder-magnetic "$report" || status=1
+          done
+          exit "$status"
+      - name: Verify frozen desktop widgets in Cocoa
+        if: ${{ !cancelled() && steps.ready.outcome == 'success' }}
+        run: |
+          sandbox="$(mktemp -d)"
+          succeeded=0
+          for view in overview translator; do
+            profile="$sandbox/$view"
+            mkdir "$profile"
+            output="../outputs/mac-cocoa-$view-arm64.json"
+            HOME="$profile" APPDATA="$profile" XDG_CONFIG_HOME="$profile" QT_QPA_PLATFORM=cocoa FLICKDOCK_VERIFY_NATIVE_UI=1 \
+              dist/FlickDock.app/Contents/MacOS/FlickDock --verify-"$view" --verify-output "$output" || succeeded=1
+            if [ -f "$output" ]; then cat "$output"; printf '\n'; fi
+          done
+          if [ "$succeeded" -ne 0 ]; then exit "$succeeded"; fi
+          python - ../outputs/mac-cocoa-overview-arm64.json ../outputs/mac-cocoa-translator-arm64.json <<'PY'
+          import json,sys
+          from pathlib import Path
+          from app_version import APP_VERSION
+          report=json.loads(Path(sys.argv[1]).read_bytes())
+          assert report['ok'] and report['frozen'] and report['version']==APP_VERSION,report
+          translator=json.loads(Path(sys.argv[2]).read_bytes())
+          assert translator['ok'] and translator['frozen'] and translator['version']==APP_VERSION,translator
+          assert translator['mac_leading_controls'],translator
+          PY
+      - name: Verify saved screenshot history from packaged Cocoa application
+        if: ${{ !cancelled() && steps.ready.outcome == 'success' }}
+        run: |
+          profile="$(mktemp -d "$RUNNER_TEMP/frozen-saved.XXXXXX")"
+          APPDATA="$profile" HOME="$profile" XDG_CONFIG_HOME="$profile" QT_QPA_PLATFORM=cocoa dist/FlickDock.app/Contents/MacOS/FlickDock --verify-saved-screenshots "$profile/frozen.json"
+          cp "$profile/frozen.json" ../outputs/mac-saved-screenshots-arm64.json
+      - name: Verify Keychain startup, automatic update, cached retry and completed notice
+        if: ${{ !cancelled() && steps.ready.outcome == 'success' }}
+        run: build/macos-venv/bin/python -m unittest test_account_security_v180 test_mac_updates test_update_macos_controller test_update_macos test_update_resume_v1821 test_update_notice_v1813 test_shelf_live_v1821 test_utility_feedback_v1828 -q
+      - name: Inspect packaged network permission identity without changing macOS security
+        if: ${{ !cancelled() && steps.ready.outcome == 'success' }}
+        run: |
+          build/macos-venv/bin/python - <<'PY'
+          import json,plistlib,re,subprocess
+          from pathlib import Path
+          app=Path('dist/FlickDock.app')
+          info=plistlib.loads((app/'Contents/Info.plist').read_bytes())
+          assert info['CFBundleIdentifier']=='com.flickdock.app' and info.get('NSLocalNetworkUsageDescription')
+          executable=app/'Contents/MacOS/FlickDock'
+          uuid=subprocess.run(['/usr/bin/dwarfdump','--uuid',str(executable)],capture_output=True,text=True,check=True,timeout=10)
+          assert re.search(r'UUID: [0-9A-F-]{36}',uuid.stdout)
+          subprocess.run(['/usr/bin/codesign','--verify','--deep','--strict',str(app)],check=True,timeout=30)
+          signature=subprocess.run(['/usr/bin/codesign','-dv','--verbose=4',str(executable)],capture_output=True,text=True,check=True,timeout=10)
+          result=dict(ok=True,usage_description_declared=True,main_uuid_present=True,signature_verified=True,
+                      ad_hoc_signed='Signature=adhoc' in signature.stderr,local_network_grant='not_queried',
+                      scope='Packaged app identity; does not prove installed-app privacy authorization')
+          Path('../outputs/mac-network-arm64.json').write_text(json.dumps(result,indent=2))
+          PY
+      - name: Test real cloud sync from frozen macOS client
+        if: ${{ !cancelled() && steps.ready.outcome == 'success' }}
+        run: |
+          profile="$(mktemp -d)"
+          APPDATA="$profile" XDG_CONFIG_HOME="$profile" dist/FlickDock.app/Contents/MacOS/FlickDock --verify-cloud --verify-output "../outputs/mac-cloud-arm64.json" || true
+          python -c "import json; from pathlib import Path; p=Path('../outputs/mac-cloud-arm64.json'); data=json.loads(p.read_text()); print(data); assert data['ok'] and data['frozen'],data"
+      - name: Verify transfer isolation, display metadata and finite animation lifecycle
+        if: ${{ !cancelled() && steps.ready.outcome == 'success' }}
+        run: |
+          build/macos-venv/bin/python -m unittest test_stability_v1822 test_resources_v1822.ResourceTests test_motion_resources_v1822.MotionTests test_motion_resources_v1822.DisplayMetadataTests test_motion_resources_v1822.MacVolumeTests test_receive_lifecycle_v1822.ReceiveLifecycleTests test_transfer_entry_v1822.EntryTests test_small_upload_lane.SmallLaneTests -q
+          build/macos-venv/bin/python -m unittest test_workbench_v1823 -q
+      - name: Verify native utility windows and copy capsule lifecycle
+        if: ${{ !cancelled() && steps.ready.outcome == 'success' }}
+        run: build/macos-venv/bin/python ci_utility_windows.py --output "../outputs/mac-utility-arm64.json"
+      - name: Check desktop motion, drag geometry and selection regressions
+        if: ${{ !cancelled() && steps.ready.outcome == 'success' }}
+        run: >-
+          build/macos-venv/bin/python -m unittest test_display_frames test_tooltips_v1837
+          test_scroll_motion_v1837.ScrollTests test_edge_magnetic_v1839.FieldGeometryTests
+          test_lan_dialog_v183.LanDialogTests.test_mac_activity_cards_stay_fixed_while_history_scrolls
+          test_glass_ui_v1839.OverviewMotionTests.test_transparent_selection_endpoints_do_not_darken_the_shared_circle -q
+      - name: Verify capsule styles and copied artwork from the frozen application
+        if: ${{ !cancelled() && steps.ready.outcome == 'success' }}
+        run: QT_QPA_PLATFORM=cocoa dist/FlickDock.app/Contents/MacOS/FlickDock --verify-notices --verify-output "../outputs/mac-notices-arm64.json"
+      - name: Measure verified local LAN loopback transfer
+        if: ${{ !cancelled() && steps.ready.outcome == 'success' }}
+        run: |
+          build/macos-venv/bin/python bench_lan_throughput_v183.py --size-mib 128 --output "../outputs/mac-lan-arm64.json"
+      - name: Verify native video and audio downloads from source and frozen app
+        if: ${{ !cancelled() && steps.ready.outcome == 'success' }}
+        run: |
+          build/macos-venv/bin/python - <<'PY'
+          import hashlib,json,os,sys,tempfile,unittest
+          from pathlib import Path
+          from unittest.mock import patch
+          import test_video_v1823
+          results=[]
+          for frozen in (False,True):
+              executable=str(Path('dist/FlickDock.app/Contents/MacOS/FlickDock').resolve()) if frozen else sys.executable
+              with tempfile.TemporaryDirectory(prefix='flickdock-cold-video-') as profile:
+                  env={'HOME':profile} if frozen else {}
+                  with patch.dict(os.environ,env),patch.object(sys,'frozen',frozen,create=True),patch.object(sys,'executable',executable):
+                      suite=unittest.defaultTestLoader.loadTestsFromModule(test_video_v1823)
+                      result=unittest.TextTestRunner(verbosity=2).run(suite)
+                  assert result.wasSuccessful() and result.testsRun==4 and not result.skipped
+                  if frozen:
+                      from video_runtime import RUNTIME_CATALOG
+                      record=next(row for row in RUNTIME_CATALOG if row['platform']=='darwin' and row['architecture']=='arm64')
+                      runtime=Path(profile)/'Library/Application Support/FlickDock/video-runtime'/record['sha256']/'ffmpeg'
+                      assert runtime.is_file() and runtime.stat().st_size==record['bytes']
+                      with runtime.open('rb') as stream:assert hashlib.file_digest(stream,'sha256').hexdigest()==record['sha256']
+                  results.append(dict(frozen=frozen,tests=result.testsRun,ok=True,cold_runtime_verified=frozen))
+          Path('../outputs/mac-video-arm64.json').write_text(json.dumps(dict(ok=True,architecture='arm64',checks=results),indent=2))
+          PY
+      - name: Verify composited video and diagnostic cleanup
+        if: ${{ !cancelled() && steps.ready.outcome == 'success' }}
+        run: |
+          build/macos-venv/bin/python -m pip install --no-deps 'imageio-ffmpeg==0.6.0'
+          build/macos-venv/bin/python -c "import imageio_ffmpeg; print('Verified generated-video fixture tool:', imageio_ffmpeg.get_ffmpeg_exe())"
+          build/macos-venv/bin/python -m unittest test_crash_diagnostics_v1838 test_architecture -q
+          build/macos-venv/bin/python ci_mac_video_compositor.py --source "$PWD" --renderer composited --clicks 50 --timeout 120 --output ci-native-compositor
+          build/macos-venv/bin/python - <<'PY'
+          import json,os,subprocess,tempfile
+          from pathlib import Path
+          from app_version import APP_VERSION
+          source=Path.cwd();target=Path('../outputs')
+          native=json.loads(Path('ci-native-compositor/worker-result.json').read_text())
+          supervisor=json.loads(Path('ci-native-compositor/supervisor-result.json').read_text())
+          assert native['ok'] and supervisor['ok'] and native['snapshot_finished'] and native['selected_after_reopen']
+          assert native['renderer']=='composited' and native['gil_held_diagnostics']
+          (target/'mac-video-compositor-arm64.json').write_text(json.dumps(dict(ok=True,native=native,supervisor=supervisor),indent=2))
+          with tempfile.TemporaryDirectory(prefix='flickdock-raster-media-') as profile:
+              video=Path(profile)/'generated.mp4'
+              subprocess.run([str(source/'assets/video-tools/ffmpeg'),'-v','error','-f','lavfi','-i','testsrc=size=640x360:rate=24',
+                              '-f','lavfi','-i','sine=frequency=440:sample_rate=44100','-t','4','-c:v','libx264','-pix_fmt','yuv420p',
+                              '-c:a','aac','-shortest','-y',str(video)],check=True,capture_output=True,timeout=30)
+              report=(target/'mac-media-compositor-arm64.json').resolve()
+              env=dict(os.environ,HOME=profile,APPDATA=profile,XDG_CONFIG_HOME=profile,
+                       QT_QPA_PLATFORM='cocoa',FLICKDOCK_VERIFY_NATIVE_UI='1')
+              subprocess.run([str(source/'dist/FlickDock.app/Contents/MacOS/FlickDock'),'--verify-media',str(video),'--verify-output',str(report)],
+                             env=env,check=True,timeout=90)
+              frozen=json.loads(report.read_text())
+              assert frozen['ok'] and frozen['frozen'] and frozen['version']==APP_VERSION
+              assert frozen['renderer']=='qvideosink-raster' and frozen['native_renderer'] is False and frozen['presented_playback_frames']>1
+          PY
+      - name: Retain packaged test reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: retained-mac-coverage-arm64
+          path: |
+            ../outputs/mac-*.json
+            ci-native-compositor/*.json
+          if-no-files-found: warn
+          retention-days: 3
