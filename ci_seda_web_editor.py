@@ -10,15 +10,67 @@ from threading import Event
 from time import sleep
 from unittest.mock import patch
 
+from PySide6.QtCore import QPoint, QTimer
+from PySide6.QtWidgets import QApplication
+
+from ci_live_editor_card import FixedTranslationService, pointer
 from ci_live_translation_web import wait_for
+from clipboard_history_native import front_target
+from live_translation import FOOTER_HEIGHT, LiveEditorTranslation
 from live_translation_editor import focused_editor
+from translator_store import TranslatorStore
 
 SOURCE='这个聊天输入框里的原文需要替换。'
 TARGET='Replace this draft, please. 😀'
 CLIPBOARD='FlickDock test original clipboard'
 
 
-def verify(folder, electron, editor):
+class SedaTranslationService(FixedTranslationService):
+    def request(self, method, route, finish, *, data, **options):
+        if route == '/v1/align':
+            return super().request(method, route, finish, data=data, **options)
+        reply = dict(operation=data['operation'], units=[
+            dict(id=row['id'], text=TARGET) for row in data['units']
+        ])
+        QTimer.singleShot(30, lambda: finish(reply, None))
+        return object()
+
+
+def click_insert(folder, sample):
+    app=QApplication.instance()
+    target=front_target()
+    store=TranslatorStore(folder,autoload=False)
+    live=LiveEditorTranslation(SedaTranslationService(),store)
+
+    def observed(predicate):
+        app.processEvents()
+        return predicate()
+
+    try:
+        live.start('en')
+        if not wait_for(lambda:observed(lambda:live.draft.ready and live.card.isVisible()),interval=9):
+            return {'card_ready':False}
+        card=live.card
+        point=card.screen_point(card.surface,QPoint(35,card.surface.height()//2))
+        pointer(point)
+        if not wait_for(lambda:observed(lambda:card.footer_clip.height()==FOOTER_HEIGHT and card.insert.isEnabled())):
+            return {'card_ready':True,'hover_opens':False}
+        clicks=[]
+        card.insert.clicked.connect(lambda _checked=False:clicks.append(True))
+        pointer(card.screen_point(card.insert,card.insert.rect().center()),click=True)
+        applied=wait_for(lambda:observed(lambda:sample().get('text')==TARGET
+            and sample().get('clipboard')==CLIPBOARD and not live._submitting),interval=6)
+        return {'card_ready':True,'hover_opens':True,'click_replaced':bool(applied),
+                'click_received':bool(clicks),'focus_retained':front_target()==target,
+                'input_events':sample().get('inputs'),
+                'adjacent_preserved':sample().get('other')=='Other input must remain unchanged'}
+    finally:
+        live.stop()
+        live.pool.waitForDone(4000)
+        store.close()
+
+
+def verify(folder, electron, editor, *, through_card=False):
     import clipboard_history_native as native
     folder.mkdir()
     child=subprocess.Popen([electron,str(Path(__file__).with_suffix('.cjs')),str(folder),editor])
@@ -35,6 +87,8 @@ def verify(folder, electron, editor):
         user.mouse_event(2,0,0,0,0)
         sleep(.05)
         user.mouse_event(4,0,0,0,0)
+        if through_card:
+            return click_insert(folder,sample)
         stop=Event()
         state=wait_for(lambda:focused_editor(stop),interval=8)
         if state is None:
@@ -87,13 +141,18 @@ if __name__=='__main__':
     if os.environ.get('GITHUB_ACTIONS')!='true' or sys.platform!='win32':
         raise RuntimeError('The Electron input probe requires a disposable Windows desktop.')
     report={}
+    application=QApplication([])
+    application.setQuitOnLastWindowClosed(False)
     try:
         with tempfile.TemporaryDirectory(prefix='flickdock-seda-webview-') as scratch:
             for app in ('whatsapp','telegram'):
                 report[app]=verify(Path(scratch)/app,sys.argv[1],app)
+                report[app]['card']=verify(Path(scratch)/(app+'-card'),sys.argv[1],app,through_card=True)
     finally:
         Path(sys.argv[2]).write_text(json.dumps(report,indent=2),encoding='utf-8')
         print(json.dumps(report),flush=True)
     for app,result in report.items():
         assert all(result.get(key) for key in ('accessible','original_matches','accepted','actually_replaced',
             'input_events','adjacent_preserved','clipboard_preserved')), (app,result)
+        assert all(result['card'].get(key) for key in ('card_ready','hover_opens','click_replaced',
+            'click_received','focus_retained','input_events','adjacent_preserved')), (app,result)
