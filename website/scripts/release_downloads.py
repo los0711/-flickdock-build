@@ -28,7 +28,10 @@ def version(value):
 
 
 def expected_names(value):
-    return {'FlickDock-Setup-'+value+'.exe',*('FlickDock-'+value+'-macOS-arm64.'+ext for ext in ('pkg','zip','dmg'))}
+    names = {'FlickDock-Setup-'+value+'.exe',*('FlickDock-'+value+'-macOS-arm64.'+ext for ext in ('pkg','zip','dmg'))}
+    if value == '1.8.40':
+        names.update(('FlickDock-1.8.40-macOS-arm64-revised.zip', 'FlickDock-1.8.40-macOS-arm64-revised.dmg'))
+    return names
 
 
 def validate(value):

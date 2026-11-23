@@ -13,6 +13,10 @@ export function releaseIndex(value){
   for(const row of rows){
     if(!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(row.version))throw new Error('Invalid release version');
     const expected=new Set(['FlickDock-Setup-'+row.version+'.exe',...['pkg','zip','dmg'].map(ext=>'FlickDock-'+row.version+'-macOS-arm64.'+ext)]);
+    if(row.version==='1.8.40'){
+      expected.add('FlickDock-1.8.40-macOS-arm64-revised.zip');
+      expected.add('FlickDock-1.8.40-macOS-arm64-revised.dmg');
+    }
     if(!Array.isArray(row.assets))throw new Error('Invalid release installers');
     for(const asset of row.assets){
       const url=new URL(asset.archive);

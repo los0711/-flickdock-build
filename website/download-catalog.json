@@ -253,6 +253,54 @@
         }
       ],
       "r2Removed": false
+    },
+    {
+      "version": "1.8.40",
+      "assets": [
+        {
+          "name": "FlickDock-1.8.40-macOS-arm64.zip",
+          "bytes": 82366226,
+          "sha256": "ebf581c7bc65e1311d2e970f22182cdca0080f01758e94952b349c07f1049650",
+          "archive": "https://github.com/los0711/-flickdock-build/releases/download/v1.8.40/FlickDock-1.8.40-macOS-arm64.zip",
+          "originKey": "v1.8.40/sha256-ebf581c7bc65e1311d2e970f22182cdca0080f01758e94952b349c07f1049650/FlickDock-1.8.40-macOS-arm64.zip"
+        },
+        {
+          "name": "FlickDock-1.8.40-macOS-arm64.dmg",
+          "bytes": 99770710,
+          "sha256": "e29f7c9be4375330b8241aeca98fc868fe3d6ebda85bd429ac0790690114fee1",
+          "archive": "https://github.com/los0711/-flickdock-build/releases/download/v1.8.40/FlickDock-1.8.40-macOS-arm64.dmg",
+          "originKey": "v1.8.40/sha256-e29f7c9be4375330b8241aeca98fc868fe3d6ebda85bd429ac0790690114fee1/FlickDock-1.8.40-macOS-arm64.dmg"
+        },
+        {
+          "name": "FlickDock-1.8.40-macOS-arm64.pkg",
+          "bytes": 79116831,
+          "sha256": "842717f40f2dcef20534c3abb13ce99fa329364423a84670b470c8a70b756278",
+          "archive": "https://github.com/los0711/-flickdock-build/releases/download/v1.8.40/FlickDock-1.8.40-macOS-arm64.pkg",
+          "originKey": "v1.8.40/sha256-842717f40f2dcef20534c3abb13ce99fa329364423a84670b470c8a70b756278/FlickDock-1.8.40-macOS-arm64.pkg"
+        },
+        {
+          "name": "FlickDock-Setup-1.8.40.exe",
+          "bytes": 70609349,
+          "sha256": "95727a7f663a006e02c60d7e5ad0edc0dbbf180316e489b3409fb501b33d4a6c",
+          "archive": "https://github.com/los0711/-flickdock-build/releases/download/v1.8.40/FlickDock-Setup-1.8.40.exe",
+          "originKey": "v1.8.40/sha256-95727a7f663a006e02c60d7e5ad0edc0dbbf180316e489b3409fb501b33d4a6c/FlickDock-Setup-1.8.40.exe"
+        },
+        {
+          "name": "FlickDock-1.8.40-macOS-arm64-revised.zip",
+          "bytes": 82368569,
+          "sha256": "ddf296dc7f5a175a74ea5c8d6d2157cfc9f1a6c630f67f37629f0e0b162a2ce4",
+          "archive": "https://github.com/los0711/-flickdock-build/releases/download/v1.8.40/FlickDock-1.8.40-macOS-arm64-revised.zip",
+          "originKey": "v1.8.40/sha256-ddf296dc7f5a175a74ea5c8d6d2157cfc9f1a6c630f67f37629f0e0b162a2ce4/FlickDock-1.8.40-macOS-arm64-revised.zip"
+        },
+        {
+          "name": "FlickDock-1.8.40-macOS-arm64-revised.dmg",
+          "bytes": 96221231,
+          "sha256": "d49041a9f4b85ca0d2d5eaffad71539c59e707809cde337623a9db7fa615a091",
+          "archive": "https://github.com/los0711/-flickdock-build/releases/download/v1.8.40/FlickDock-1.8.40-macOS-arm64-revised.dmg",
+          "originKey": "v1.8.40/sha256-d49041a9f4b85ca0d2d5eaffad71539c59e707809cde337623a9db7fa615a091/FlickDock-1.8.40-macOS-arm64-revised.dmg"
+        }
+      ],
+      "r2Removed": false
     }
   ]
 }
