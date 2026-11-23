@@ -28,7 +28,6 @@ class MacPermissionsDialog(ReferenceModalDialog):
         self.setFont((parent or manager.shelf).font())
         self._awaiting_system=False
         self._return_to_dialog=False
-        self._guided_flow=False
         self._accessibility_guide=None
         self.manager=manager;self.backend=backend or MacPermissionBackend();self.states={};self._guided=set()
         self.setWindowTitle('FlickDock · Mac 权限设置');self.rows={}
@@ -154,9 +153,6 @@ class MacPermissionsDialog(ReferenceModalDialog):
         self.refresh()
         if self._return_to_dialog:self.show()
         self._return_to_dialog=False
-        close_after_setup=self._guided_flow and self._paste_permissions_ready()
-        self._guided_flow=False
-        if close_after_setup:self.close()
 
     def request(self,kind,*,direct=False):
         if self._awaiting_system:return
@@ -192,7 +188,6 @@ class MacPermissionsDialog(ReferenceModalDialog):
         if not opened:
             self._awaiting_system=False
             self._return_to_dialog=False
-            self._guided_flow=False
             self.show()
             self.bring_to_front()
         elif kind=='files' and QApplication.instance().applicationState()==Qt.ApplicationActive:
@@ -202,12 +197,10 @@ class MacPermissionsDialog(ReferenceModalDialog):
 
     def advance(self):
         self.refresh()
-        self._guided_flow=True
         for kind in ('clipboard','accessibility'):
             if self.states[kind] not in GRANTED_STATES:
                 if not self._awaiting_system:self.request(kind)
                 return
-        self._guided_flow=False
         self.close()
 
     def showEvent(self,event):
@@ -217,7 +210,6 @@ class MacPermissionsDialog(ReferenceModalDialog):
     def closeEvent(self,event):
         self._awaiting_system=False
         self._return_to_dialog=False
-        self._guided_flow=False
         self._return_timer.stop()
         self._stop_accessibility_guide()
         super().closeEvent(event)

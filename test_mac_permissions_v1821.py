@@ -173,15 +173,16 @@ class ClipboardPermissionTests(unittest.TestCase):
 
 
 class PermissionUITests(unittest.TestCase):
-    def test_permission_guide_stays_outside_settings_on_small_and_secondary_displays(self):
-        from mac_permission_guide import guide_geometry
-        area=QRect(-1440,24,1440,852);size=QSize(306,132)
-        window=QRect(-1300,42,870,600)
-        position=guide_geometry(window,area,size)
-        self.assertEqual(position.top(),window.bottom()+11)
-        window.moveBottom(area.bottom()-8)
-        self.assertTrue(guide_geometry(window,area,size).isEmpty())
-        self.assertTrue(guide_geometry(area,area,size).isEmpty())
+    def test_permission_guide_fits_inside_settings_even_at_the_bottom_of_a_display(self):
+        from mac_permission_guide import SETTINGS_FOOTER_CLEARANCE,guide_geometry
+        area=QRect(-1152,24,1152,699);size=QSize(330,76)
+        window=QRect(-1060,52,870,680)
+        for settings in (window,area):
+            position=guide_geometry(settings,area,size)
+            self.assertTrue(area.contains(position))
+            self.assertTrue(settings.contains(position))
+            self.assertEqual(position.bottom(),settings.intersected(area).bottom()-SETTINGS_FOOTER_CLEARANCE)
+            self.assertGreater(position.center().x(),settings.center().x())
 
     def test_permission_guide_drags_exact_bundle_and_disappears_after_grant(self):
         from mac_permission_guide import MacAccessibilityGuide
@@ -191,12 +192,12 @@ class PermissionUITests(unittest.TestCase):
         guide=MacAccessibilityGuide(bundle,backend,'light',APP.font(),reveal)
         try:
             area=APP.primaryScreen().availableGeometry()
-            window=QRect(area.x()+4,area.y()+4,area.width()-8,area.height()-guide.height()-20)
+            window=QRect(area.x()+4,area.y()+4,area.width()-8,area.height()-8)
             with patch('mac_permission_guide.settings_window',return_value=window):
                 guide.start();flush()
                 self.assertTrue(guide.isVisible())
-                self.assertFalse(guide.geometry().intersects(window))
-                self.assertGreater(guide.geometry().top(),window.bottom())
+                self.assertTrue(window.contains(guide.geometry()))
+                self.assertGreater(guide.geometry().top(),window.center().y())
                 self.assertEqual(guide.app_icon.mime_data().urls(),[QUrl.fromLocalFile(str(bundle))])
                 guide.app_icon.click();reveal.assert_called_once()
                 backend.accessibility.return_value='allowed'
@@ -243,6 +244,9 @@ class PermissionUITests(unittest.TestCase):
                 self.assertEqual(dialog.states['network'],'unknown');self.assertIn('确认',dialog.rows['network'][0].text())
                 self.assertEqual(dialog.states['files'],'on_demand')
                 manager.settings.theme='light';dialog.refresh();self.assertFalse(dialog.close_button.dark)
+                self.assertTrue(dialog.isVisible());self.assertTrue(dialog.timer.isActive())
+                self.assertEqual(dialog.setup_button.text(),'完成')
+                dialog.setup_button.click();flush()
                 self.assertFalse(dialog.isVisible());self.assertFalse(dialog.timer.isActive())
             finally:dialog.close();dialog.deleteLater();owner.deleteLater();flush()
 
