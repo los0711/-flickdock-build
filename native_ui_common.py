@@ -927,6 +927,7 @@ def colors(theme='dark', platform=None):
 # Paths copied verbatim from the source document's toolbar and category SVGs.
 _SVG_BODY = {
     'pipette': '<path d="m3 21 3.5-.9L18.6 8l-2.6-2.6L3.9 17.5 3 21Zm11.5-16.5 5 5M18 2.5l3.5 3.5-2 2-3.5-3.5Z"/>',
+    'pipette-filled': '<path fill="currentColor" stroke="none" d="m13 8.35 2.65 2.65-9.1 9.1L3 21l.9-3.55 9.1-9.1Z M14.25 6.9l3.86-3.86a1.5 1.5 0 0 1 2.12 0l1.13 1.13a1.5 1.5 0 0 1 0 2.12l-3.86 3.86-3.25-3.25Z"/>',
     'return': '<path d="M20 5v7a4 4 0 0 1-4 4H4m5-5-5 5 5 5"/>',
     'translate': '<path d="M2 5h12M8 2v3M5 5c1 6 4 9 8 11M12 5c-1 6-4 9-8 11M14 21l4-10 4 10M16 17h4"/>',
     'shield': '<path d="m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6l8-3Z"/>',

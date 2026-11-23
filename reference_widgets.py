@@ -716,7 +716,11 @@ class ToolbarButton(FeedbackButton):
         c=palette();v=self.spring.values
         center=QRectF(self.rect()).center()
         p.translate(center);p.scale(v['scale']*self._presentation_scale[0],v['scale']*self._presentation_scale[1]);p.translate(-center)
-        if self.property('controlFrame'):
+        accent_active=self.property('accentWhenActive') and self.isEnabled() and (self.isDown() or self.isChecked())
+        if accent_active:
+            fill=c['action_pressed'] if self.isDown() else c['action']
+            paint_rounded_surface(p,QRectF(self.rect()).adjusted(1,1,-1,-1),RADIUS_CONTROL_PX,ink(fill))
+        elif self.property('controlFrame'):
             fill=c['control']
             if self.isEnabled():
                 if self.isDown() or v['down']>.1:fill=c['control_pressed']
@@ -729,7 +733,8 @@ class ToolbarButton(FeedbackButton):
             paint_rounded_surface(p,QRectF(self.rect()).adjusted(1,1,-1,-1),RADIUS_CONTROL_PX,fill)
         if not self.isEnabled():p.setOpacity(float(self.property('disabledOpacity') or .4))
         name={'pin-filled':'pin','check':'check'}.get(self.glyph,self.glyph)
-        tint=self._glyph_tint or (c['action'] if self.isChecked() and name=='pin' else c['blue'] if self.isChecked() else c['secondary'])
+        tint=(c['on_action'] if accent_active else self._glyph_tint or
+              (c['action'] if self.isChecked() and name=='pin' else c['blue'] if self.isChecked() else c['secondary']))
         if self.property('shelfPin') and name=='star-filled':name,tint=_shelf_pin_glyph(c)
         p.save();p.setOpacity(p.opacity()*getattr(self,'_entry_alpha',1.));p.translate(getattr(self,'_entry_dx',0.),0.)
         if self.property('subtle'):p.setOpacity(p.opacity()*(.45+.4*v['hover']))
