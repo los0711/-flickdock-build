@@ -1,0 +1,31 @@
+name: Sign verified FlickDock 1.8.40 updates
+
+on: workflow_dispatch
+
+permissions:
+  contents: read
+
+jobs:
+  sign:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: flickdock-release
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+      - run: python -m pip install 'cryptography==50.0.2' 'PySide6-Essentials==6.12.0'
+      - run: python -m scripts.sign_1840_latency prepare
+      - run: python -m scripts.sign_1840_latency sign
+        env:
+          FLICKDOCK_RELEASE_SIGNING_KEY: ${{ secrets.FLICKDOCK_RELEASE_SIGNING_KEY }}
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: flickdock-1840-latency-signed-updates
+          path: signed-updates/*.json
+          if-no-files-found: error
+          retention-days: 7

@@ -31,6 +31,7 @@ def expected_names(value):
     names = {'FlickDock-Setup-'+value+'.exe',*('FlickDock-'+value+'-macOS-arm64.'+ext for ext in ('pkg','zip','dmg'))}
     if value == '1.8.40':
         names.update(('FlickDock-1.8.40-macOS-arm64-revised.zip', 'FlickDock-1.8.40-macOS-arm64-revised.dmg'))
+        names.update(('FlickDock-Setup-1.8.40-latency.exe', 'FlickDock-1.8.40-macOS-arm64-latency.zip', 'FlickDock-1.8.40-macOS-arm64-latency.dmg', 'FlickDock-1.8.40-macOS-arm64-latency.pkg'))
     return names
 
 

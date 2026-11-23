@@ -298,6 +298,34 @@
           "sha256": "d49041a9f4b85ca0d2d5eaffad71539c59e707809cde337623a9db7fa615a091",
           "archive": "https://github.com/los0711/-flickdock-build/releases/download/v1.8.40/FlickDock-1.8.40-macOS-arm64-revised.dmg",
           "originKey": "v1.8.40/sha256-d49041a9f4b85ca0d2d5eaffad71539c59e707809cde337623a9db7fa615a091/FlickDock-1.8.40-macOS-arm64-revised.dmg"
+        },
+        {
+          "name": "FlickDock-Setup-1.8.40-latency.exe",
+          "bytes": 70603346,
+          "sha256": "e0e0ffde9fa5bcb7791fee9c17756bc81344f0357d4d155c3de407382251ebce",
+          "archive": "https://github.com/los0711/-flickdock-build/releases/download/v1.8.40/FlickDock-Setup-1.8.40-latency.exe",
+          "originKey": "v1.8.40/sha256-e0e0ffde9fa5bcb7791fee9c17756bc81344f0357d4d155c3de407382251ebce/FlickDock-Setup-1.8.40-latency.exe"
+        },
+        {
+          "name": "FlickDock-1.8.40-macOS-arm64-latency.zip",
+          "bytes": 82370133,
+          "sha256": "8d1a553bc4ac2e5d7eacbe8cabff35c73e9b14880f3da1e7c2d52c19549aca37",
+          "archive": "https://github.com/los0711/-flickdock-build/releases/download/v1.8.40/FlickDock-1.8.40-macOS-arm64-latency.zip",
+          "originKey": "v1.8.40/sha256-8d1a553bc4ac2e5d7eacbe8cabff35c73e9b14880f3da1e7c2d52c19549aca37/FlickDock-1.8.40-macOS-arm64-latency.zip"
+        },
+        {
+          "name": "FlickDock-1.8.40-macOS-arm64-latency.dmg",
+          "bytes": 97330269,
+          "sha256": "85d4f471f01ec9a5b44f14ff7364ee7f54ba2ab4d9f9142e7dc80a835934ed3a",
+          "archive": "https://github.com/los0711/-flickdock-build/releases/download/v1.8.40/FlickDock-1.8.40-macOS-arm64-latency.dmg",
+          "originKey": "v1.8.40/sha256-85d4f471f01ec9a5b44f14ff7364ee7f54ba2ab4d9f9142e7dc80a835934ed3a/FlickDock-1.8.40-macOS-arm64-latency.dmg"
+        },
+        {
+          "name": "FlickDock-1.8.40-macOS-arm64-latency.pkg",
+          "bytes": 79104739,
+          "sha256": "cbb6ae4911925e2f2852ceaf1da677e0e20e1b58b1e625281287e7d15b486fbb",
+          "archive": "https://github.com/los0711/-flickdock-build/releases/download/v1.8.40/FlickDock-1.8.40-macOS-arm64-latency.pkg",
+          "originKey": "v1.8.40/sha256-cbb6ae4911925e2f2852ceaf1da677e0e20e1b58b1e625281287e7d15b486fbb/FlickDock-1.8.40-macOS-arm64-latency.pkg"
         }
       ],
       "r2Removed": false

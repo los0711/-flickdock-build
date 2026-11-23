@@ -16,6 +16,10 @@ export function releaseIndex(value){
     if(row.version==='1.8.40'){
       expected.add('FlickDock-1.8.40-macOS-arm64-revised.zip');
       expected.add('FlickDock-1.8.40-macOS-arm64-revised.dmg');
+      expected.add('FlickDock-Setup-1.8.40-latency.exe');
+      expected.add('FlickDock-1.8.40-macOS-arm64-latency.zip');
+      expected.add('FlickDock-1.8.40-macOS-arm64-latency.dmg');
+      expected.add('FlickDock-1.8.40-macOS-arm64-latency.pkg');
     }
     if(!Array.isArray(row.assets))throw new Error('Invalid release installers');
     for(const asset of row.assets){
