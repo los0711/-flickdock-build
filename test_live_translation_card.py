@@ -338,7 +338,7 @@ class LiveTranslationTests(unittest.TestCase):
                         card.refresh_theme()
                         palette = colors(theme)
                         backdrop=QColor(palette['window_backdrop'])
-                        backdrop.setAlphaF(.90)
+                        backdrop.setAlphaF(.85)
                         self.assertEqual(card.surface.surface_style(), (backdrop, palette['glass_border'], 14))
                         self.assertIsNone(card.result._viewport_fill)
                         frame=card.grab(card.surface.geometry()).toImage()
@@ -346,6 +346,32 @@ class LiveTranslationTests(unittest.TestCase):
             finally:
                 card.close()
                 store.close()
+                ui_theme.set_theme(previous_theme)
+
+    def test_language_sampler_uses_filled_high_contrast_accent_when_pressed_or_selected(self):
+        import theme_accent
+
+        previous_theme,previous_accent=ui_theme.current_theme(),theme_accent.current()
+        with tempfile.TemporaryDirectory() as directory:
+            store=TranslatorStore(directory,autoload=False)
+            card=LiveTranslationCard(store)
+            try:
+                self.assertEqual(card.sample.glyph,'pipette-filled')
+                for theme,accent in (('dark','#000000'),('light','#000000'),('dark','#E28B24')):
+                    ui_theme.set_theme(theme)
+                    theme_accent.set_color(accent)
+                    palette=colors(theme)
+                    for down,checked,surface in ((True,False,'action_pressed'),(False,True,'action')):
+                        card.sample.setDown(down)
+                        card.sample.setChecked(checked)
+                        image=card.sample.grab().toImage()
+                        self.assertEqual(image.pixelColor(16,4),QColor(palette[surface]))
+                        self.assertIn(QColor(palette['on_action']),
+                                      [image.pixelColor(x,y) for x in range(8,24) for y in range(8,24)])
+            finally:
+                card.close()
+                store.close()
+                theme_accent.set_color(previous_accent)
                 ui_theme.set_theme(previous_theme)
 
     def test_follow_caret_and_selection_in_long_translation(self):

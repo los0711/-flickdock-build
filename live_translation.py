@@ -110,7 +110,7 @@ class LiveTranslationCard(QWidget):
         self._body_height = 20
         self._base_height = CARD_MIN_HEIGHT
         self._footer_open = False
-        self.surface = TranslatorSurface(self, role='window_backdrop', radius=14, fill_opacity=.90)
+        self.surface = TranslatorSurface(self, role='window_backdrop', radius=14, fill_opacity=.85)
         self.content = QWidget(self.surface)
         body = QVBoxLayout(self.content)
         body.setContentsMargins(14, 8, 14, 9)
@@ -147,7 +147,8 @@ class LiveTranslationCard(QWidget):
         self.language.setFocusPolicy(Qt.NoFocus)
         self.language.setAccessibleName('目标语言')
         footer.addWidget(self.language)
-        self.sample = ToolbarButton('pipette', self.footer)
+        self.sample = ToolbarButton('pipette-filled', self.footer)
+        self.sample.setProperty('accentWhenActive', True)
         self.sample.setFocusPolicy(Qt.NoFocus)
         self.sample.setFixedSize(32, 32)
         self.sample.setCheckable(True)
